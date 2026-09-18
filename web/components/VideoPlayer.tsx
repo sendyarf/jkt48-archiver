@@ -247,12 +247,18 @@ export default function VideoPlayer({
     e?.stopPropagation();
     if (!playerRef.current) return;
     if (playerRef.current.paused) {
-      playerRef.current.play().catch(() => {});
+      // Optimistis: ikon langsung ganti agar tap terasa responsif.
+      // Event onPlay/onPause milik Vidstack tetap jadi sumber kebenaran akhir.
+      setIsPaused(false);
+      playerRef.current.play().catch(() => {
+        // Gagal mulai (mis. diblokir browser) → kembalikan ikon.
+        setIsPaused(true);
+        showToastNotification('Ketuk sekali lagi untuk memutar.');
+      });
     } else {
+      setIsPaused(true);
       playerRef.current.pause();
     }
-    // Ikon disinkronkan ulang lewat event onPlay/onPause milik Vidstack,
-    // sehingga tidak ada asumsi optimistis yang bisa tertinggal salah.
     wakeControls();
   };
 

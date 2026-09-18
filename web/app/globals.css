@@ -1342,8 +1342,8 @@ input:checked + .slider:before {
   margin-top: 1px;
 }
 
-/* Bottom Control Bar — hanya muncul saat dibutuhkan agar tidak menutupi
-   area tap video di mobile. */
+/* Bottom Control Bar — selalu bisa diklik (tak terlihat = transisi opacity
+   saja), agar tombol play/pause tidak pernah kehilangan hit-test di mobile. */
 .player-controls-bottom {
   position: absolute;
   bottom: 0;
@@ -1354,14 +1354,14 @@ input:checked + .slider:before {
   z-index: 30;
   opacity: 0;
   transform: translateY(8px);
-  transition: opacity 0.3s ease, transform 0.3s ease;
-  pointer-events: none;
+  transition: opacity 0.3s ease, transform 0.3s ease, visibility 0.3s;
+  pointer-events: auto;
+  visibility: visible;
 }
 
 .player-controls-bottom.visible {
   opacity: 1;
   transform: translateY(0);
-  pointer-events: auto;
 }
 
 .scrubber-row {
