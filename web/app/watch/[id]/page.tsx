@@ -3,7 +3,6 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 import { getVideoById, getAllVideos } from '@/lib/db';
 import VideoPlayer from '@/components/VideoPlayer';
-import { Calendar, ExternalLink } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
 
@@ -67,7 +66,6 @@ export default async function WatchPage({ params }: WatchPageProps) {
   }
 
   const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(video.streamer_name)}&background=1e293b&color=f43f5e&size=128&bold=true`;
-  const youtubeUrl = `https://www.youtube.com/watch?v=${video.youtube_video_id}`;
 
   return (
     <div className="container" style={{ paddingTop: '24px' }}>
@@ -84,47 +82,22 @@ export default async function WatchPage({ params }: WatchPageProps) {
           </div>
 
           <div className="watch-details-card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span className={`platform-badge ${video.platform}`} style={{ position: 'static' }}>
-                {video.platform === 'idn' ? 'IDN Live Replay' : 'Showroom Live'}
-              </span>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>
-                Arsip Komunitas
-              </span>
-            </div>
-
             <h1 className="watch-title">{video.title}</h1>
 
             <div className="watch-streamer-row">
               <Link href={`/?member=${video.streamer_username}`} className="streamer-profile-link">
-                <img src={avatarUrl} alt={video.streamer_name} className="streamer-avatar-md" />
+                <img src={avatarUrl} alt="" className="streamer-avatar-md" />
                 <div>
                   <h3 style={{ fontSize: '1rem', color: '#fff' }}>{video.streamer_name}</h3>
                   <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>
-                    @{video.streamer_username}
+                    {dateFormatted}
                   </p>
                 </div>
               </Link>
 
-              <div className="watch-actions">
-                <a
-                  href={youtubeUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn-action"
-                  title="Buka langsung di YouTube"
-                >
-                  <ExternalLink size={15} />
-                  <span>YouTube</span>
-                </a>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Calendar size={15} />
-                <span>Siaran langsung pada: {dateFormatted} WIB</span>
-              </div>
+              <span className={`platform-badge ${video.platform}`} style={{ position: 'static' }}>
+                {video.platform === 'idn' ? 'IDN' : 'Showroom'}
+              </span>
             </div>
           </div>
         </div>
@@ -132,12 +105,12 @@ export default async function WatchPage({ params }: WatchPageProps) {
         {/* Right Column: Related Videos */}
         <aside>
           <h2 className="sidebar-title">
-            Rekaman Terkait {video.streamer_name}
+            Lainnya dari {video.streamer_name}
           </h2>
 
           {filteredRelated.length === 0 ? (
             <p style={{ color: 'var(--text-tertiary)', fontSize: '0.88rem' }}>
-              Belum ada rekaman arsip lain untuk member ini.
+              Belum ada rekaman lain.
             </p>
           ) : (
             <div className="related-list">
