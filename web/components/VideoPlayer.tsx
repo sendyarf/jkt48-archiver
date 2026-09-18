@@ -219,7 +219,7 @@ export default function VideoPlayer({
     }, 3500);
   }, []);
 
-  const handleTapScreen = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+  const handleTapScreen = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     if (
       target.closest('.player-controls-bottom') ||
@@ -229,6 +229,11 @@ export default function VideoPlayer({
       return;
     }
 
+    // Interaksi pertama user = gestur sah untuk unmute.
+    if (playerRef.current?.muted) {
+      playerRef.current.muted = false;
+      setIsMuted(false);
+    }
     if (!playerRef.current) return;
     if (playerRef.current.paused) {
       playerRef.current.play().catch(() => {});
@@ -246,9 +251,14 @@ export default function VideoPlayer({
   const togglePlayPause = (e?: React.MouseEvent) => {
     e?.stopPropagation();
     if (!playerRef.current) return;
+    // Interaksi pertama user = gestur sah untuk unmute (kebijakan autoplay
+    // Chrome/Brave/Safari mobile). Setelah itu video bersuara normal.
+    if (playerRef.current.muted) {
+      playerRef.current.muted = false;
+      setIsMuted(false);
+    }
     if (playerRef.current.paused) {
       // Optimistis: ikon langsung ganti agar tap terasa responsif.
-      // Event onPlay/onPause milik Vidstack tetap jadi sumber kebenaran akhir.
       setIsPaused(false);
       playerRef.current.play().catch(() => {
         // Gagal mulai (mis. diblokir browser) → kembalikan ikon.
@@ -268,6 +278,10 @@ export default function VideoPlayer({
     const nextMuted = !isMuted;
     playerRef.current.muted = nextMuted;
     setIsMuted(nextMuted);
+    if (!nextMuted) {
+      // Unmute dari tombol = juga gestur; pastikan pemutaran lanjut.
+      if (playerRef.current.paused) playerRef.current.play().catch(() => {});
+    }
     wakeControls();
   };
 
@@ -448,6 +462,10 @@ export default function VideoPlayer({
         onTouchStart={wakeControls}
       >
         {/* Vidstack Media Player */}
+        {/* muted + autoplay: Chrome/Brave mobile menolak autoplay dengan suara,
+            dan penolakan itu bisa membuat player macet di status "hang" sehingga
+            tombol play terasa mati. Mulai senyap lalu unmute hanya ketika user
+            berinteraksi (gestur) = pola yang diterima semua browser mobile. */}
         <MediaPlayer
           ref={playerRef}
           title={title}
@@ -455,9 +473,8 @@ export default function VideoPlayer({
           poster={effectivePoster}
           aspectRatio={effectiveRatio}
           autoplay
-          muted={false}
+          muted
           playsInline
-          volume={volume}
           style={getPlayerStyle() as PlayerStyle}
           onCanPlay={() => setIsReady(true)}
           onPlay={() => { setIsPaused(false); wakeControls(); }}
