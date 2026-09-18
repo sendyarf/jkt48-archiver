@@ -140,19 +140,6 @@ button {
   gap: 12px;
 }
 
-.brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  flex-shrink: 0;
-  border-radius: var(--radius-md);
-  background: linear-gradient(135deg, var(--rose-500), var(--rose-600));
-  box-shadow: var(--rose-glow);
-  color: #fff;
-}
-
 .brand-title {
   font-size: 1.25rem;
   font-weight: 800;
@@ -273,11 +260,6 @@ button {
   .brand {
     min-width: 0;
     flex: 1 1 auto;
-  }
-
-  .brand-mark {
-    width: 36px;
-    height: 36px;
   }
 
   .brand-title {

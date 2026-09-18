@@ -27,7 +27,7 @@ try {
         scrollWidth: document.documentElement.scrollWidth,
         text: document.body.innerText,
         brand: document.querySelector('.brand-title')?.textContent,
-        logo48: !!document.querySelector('.brand-logo'),
+        logo48: !!document.querySelector('.brand-logo, .brand-mark'),
         navToggleVisible: (() => { const el = document.querySelector('.nav-toggle'); if (!el) return null; return getComputedStyle(el).display !== 'none'; })(),
         navMenuDisplay: (() => { const el = document.querySelector('.nav-menu'); if (!el) return null; return getComputedStyle(el).display; })(),
         heroH1: (() => { const el = document.querySelector('.catalog-hero h1'); if (!el) return null; const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return { size: s.fontSize, overflows: r.width > innerWidth + 1 }; })(),
