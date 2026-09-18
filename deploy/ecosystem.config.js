@@ -13,6 +13,12 @@ const path = require('node:path');
 const repoRoot = path.resolve(__dirname, '..');
 const webRoot = path.join(repoRoot, 'web');
 
+// Python untuk bot: venv repo bila ada (Linux), kalau tidak pakai python3 sistem.
+// path.join dipakai agar tetap valid di Windows saat file ini dicek sintaksnya.
+const fs = require('node:fs');
+const venvPython = path.join(repoRoot, '.venv', 'bin', 'python');
+const botPython = fs.existsSync(venvPython) ? venvPython : 'python3';
+
 module.exports = {
   apps: [
     {
@@ -39,7 +45,9 @@ module.exports = {
     {
       name: 'jkt48-archiver-bot',
       cwd: repoRoot,
-      script: 'python3',
+      // Pakai python dari venv repo bila ada; jatuh ke python3 sistem bila tidak.
+      // Tanpa ini PM2 memakai python3 sistem yang tidak punya dependency bot.
+      script: botPython,
       args: '-m bot.main',
       interpreter: 'none',
       autorestart: true,
