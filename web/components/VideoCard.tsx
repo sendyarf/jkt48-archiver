@@ -38,9 +38,11 @@ export default function VideoCard({ video }: { video: VideoItem }) {
           }}
         />
         <span className={`platform-badge ${video.platform}`}>
-          {video.platform === 'idn' ? 'IDN Live' : 'Showroom'}
+          {video.platform === 'idn' ? 'IDN' : 'Showroom'}
         </span>
-        <span className="duration-badge">{video.duration_formatted}</span>
+        {video.duration_formatted ? (
+          <span className="duration-badge">{video.duration_formatted}</span>
+        ) : null}
         
         <div className="play-hover-overlay">
           <div className="play-btn-circle">

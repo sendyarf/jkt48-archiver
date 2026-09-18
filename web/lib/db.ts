@@ -125,15 +125,54 @@ export interface VideoItem {
 }
 
 function cleanDisplayName(username: string, name?: string): string {
-  if (name && name.trim() && name.toLowerCase() !== username.toLowerCase()) {
+  const normalizedUsername = (username || '').trim();
+  const fallbackName = normalizedUsername.toLowerCase().startsWith('jkt48_')
+    ? normalizedUsername.slice(5).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) + ' JKT48'
+    : normalizedUsername;
+  if (name && name.trim() && name.trim().toLowerCase() !== normalizedUsername.toLowerCase()) {
     return name.trim();
   }
-  // Convert 'jkt48_aralie' -> 'Aralie JKT48'
-  if (username.startsWith('jkt48_')) {
-    const raw = username.replace('jkt48_', '');
-    return raw.charAt(0).toUpperCase() + raw.slice(1) + ' JKT48';
+  if (fallbackName) return fallbackName;
+  return normalizedUsername;
+}
+
+/**
+ * Judul tampilan yang konsisten untuk seluruh halaman publik & admin:
+ *   "LIVE IDN NAMA MEMBER - 15 September 2026 | 16:37 WIB"
+ *
+ * Judul asli live (`live_title`) tidak dipakai karena diketik member secara
+ * bebas: tidak konsisten, bisa berubah di tengah live, bisa kosong, dan tidak
+ * memuat tanggal. Format seragam membuat user langsung tahu platform, member,
+ * dan waktu replay tanpa membuka halaman watch.
+ */
+const ID_MONTHS = [
+  'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+  'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
+];
+
+function parseStoredDate(value: string): Date | null {
+  const text = (value || '').trim().replace(/Z$/i, '+00:00');
+  if (!text) return null;
+  const parsed = new Date(text);
+  return isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function buildDisplayTitle(
+  platform: string,
+  streamerName: string,
+  startedAt: string,
+): string {
+  const platformLabel = platform === 'showroom' ? 'SHOWROOM' : 'IDN';
+  const name = (streamerName || '').trim().toUpperCase() || 'JKT48';
+  const parsed = parseStoredDate(startedAt);
+  if (!parsed) {
+    return `LIVE ${platformLabel} ${name}`.slice(0, 100);
   }
-  return username;
+  const wib = new Date(parsed.getTime() + (7 * 60 + parsed.getTimezoneOffset()) * 60000);
+  const hours = String(wib.getHours()).padStart(2, '0');
+  const minutes = String(wib.getMinutes()).padStart(2, '0');
+  const datePart = `${wib.getDate()} ${ID_MONTHS[wib.getMonth()]} ${wib.getFullYear()}`;
+  return `LIVE ${platformLabel} ${name} - ${datePart} | ${hours}:${minutes} WIB`.slice(0, 100);
 }
 
 /** Normalisasi nilai platform dari database ke tipe yang dipakai UI. */
@@ -223,17 +262,19 @@ export function getAllVideos(options: {
 
   const videos: VideoItem[] = rows.map((r) => {
     const dispName = cleanDisplayName(r.member_username, r.streamer_name || undefined);
-    const title = r.title && r.title.trim() ? r.title : `Live Streaming ${dispName}`;
+    const startedAt = r.started_at || r.created_at || '';
+    const platform = normalizePlatform(r.platform);
+    const title = buildDisplayTitle(platform, dispName, startedAt);
     const ytId = r.youtube_video_id;
     return {
       id: ytId,
-      platform: normalizePlatform(r.platform),
+      platform: platform,
       streamer_username: r.member_username,
       streamer_name: dispName,
       title: title,
-      started_at: r.started_at || r.created_at || '',
+      started_at: startedAt,
       duration_seconds: 0,
-      duration_formatted: 'Live Replay',
+      duration_formatted: '',
       youtube_video_id: ytId,
       thumbnail_url: `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`,
       created_at: r.created_at || '',
@@ -255,6 +296,7 @@ interface VideoDetailRow {
   title: string | null;
   started_at: string | null;
   created_at: string | null;
+  download_ended_at: string | null;
   youtube_video_id: string | null;
 }
 
@@ -282,18 +324,20 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   if (!r) return null;
 
   const dispName = cleanDisplayName(r.member_username, r.streamer_name || undefined);
-  const title = r.title && r.title.trim() ? r.title : `Live Streaming ${dispName}`;
+  const startedAt = r.started_at || r.created_at || '';
+  const platform = normalizePlatform(r.platform);
+  const title = buildDisplayTitle(platform, dispName, startedAt);
   const ytId = r.youtube_video_id || '';
 
   return {
     id: ytId,
-    platform: normalizePlatform(r.platform),
+    platform: platform,
     streamer_username: r.member_username,
     streamer_name: dispName,
     title: title,
-    started_at: r.started_at || r.created_at || '',
+    started_at: startedAt,
     duration_seconds: 0,
-    duration_formatted: 'Live Replay',
+    duration_formatted: '',
     youtube_video_id: ytId,
     thumbnail_url: ytId ? `https://img.youtube.com/vi/${ytId}/maxresdefault.jpg` : '',
     created_at: r.created_at || '',
@@ -332,23 +376,50 @@ export interface Publication {
   hours_since_end: number | null;
 }
 
+export interface Publication {
+  youtube_video_id: string;
+  title: string;
+  member_name: string;
+  published: number;
+  decided: number;
+  visible: number;
+  hours_since_end: number | null;
+}
+
 export function getPublications(search = '', page = 1) {
   const filter = `%${search.slice(0, 100)}%`;
   const rows = getDb().prepare(`SELECT ls.youtube_video_id,
-    COALESCE(NULLIF(MAX(mg.live_title), ''), 'Live Replay') AS title,
     COALESCE(NULLIF(MAX(ls.member_name), ''), ls.member_username) AS member_name,
+    COALESCE(MAX(mh.display_name), '') AS display_name,
+    ls.member_username AS member_username,
+    COALESCE(NULLIF(MAX(ls.platform), ''), 'idn') AS platform,
+    MIN(ls.started_at) AS started_at,
     COALESCE(MAX(p.published), 0) AS published,
     CASE WHEN MAX(p.youtube_video_id) IS NULL THEN 0 ELSE 1 END AS decided,
     MAX(${publicVisibilitySql('ls')}) AS visible,
     MAX((julianday('now') - julianday(COALESCE(ls.download_ended_at, ls.created_at))) * 24) AS hours_since_end
     FROM live_sessions ls
     LEFT JOIN merge_groups mg ON mg.id = ls.merge_group_id
+    LEFT JOIN member_hls mh ON ls.member_username = mh.username
     LEFT JOIN web_publications p ON p.youtube_video_id = ls.youtube_video_id
     WHERE ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != ''
-    AND (ls.member_username LIKE ? OR ls.member_name LIKE ? OR mg.live_title LIKE ?)
+    AND (ls.member_username LIKE ? OR ls.member_name LIKE ? OR mg.live_title LIKE ? OR mh.display_name LIKE ?)
     GROUP BY ls.youtube_video_id ORDER BY MAX(ls.created_at) DESC LIMIT 51 OFFSET ?`)
-    .all(filter, filter, filter, (page - 1) * 50) as unknown as Publication[];
-  return { videos: rows.slice(0, 50), hasMore: rows.length > 50 };
+    .all(filter, filter, filter, filter, (page - 1) * 50) as unknown as (Publication & {
+      member_username: string;
+      display_name: string;
+      platform: string;
+      started_at: string | null;
+    })[];
+  const videos: Publication[] = rows.map((row) => ({
+    ...row,
+    title: buildDisplayTitle(
+      row.platform,
+      cleanDisplayName(row.member_username, row.display_name || row.member_name || undefined),
+      row.started_at || '',
+    ),
+  }));
+  return { videos: videos.slice(0, 50), hasMore: rows.length > 50 };
 }
 
 export function setPublication(videoId: string, published: boolean): boolean {

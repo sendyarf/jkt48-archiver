@@ -24,17 +24,17 @@ const temp = mkdtempSync(join(tmpdir(), 'jkt48-auto-'));
 const dbPath = join(temp, 'fixture.db');
 const db = new DatabaseSync(dbPath);
 
-const OLD = 'LAMA_OTOMATIS';
-const RECENT = 'BARU_BELUM_RILIS';
-const WITHHELD = 'LAMA_DITAHAN_ADMIN';
-const FAST = 'BARU_TERBIT_MANUAL';
+const OLD_ID = 'AAAAAAAAAAA';
+const RECENT_ID = 'BBBBBBBBBBB';
+const WITHHELD_ID = 'CCCCCCCCCCC';
+const FAST_ID = 'DDDDDDDDDDD';
 
 db.exec(`CREATE TABLE member_hls (username TEXT PRIMARY KEY, display_name TEXT, enabled INTEGER, hls_confirmed INTEGER, last_live_at TEXT);
 CREATE TABLE merge_groups (id INTEGER PRIMARY KEY, live_title TEXT, live_key TEXT);
 CREATE TABLE live_sessions (id INTEGER PRIMARY KEY, live_id TEXT, member_username TEXT, member_name TEXT, merge_group_id INTEGER, started_at TEXT, created_at TEXT, download_ended_at TEXT, youtube_video_id TEXT, status TEXT, file_size_bytes INTEGER);
 CREATE TABLE web_publications (youtube_video_id TEXT PRIMARY KEY, published INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')));
 INSERT INTO member_hls VALUES ('jkt48_uji', 'Uji Member', 1, 1, NULL);
-INSERT INTO merge_groups VALUES (1, '${OLD}', 'k1'), (2, '${RECENT}', 'k2'), (3, '${WITHHELD}', 'k3'), (4, '${FAST}', 'k4');
+INSERT INTO merge_groups VALUES (1, 'UNUSED_GROUP_TITLE_OLD', 'k1'), (2, 'UNUSED_GROUP_TITLE_RECENT', 'k2'), (3, 'UNUSED_GROUP_TITLE_WITHHELD', 'k3'), (4, 'UNUSED_GROUP_TITLE_FAST', 'k4');
 INSERT INTO live_sessions VALUES (1, 'auto-old', 'jkt48_uji', 'Uji Member', 1, datetime('now','-100 hours'), datetime('now','-100 hours'), datetime('now','-99 hours'), 'AAAAAAAAAAA', 'done_youtube', 1);
 INSERT INTO live_sessions VALUES (2, 'auto-recent', 'jkt48_uji', 'Uji Member', 2, datetime('now','-10 hours'), datetime('now','-10 hours'), datetime('now','-9 hours'), 'BBBBBBBBBBB', 'done_youtube', 1);
 INSERT INTO live_sessions VALUES (3, 'auto-withheld', 'jkt48_uji', 'Uji Member', 3, datetime('now','-100 hours'), datetime('now','-100 hours'), datetime('now','-99 hours'), 'CCCCCCCCCCC', 'done_youtube', 1);
@@ -100,10 +100,12 @@ try {
   await assertOwnFixture(s72);
 
   const html = await (await fetch(s72.origin + '/')).text();
-  assert.match(html, new RegExp(OLD), 'Rekaman lewat 72 jam harus tampil otomatis');
-  assert.match(html, new RegExp(FAST), 'Rekaman yang diterbitkan manual harus tampil');
-  assert.doesNotMatch(html, new RegExp(RECENT), 'Rekaman yang belum lewat 72 jam harus tersembunyi');
-  assert.doesNotMatch(html, new RegExp(WITHHELD), 'Rekaman yang ditahan admin harus tetap tersembunyi');
+  assert.match(html, new RegExp(OLD_ID), 'Rekaman lewat 72 jam harus tampil otomatis');
+  assert.match(html, new RegExp(FAST_ID), 'Rekaman yang diterbitkan manual harus tampil');
+  assert.doesNotMatch(html, new RegExp(RECENT_ID), 'Rekaman yang belum lewat 72 jam harus tersembunyi');
+  assert.doesNotMatch(html, new RegExp(WITHHELD_ID), 'Rekaman yang ditahan admin harus tetap tersembunyi');
+  // Judul tampilan memakai format seragam, bukan judul bebas dari database.
+  assert.match(html, /LIVE IDN UJI MEMBER/);
 
   assert.equal((await fetch(s72.origin + '/watch/AAAAAAAAAAA')).status, 200, 'watch rekaman otomatis harus 200');
   assert.equal((await fetch(s72.origin + '/watch/DDDDDDDDDDD')).status, 200, 'watch rekaman manual harus 200');
@@ -133,16 +135,16 @@ try {
   // Admin menahan rekaman yang tadinya otomatis → harus hilang dari publik.
   assert.equal((await post(s72, '/api/admin/publications', { youtube_video_id: 'AAAAAAAAAAA', published: false }, cookie)).status, 200);
   const afterWithhold = await (await fetch(s72.origin + '/')).text();
-  assert.doesNotMatch(afterWithhold, new RegExp(OLD), 'Setelah ditahan admin, rekaman otomatis harus hilang');
-  assert.match(afterWithhold, new RegExp(FAST), 'Rekaman manual lain tidak boleh terpengaruh');
+  assert.doesNotMatch(afterWithhold, new RegExp(OLD_ID), 'Setelah ditahan admin, rekaman otomatis harus hilang');
+  assert.match(afterWithhold, new RegExp(FAST_ID), 'Rekaman manual lain tidak boleh terpengaruh');
 
   // ── Bagian 2: AUTO_PUBLISH_AFTER_HOURS = 0 (wajib manual) ───────────────
   const s0 = startServer(PORT_AUTO_OFF, 0);
   await waitReady(s0);
   await assertOwnFixture(s0);
   const html0 = await (await fetch(s0.origin + '/')).text();
-  assert.doesNotMatch(html0, new RegExp(OLD), 'Dengan auto=0, rekaman lama harus tetap tersembunyi');
-  assert.match(html0, new RegExp(FAST), 'Publikasi manual tetap berlaku saat auto=0');
+  assert.doesNotMatch(html0, new RegExp(OLD_ID), 'Dengan auto=0, rekaman lama harus tetap tersembunyi');
+  assert.match(html0, new RegExp(FAST_ID), 'Publikasi manual tetap berlaku saat auto=0');
   assert.equal((await fetch(s0.origin + '/watch/AAAAAAAAAAA')).status, 404, 'Dengan auto=0, watch rekaman lama harus 404');
 
   console.log('PASS: rilis otomatis 72 jam, keputusan admin menang atas otomatis, ambang 0 mematikan rilis otomatis.');
