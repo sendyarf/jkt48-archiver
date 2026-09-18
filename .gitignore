@@ -1,5 +1,7 @@
 client_secret.json
+client_secret*.json
 youtube_token.json
+youtube_token*.json
 *.session
 *.session.bak
 .env

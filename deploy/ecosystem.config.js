@@ -19,9 +19,9 @@ module.exports = {
       name: 'jkt48-web',
       cwd: webRoot,
       script: 'node_modules/next/dist/bin/next',
-      // -H 127.0.0.1: hanya loopback, sehingga port 3000 tidak terekspos ke internet.
+      // -H 127.0.0.1: hanya loopback, sehingga port 3101 tidak terekspos ke internet.
       // Semua trafik publik harus lewat nginx.
-      args: 'start -p 3000 -H 127.0.0.1',
+      args: 'start -p 3101 -H 127.0.0.1',
       interpreter: 'node',
       env: { NODE_ENV: 'production' },
       // Mode fork 1 instance, bukan cluster: database SQLite hanya menerima satu

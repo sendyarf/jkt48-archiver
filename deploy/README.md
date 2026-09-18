@@ -15,7 +15,7 @@ Runbook untuk menjalankan arsip JKT48 di VPS Linux dengan domain
 Internet
    │  https://jkt48.vidx.download
    ▼
-nginx (443, TLS)  ──►  127.0.0.1:3000  ─►  Next.js (PM2: jkt48-web)
+nginx (443, TLS)  ──►  127.0.0.1:3101  ─►  Next.js (PM2: jkt48-web)
                                               │
                                               ▼
                                      jkt48_live.db (SQLite, ditulis bersama)
@@ -24,7 +24,7 @@ nginx (443, TLS)  ──►  127.0.0.1:3000  ─►  Next.js (PM2: jkt48-web)
                                      Bot Python (PM2: jkt48-archiver-bot)
 ```
 
-Port 3000 **sengaja hanya mendengarkan loopback** (`-H 127.0.0.1`), jadi tidak
+Port 3101 **sengaja hanya mendengarkan loopback** (`-H 127.0.0.1`), jadi tidak
 bisa diakses langsung dari internet. Semua trafik wajib lewat nginx.
 
 ## Prasyarat
@@ -257,8 +257,8 @@ curl -s https://jkt48.vidx.download | grep -c "JKT48"
 # 3. Halaman admin terlindungi (harapan: 307 ke /login)
 curl -sI https://jkt48.vidx.download/admin/status | grep -i location
 
-# 4. Port 3000 TIDAK boleh terbuka dari luar
-curl -sI --max-time 5 http://<IP_PUBLIK>:3000 | head -1   # harapan: gagal/timeout
+# 4. Port 3101 TIDAK boleh terbuka dari luar
+curl -sI --max-time 5 http://<IP_PUBLIK>:3101 | head -1   # harapan: gagal/timeout
 ```
 
 Terakhir, uji **login sungguhan di browser** ke
