@@ -251,10 +251,13 @@ class JKT48LiveBot:
         file_path: str,
         thumbnail_url: str = "",
         live_title: str = "",
+        platform: str = "",
     ) -> None:
         """
         Callback executed by MergeManager when a video (single or merged)
         is ready to be uploaded to YouTube after the merge window expires.
+        `platform` diteruskan oleh merger; bila kosong (mis. jalur pending
+        upload lama), platform ditebak dari live_id / database.
         """
         path = Path(file_path)
         group_id: Optional[int] = None
@@ -263,6 +266,10 @@ class JKT48LiveBot:
                 group_id = int(live_id.split("_")[1])
             except (IndexError, ValueError):
                 pass
+
+        # Platform untuk judul/deskripsi: dari merger bila ada, lalu prefix
+        # live_id (`sr_`), lalu database (live_sessions → merge_groups).
+        plat = platform or database.get_platform_for_live(live_id, group_id)
 
         def set_status(status: str, **kwargs) -> None:
             if group_id is not None:
@@ -320,8 +327,12 @@ class JKT48LiveBot:
                 file_size_bytes=file_size,
             )
 
-            title = self.yt_pool.build_title(member_name or member_username, started_at)
-            desc = self.yt_pool.build_description(member_name or member_username, member_username, started_at)
+            title = self.yt_pool.build_title(
+                member_name or member_username, started_at, plat
+            )
+            desc = self.yt_pool.build_description(
+                member_name or member_username, member_username, started_at, plat
+            )
 
             logger.info("Uploading video to YouTube for %s (%s): %s", member_name, live_id, title)
 

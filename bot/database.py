@@ -294,6 +294,33 @@ def get_session(live_id: str) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
+def get_platform_for_live(live_id: str, merge_group_id: Optional[int] = None) -> str:
+    """
+    Platform untuk sebuah live, dipakai saat menyusun judul upload.
+
+    Urutan: prefix live_id (`sr_` = Showroom) → kolom platform live_sessions →
+    platform merge_groups (untuk live_id `merged_<gid>` yang tidak punya baris
+    live_sessions) → default 'idn'.
+    """
+    if live_id.startswith("sr_"):
+        return "showroom"
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT platform FROM live_sessions WHERE live_id = ? LIMIT 1",
+            (live_id,),
+        ).fetchone()
+        if row and row["platform"]:
+            return row["platform"]
+        if merge_group_id is not None:
+            grp = conn.execute(
+                "SELECT platform FROM merge_groups WHERE id = ?",
+                (merge_group_id,),
+            ).fetchone()
+            if grp and grp["platform"]:
+                return grp["platform"]
+    return "idn"
+
+
 def get_pending_uploads() -> list:
     """Return sessions that finished downloading but not yet uploaded."""
     with _get_conn() as conn:

@@ -184,43 +184,67 @@ class YouTubeChannelPool:
 
         return None, None
 
+    # Bulan Indonesia — judul YouTube dibuat identik dengan format judul website
+    # (web/lib/wib.ts buildDisplayTitle): "LIVE IDN NAMA - 15 September 2026 | 16:37 WIB".
+    _ID_MONTHS = {
+        1: "Januari", 2: "Februari", 3: "Maret", 4: "April", 5: "Mei", 6: "Juni",
+        7: "Juli", 8: "Agustus", 9: "September", 10: "Oktober", 11: "November", 12: "Desember",
+    }
+
     @staticmethod
-    def build_title(member_name: str, started_at: Optional[str] = None) -> str:
+    def build_title(
+        member_name: str,
+        started_at: Optional[str] = None,
+        platform: str = "idn",
+    ) -> str:
         """
-        Build compact YouTube video title:
-        Format: 'IDN LIVE [display_name] [DD-MM-YYYY HH:MM]'
+        Build YouTube video title, identik dengan judul di website:
+        Format: 'LIVE IDN NAMA - 18 September 2026 | 20:18 WIB'
+                'LIVE SHOWROOM NAMA - 18 September 2026 | 20:18 WIB'
 
-        Jam ditampilkan di zona waktu penonton (DISPLAY_TIMEZONE_OFFSET_HOURS),
-        bukan waktu dinding server — VPS bisa berjalan di UTC+9 (Seoul).
+        Jam ditampilkan di zona waktu penonton (DISPLAY_TIMEZONE_OFFSET_HOURS)
+        dengan label (DISPLAY_TIMEZONE_LABEL), bukan waktu dinding server.
+        Nama member di-HURUF KAPITAL seperti versi web agar keduanya serasi.
         """
-        fmt = "%d-%m-%Y %H:%M"
-        dt_str = ""
-        if started_at:
-            dt_str = timeutil.format_display(
-                started_at,
-                fmt,
-                Config.DISPLAY_TIMEZONE_OFFSET_HOURS,
-                Config.LEGACY_NAIVE_TIME_OFFSET_HOURS,
-            )
-        if not dt_str:
-            dt_str = timeutil.format_display(
-                timeutil.utc_now_iso(),
-                fmt,
-                Config.DISPLAY_TIMEZONE_OFFSET_HOURS,
-                Config.LEGACY_NAIVE_TIME_OFFSET_HOURS,
-            )
+        plat_label = "SHOWROOM" if platform == "showroom" else "IDN"
+        name = (member_name or "").strip().upper() or "JKT48"
 
-        name = member_name.strip() if member_name else "JKT48"
-        title = f"IDN LIVE {name} {dt_str}"
+        converted = timeutil.to_display(
+            started_at,
+            Config.DISPLAY_TIMEZONE_OFFSET_HOURS,
+            Config.LEGACY_NAIVE_TIME_OFFSET_HOURS,
+        )
+        if converted is not None:
+            date_part = (
+                f"{converted.day} "
+                f"{YouTubeChannelPool._ID_MONTHS[converted.month]} {converted.year}"
+            )
+            time_part = converted.strftime("%H:%M")
+            title = (
+                f"LIVE {plat_label} {name} - {date_part} | "
+                f"{time_part} {Config.DISPLAY_TIMEZONE_LABEL}"
+            )
+        else:
+            # Nilai waktu tidak terbaca → sama seperti fallback website:
+            # judul tanpa tanggal.
+            title = f"LIVE {plat_label} {name}"
+
         # YouTube title limit is 100 characters
         return title[:100]
 
     @staticmethod
-    def build_description(member_name: str, member_username: str, started_at: str) -> str:
+    def build_description(
+        member_name: str,
+        member_username: str,
+        started_at: str,
+        platform: str = "idn",
+    ) -> str:
+        source = "Showroom Live" if platform == "showroom" else "IDN Live"
+        tags = "#JKT48 #ShowroomLive" if platform == "showroom" else "#JKT48 #IDNLive"
         return (
             f"JKT48 Live Recording\n"
             f"Member: {member_name} (@{member_username})\n"
             f"Live at: {started_at}\n\n"
-            f"Recorded from IDN Live.\n"
-            f"#JKT48 #IDNLive"
+            f"Recorded from {source}.\n"
+            f"{tags}"
         )

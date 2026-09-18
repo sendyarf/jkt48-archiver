@@ -64,7 +64,7 @@ class MergeManager:
         on_upload_ready: async callback function signature:
           async def callback(live_id: str, member_username: str, member_name: str,
                              started_at: str, file_path: str, thumbnail_url: str,
-                             live_title: str)
+                             live_title: str, platform: str)
 
         probe_active (WAJIB efektif): async callback (username, platform)
           -> True (stream masih mengalir) / False (offline) / None (tidak diketahui)
@@ -428,6 +428,12 @@ class MergeManager:
             return
 
         group = get_merge_group(group_id)
+        # Platform grup menentukan label judul upload (IDN / SHOWROOM).
+        group_platform = ""
+        if group:
+            group_platform = group.get("platform") or "idn"
+        else:
+            group_platform = (valid_segments[0].get("platform") or "idn") if valid_segments else "idn"
         meta_member_name = group["member_name"] if group else member_username
         meta_started_at = group["started_at"] if group else timeutil.utc_now_iso()
         meta_thumbnail_url = group.get("thumbnail_url", "") if group else ""
@@ -456,6 +462,7 @@ class MergeManager:
                             file_path=seg["file_path"],
                             thumbnail_url=meta_thumbnail_url,
                             live_title=meta_live_title,
+                            platform=group_platform,
                         )
                 fail_merge_group(group_id)
                 return
@@ -473,6 +480,7 @@ class MergeManager:
                 file_path=merged_path,
                 thumbnail_url=meta_thumbnail_url,
                 live_title=meta_live_title,
+                platform=group_platform,
             )
 
         # Cleanup individual segment files after successful merged output
