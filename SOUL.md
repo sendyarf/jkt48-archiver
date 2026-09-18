@@ -117,7 +117,7 @@ Saklar pemantauan channel = **`member_hls.enabled`** (bukan `members.txt`):
 (dan `failed` pada error; `download_complete` juga menandakan segmen menunggu merge).
 
 ## 7. Catatan Operasional
-- Jalankan: `python -m bot.main` atau via PM2 `pm2 start "python -m bot.main" --name jkt48-live-bot`.
+- Jalankan: `python -m bot.main` atau via PM2 `pm2 start "python -m bot.main" --name jkt48-archiver-bot`.
 - DB & file rekaman disimpan di `DOWNLOAD_DIR` (default `/tmp/jkt48-lives`).
 - File lokal dihapus hanya setelah upload **sukses penuh** (`uploaded_ok`).
 - Test: `python -m unittest discover -s tests -t .`

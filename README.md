@@ -315,7 +315,7 @@ python3 -m bot.seed_showroom --dry-run   # lihat rencana
 python3 -m bot.seed_showroom             # tulis 58 room
 # lalu di .env:
 # SHOWROOM_ENABLED=true
-pm2 restart jkt48-live-bot
+pm2 restart jkt48-archiver-bot
 ```
 
 Selama `SHOWROOM_ENABLED=false`, bot berjalan **persis seperti sebelumnya** —
@@ -436,7 +436,7 @@ pm2 logs
 
 Menjalankan bot saja, tanpa website:
 ```bash
-pm2 start "python3 -m bot.main" --name jkt48-live-bot
+pm2 start "python3 -m bot.main" --name jkt48-archiver-bot
 ```
 
 ### Website (Next.js)

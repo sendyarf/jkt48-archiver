@@ -21,7 +21,7 @@ nginx (443, TLS)  ──►  127.0.0.1:3000  ─►  Next.js (PM2: jkt48-web)
                                      jkt48_live.db (SQLite, ditulis bersama)
                                               ▲
                                               │
-                                     Bot Python (PM2: jkt48-live-bot)
+                                     Bot Python (PM2: jkt48-archiver-bot)
 ```
 
 Port 3000 **sengaja hanya mendengarkan loopback** (`-H 127.0.0.1`), jadi tidak

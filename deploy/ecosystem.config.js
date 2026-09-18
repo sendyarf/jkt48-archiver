@@ -37,7 +37,7 @@ module.exports = {
       error_file: path.join(repoRoot, 'logs', 'web-error.log'),
     },
     {
-      name: 'jkt48-live-bot',
+      name: 'jkt48-archiver-bot',
       cwd: repoRoot,
       script: 'python3',
       args: '-m bot.main',
