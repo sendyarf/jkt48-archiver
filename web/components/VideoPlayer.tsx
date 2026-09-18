@@ -219,7 +219,7 @@ export default function VideoPlayer({
     }, 3500);
   }, []);
 
-  const handleTapScreen = useCallback((e: React.MouseEvent) => {
+  const handleTapScreen = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     const target = e.target as HTMLElement;
     if (
       target.closest('.player-controls-bottom') ||
@@ -434,7 +434,7 @@ export default function VideoPlayer({
         style={getContainerStyle()}
         onClick={handleTapScreen}
         onMouseMove={wakeControls}
-        onTouchStart={wakeControls}
+        onTouchEnd={handleTapScreen}
       >
         {/* Vidstack Media Player */}
         <MediaPlayer
