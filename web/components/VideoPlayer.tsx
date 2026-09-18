@@ -439,7 +439,13 @@ export default function VideoPlayer({
         className={`player-inner-container ${isVertical ? `vertical-player-container ratio-${fitMode}` : 'horizontal-player-container'}`}
         style={getContainerStyle()}
         onClick={handleTapScreen}
-        onMouseMove={wakeControls}
+        // onMouseMove hanya terpicu di desktop (pointer: fine). onPointerMove
+        // mencakup keduanya — mouse di desktop dan jari di mobile — sehingga
+        // wakeControls juga terpanggil di layar sentuh.
+        onPointerMove={wakeControls}
+        // Satu sentuhan (tanpa geser) sudah cukup memunculkan kontrol;
+        // onPointerMove tidak terpicu bila jari tidak bergerak.
+        onTouchStart={wakeControls}
       >
         {/* Vidstack Media Player */}
         <MediaPlayer
@@ -478,7 +484,11 @@ export default function VideoPlayer({
         )}
 
         {/* Bottom Floating Control Bar */}
-        <div className={`player-controls-bottom ${controlsVisible || isPaused || volumeOpen ? 'visible' : ''}`}>
+        {/* inert saat tersembunyi: overlay transparan tidak memblokir tap di mobile */}
+        <div
+          className={`player-controls-bottom ${controlsVisible || isPaused || volumeOpen ? 'visible' : ''}`}
+          inert={controlsVisible || isPaused || volumeOpen ? undefined : (true as unknown as undefined)}
+        >
           {/* Scrubber Progress Slider */}
           <div className="scrubber-row">
             <input
