@@ -1,0 +1,507 @@
+{
+  "note": "Daftar room Showroom JKT48 yang BELUM dikurasi (diberikan pemilik proyek). Belum tersambung ke bot maupun website.",
+  "curation_status": "partially_curated",
+  "source": "daftar room Showroom (pemilik proyek)",
+  "room_count": 58,
+  "official_room_count": 1,
+  "rooms": [
+    {
+      "room_id": "317738",
+      "display_name": "Feni",
+      "showroom_name": "Feni/フェニ（JKT48）",
+      "idn_username": "jkt48_feni",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/bc8b10acffc5adee44b5d8b7dade3bc9435607fe3a766ae772ec633ac08b649b_s.jpeg?v=1768576492"
+    },
+    {
+      "room_id": "318117",
+      "display_name": "Gita",
+      "showroom_name": "Gita/ギタ（JKT48）",
+      "idn_username": "jkt48_gita",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/388fa55ee4ee2a438a34d1b0a71de03f472b76b5560203930f103850edb577c8_s.jpeg?v=1772607743"
+    },
+    {
+      "room_id": "318225",
+      "display_name": "Freya",
+      "showroom_name": "Freya/フレヤ（JKT48）",
+      "idn_username": "jkt48_freya",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/cd2b6cf94d461b64c9215d808c58d7cbf029cd8d624e5c59e9b3a10a34ecfe33_s.jpeg?v=1772532398"
+    },
+    {
+      "room_id": "318228",
+      "display_name": "Jessi",
+      "showroom_name": "Jessi/ジェシ（JKT48）",
+      "idn_username": "jkt48_jessi",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/293a846d52a0e9b04a50dafb6c0f80367256a0f3e2a7d9fdc5e92e572ad2415f_s.jpeg?v=1772624751"
+    },
+    {
+      "room_id": "318112",
+      "display_name": "Christy",
+      "showroom_name": "Christy/クリスティー（JKT48）",
+      "idn_username": "jkt48_christy",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/8b704fbdc371c9dd64fa6b2a15839ae3e912e9a5f76173d40502969a31a936f4_s.jpeg?v=1768984354"
+    },
+    {
+      "room_id": "318118",
+      "display_name": "Eli",
+      "showroom_name": "Eli/エリ（JKT48）",
+      "idn_username": "jkt48_eli",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/6ac7ec5ce772cca881de55354f99c07c0987240e057c4f2fecb11024eeaae6a6_s.jpeg?v=1768984279"
+    },
+    {
+      "room_id": "318204",
+      "display_name": "Muthe",
+      "showroom_name": "Muthe/ムテ（JKT48）",
+      "idn_username": "jkt48_muthe",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/d6cd1a52b06d7bed1bd0bda75b917eb18667e060c175952babc50733bf3a7e40_s.jpeg?v=1772434585"
+    },
+    {
+      "room_id": "318222",
+      "display_name": "Olla",
+      "showroom_name": "Olla/オラ（JKT48）",
+      "idn_username": "jkt48_olla",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/79b9c42d1f5ea5d5805fefcfac6e92198e434cd6b6244c79b309b9e93ab3f7cb_s.jpeg?v=1768984193"
+    },
+    {
+      "room_id": "318232",
+      "display_name": "Lulu",
+      "showroom_name": "Lulu /ルル （JKT48）",
+      "idn_username": "jkt48_lulu",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/b0dfb9a6b2a6d51b17d0149d72ac19992469d2734876ca2c1d55672ae91e0943_s.jpeg?v=1772375548"
+    },
+    {
+      "room_id": "318223",
+      "display_name": "Fiony",
+      "showroom_name": "Fiony /フィオニー（JKT48）",
+      "idn_username": "jkt48_fiony",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/a2345e2127cf122ef7adb9d988a41e080dbd7f0db28bfc113335b7a341b68c7e_s.jpeg?v=1772616908"
+    },
+    {
+      "room_id": "318218",
+      "display_name": "Oniel",
+      "showroom_name": "Oniel/オニエル（JKT48）",
+      "idn_username": "jkt48_oniel",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/6f5b72d14f8cf4d61ab8c16aa8b7a9c387c5f6de37f513a884b6fbadabb5784d_s.jpeg?v=1768984219"
+    },
+    {
+      "room_id": "318227",
+      "display_name": "Indah",
+      "showroom_name": "Indah/インダー（JKT48）",
+      "idn_username": "jkt48_indah",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/58f3d939319e28956fd771e0f587a347ea0fec6b5c3415067e122f4794fd3514_s.jpeg?v=1768984089"
+    },
+    {
+      "room_id": "318230",
+      "display_name": "Kathrina",
+      "showroom_name": "Kathrina/カトリナ（JKT48）",
+      "idn_username": "jkt48_kathrina",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/8da2ecaebb02c89b4f12ac22ba4b76f9777f610cdaf3194d0f556146b69f240c_s.jpeg?v=1768983958"
+    },
+    {
+      "room_id": "318233",
+      "display_name": "Marsha",
+      "showroom_name": "Marsha/マーシャ（JKT48）",
+      "idn_username": "jkt48_marsha",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/31c718d6829b5e484fac4f3284acc40a9788271be0066153cb2bb48880558507_s.jpeg?v=1768983814"
+    },
+    {
+      "room_id": "400713",
+      "display_name": "Lia",
+      "showroom_name": "Lia /リア（JKT48）",
+      "idn_username": "jkt48_lia",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/104f71ef35980e70baeb6a7ed59f18c7374f9a33bf7d1720a0581b8a0b2edb1e_s.jpeg?v=1772527583"
+    },
+    {
+      "room_id": "400717",
+      "display_name": "Lyn",
+      "showroom_name": "Lyn /リーン（JKT48）",
+      "idn_username": "jkt48_lyn",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/261d835846ccd54052d7bede79f89171d1f79af054ada2fecf81086644ff6ea4_s.jpeg?v=1768983510"
+    },
+    {
+      "room_id": "400715",
+      "display_name": "Ella",
+      "showroom_name": "Ella /エラ（JKT48）",
+      "idn_username": "jkt48_ella",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/33b9a09551fb56e388c636720e88c310983d759c7be62230d59aa4a84303e1dc_s.jpeg?v=1768983563"
+    },
+    {
+      "room_id": "400718",
+      "display_name": "Raisha",
+      "showroom_name": "Raisha /ライシャ（JKT48）",
+      "idn_username": "jkt48_raisha",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/b5e493484b3fdd07ebadfd478837295c9968208cf3721934b46611eca5cb92b8_s.jpeg?v=1768983439"
+    },
+    {
+      "room_id": "461479",
+      "display_name": "Greesel",
+      "showroom_name": "Greesel /グリーセル（JKT48）",
+      "idn_username": "jkt48_greesel",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/940f5a1692b60af65bcec53d6db81138436b4ada3b796b7f0ac69aab2c4870bd_m.jpeg?v=1772654856"
+    },
+    {
+      "room_id": "461452",
+      "display_name": "Anindya",
+      "showroom_name": "Anindya /アニンディア（JKT48）",
+      "idn_username": "jkt48_anindya",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/ab71b7dec20fb6950c5afba136808e39486665d861f0592d1457a9682f78736b_s.jpeg?v=1772656337"
+    },
+    {
+      "room_id": "461463",
+      "display_name": "Cynthia",
+      "showroom_name": "Cynthia /シンティア（JKT48）",
+      "idn_username": "jkt48_cynthia",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/e3e88b5c96d4af6c2bd0e951809d808214a6bb8837903c1d8a83fa87ad1ea080_s.jpeg?v=1772656325"
+    },
+    {
+      "room_id": "461481",
+      "display_name": "Michie",
+      "showroom_name": "Michie /ミチー（JKT48）",
+      "idn_username": "jkt48_michie",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/fc878be06fb484b4edcb8051e8456a93279b2395e711aada3d7547b1b78e3720_s.jpeg?v=1768982402"
+    },
+    {
+      "room_id": "461478",
+      "display_name": "Gracie",
+      "showroom_name": "Gracie /グレイシー（JKT48）",
+      "idn_username": "jkt48_gracie",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/510862226ac09996461772b226e5fa4a30ce574bce18672725724e0284c8fed2_s.jpeg?v=1772629221"
+    },
+    {
+      "room_id": "461475",
+      "display_name": "Elin",
+      "showroom_name": "Elin /エリン（JKT48）",
+      "idn_username": "jkt48_elin",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/d0ab8b151a1a0f7c2a69ea29624ef4ae7800ef1bee00df7f8c0c1f103331079d_s.jpeg?v=1772622892"
+    },
+    {
+      "room_id": "461465",
+      "display_name": "Daisy",
+      "showroom_name": "Daisy /デイシー（JKT48）",
+      "idn_username": "jkt48_daisy",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/a5054230e2eeeae789ccdf134345e4f3cf05801d689d9ec57397d34eae090343_s.jpeg?v=1772468256"
+    },
+    {
+      "room_id": "461466",
+      "display_name": "Danella",
+      "showroom_name": "Danella /ダネラ（JKT48）",
+      "idn_username": "jkt48_danella",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/002771d7d8969132b8749564920a354426fad0c56857e3818de960035c560ed7_s.jpeg?v=1772469478"
+    },
+    {
+      "room_id": "510016",
+      "display_name": "Levi",
+      "showroom_name": "Levi / レヴィ（JKT48）",
+      "idn_username": "jkt48_levi",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/8063737c0d03194a4a8f48a6be704c0b5c262ce326d8cdac428c75f552855166_s.jpeg?v=1772363819"
+    },
+    {
+      "room_id": "510012",
+      "display_name": "Lily",
+      "showroom_name": "Lily / リリー（JKT48）",
+      "idn_username": "jkt48_lily",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/60d4c94941de7e2ab93f05ed5eb60dd1ae7b97936422b289335be63f23d61b27_s.jpeg?v=1772457362"
+    },
+    {
+      "room_id": "510071",
+      "display_name": "Nala",
+      "showroom_name": "Nala / ナラ（JKT48）",
+      "idn_username": "jkt48_nala",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/e44adf3c6b43f688c3203dc24922621299a959827611d233c5390bc97e68e217_s.jpeg?v=1772371539"
+    },
+    {
+      "room_id": "510065",
+      "display_name": "Nachia",
+      "showroom_name": "Nachia / ナチア（JKT48）",
+      "idn_username": "jkt48_nachia",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/be9cc81c23250f46d686c9a750c5876b19f6c93234b2d3bdabc5c71ae9be4835_s.jpeg?v=1772617387"
+    },
+    {
+      "room_id": "509997",
+      "display_name": "Lana",
+      "showroom_name": "Lana / ラナ（JKT48）",
+      "idn_username": "jkt48_lana",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/bbf5793ce9431e26532a55331376e1f2428e8bc1365960f1468602383361ad68_s.jpeg?v=1768982238"
+    },
+    {
+      "room_id": "510000",
+      "display_name": "Erine",
+      "showroom_name": "Erine / エリン（JKT48）",
+      "idn_username": "jkt48_erine",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/1dcb1281d3280600c17e1881a5a97e17051f795b65b26b0ae42841acc779facd_s.jpeg?v=1772467320"
+    },
+    {
+      "room_id": "510073",
+      "display_name": "Kimmy",
+      "showroom_name": "Kimmy / キミー（JKT48）",
+      "idn_username": "jkt48_kimmy",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/b490a7a1fb00562ff0f7e481c69269bf0fd4cf0ac162ff645a999cdff204f954_s.jpeg?v=1772573788"
+    },
+    {
+      "room_id": "510064",
+      "display_name": "Nayla",
+      "showroom_name": "Nayla / ナイラ（JKT48）",
+      "idn_username": "jkt48_nayla",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/7f0a24fb6d6d354299b727610887cba42d22cd4b15c15a708bdffea42ca623cb_s.jpeg?v=1772528148"
+    },
+    {
+      "room_id": "510070",
+      "display_name": "Ribka",
+      "showroom_name": "Ribka / リブカ（JKT48）",
+      "idn_username": "jkt48_ribka",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/0ea497d76f19f795612efedadd1951482c140044483b8b67cbac909e34309363_s.jpeg?v=1772468357"
+    },
+    {
+      "room_id": "510067",
+      "display_name": "Oline",
+      "showroom_name": "Oline / オリヌ（JKT48）",
+      "idn_username": "jkt48_oline",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/f27cc7e31f0e6551324bddb0cfe6981764e160fcef0731e53af327c34f721386_s.jpeg?v=1768980037"
+    },
+    {
+      "room_id": "510013",
+      "display_name": "Trisha",
+      "showroom_name": "Trisha / トリシャ（JKT48）",
+      "idn_username": "jkt48_trisha",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/95a3d0591d9dfe7145a1bd75bf60b49cd7ca7aae7fdbd7c09b208cc7e48389ff_s.jpeg?v=1768981896"
+    },
+    {
+      "room_id": "510011",
+      "display_name": "Fritzy",
+      "showroom_name": "Fritzy / フリッツィー（JKT48）",
+      "idn_username": "jkt48_fritzy",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/f5a4b163de5618013399ceb9dca9028aa00ef7e635813ca9f06aa941024f6890_s.jpeg?v=1772626263"
+    },
+    {
+      "room_id": "509985",
+      "display_name": "Aralie",
+      "showroom_name": "Aralie / アラリー（JKT48）",
+      "idn_username": "jkt48_aralie",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/7bbb128443499700909dea11a4e2d9973c9f9c74974b3dafe269ec7b6dbc3315_s.jpeg?v=1772474663"
+    },
+    {
+      "room_id": "509992",
+      "display_name": "Delynn",
+      "showroom_name": "Delynn / デリンヌ（JKT48）",
+      "idn_username": "jkt48_delynn",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/2ad9a198ac8cc653476c6c5c3b29d8089e621299ab2cb6fa97159e92eb733d7d_m.jpeg?v=1772629108"
+    },
+    {
+      "room_id": "547065",
+      "display_name": "Ekin",
+      "showroom_name": "Ekin / エキン (JKT48)",
+      "idn_username": "jkt48_ekin",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/d4f471fdbc03db75fd995f3304f5e2447a2ae0d59aeb6ed5950712d22bd89ed3_s.jpeg?v=1771864418"
+    },
+    {
+      "room_id": "547067",
+      "display_name": "Giaa",
+      "showroom_name": "Giaa / ギアァ (JKT48)",
+      "idn_username": "jkt48_giaa",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/48f81b1bfbbbccc83c2f43d0152a0b0c3ea19a7087e5706f74c1422a93ffe071_s.jpeg?v=1743174525"
+    },
+    {
+      "room_id": "547064",
+      "display_name": "Maira",
+      "showroom_name": "Maira / マイラ (JKT48)",
+      "idn_username": "jkt48_maira",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/ab7f86c10b77097a3e43b741b066703e1be452185dfe2902d8e52cb614f13b8c_s.jpeg?v=1763886412"
+    },
+    {
+      "room_id": "547063",
+      "display_name": "Rilly",
+      "showroom_name": "Rilly / リリー (JKT48)",
+      "idn_username": "jkt48_rilly",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/75ad2813df4740316da5352c4c890cd3675d675283d73ffaf8fa67ade36c23e7_s.jpeg?v=1768317788"
+    },
+    {
+      "room_id": "547073",
+      "display_name": "Intan",
+      "showroom_name": "Intan / インタン (JKT48)",
+      "idn_username": "jkt48_intan",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/a1e1c18ae74668eb568ed90208dbde1afbb55ca8d5049387d5c06ffbfe11d41c_s.jpeg?v=1767369538"
+    },
+    {
+      "room_id": "547072",
+      "display_name": "Jemima",
+      "showroom_name": "Jemima / ジェミマ (JKT48)",
+      "idn_username": "jkt48_jemima",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/65b174ccd2430c13403e9103a8685f2f8fae0e0721a0e2388f757aec27cb29b7_s.jpeg?v=1743174511"
+    },
+    {
+      "room_id": "547066",
+      "display_name": "Mikaela",
+      "showroom_name": "Mikaela / ミカエラ (JKT48)",
+      "idn_username": "jkt48_mikaela",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/e170d79a17313b88439702bdcb9dfa5b9548eea36e2d02fd52b1721c1661ea69_s.jpeg?v=1743174538"
+    },
+    {
+      "room_id": "547061",
+      "display_name": "Virgi",
+      "showroom_name": "Virgi / ヴィルジ (JKT48)",
+      "idn_username": "jkt48_virgi",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/af8764e5f2a73e6370cc8c525fe7f31aefcb3b8571e55bb9018b1e859139b11c_s.jpeg?v=1767610054"
+    },
+    {
+      "room_id": "572572",
+      "display_name": "Carissa",
+      "showroom_name": "Carissa / カリッサ (JKT48)",
+      "room_url_key": "JKT48_Carissa",
+      "member_full_name": "Carissa Dini",
+      "idn_username": "jkt48_carissa",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/c961136f5b6f91eda8b4c9dcfb0b79b226c8fc1e90c340ab2d8a36ea21da6fe4_m.jpeg?v=1784034230",
+      "source": "verified via /api/room/profile 2026-09-18"
+    },
+    {
+      "room_id": "572573",
+      "display_name": "Bella",
+      "showroom_name": "Bella / ベラ (JKT48)",
+      "room_url_key": "JKT48_Bella",
+      "member_full_name": "Christabella Bonita",
+      "idn_username": "jkt48_bella",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/4cbd985380479526e9b45bc2b8339300f563551b6a9ce05d4879864552ebb2ef_m.jpeg?v=1783953312",
+      "source": "verified via /api/room/profile 2026-09-18"
+    },
+    {
+      "room_id": "572574",
+      "display_name": "Fahira",
+      "showroom_name": "Fahira / ファヒラ (JKT48)",
+      "room_url_key": "JKT48_Fahira",
+      "member_full_name": "Fahira Putri",
+      "idn_username": "jkt48_fahira",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/d771d6834900da5399224daccf32d99d3f6357a41e4cc8829ba5b26cfa043fad_m.jpeg?v=1784028592",
+      "source": "verified via /api/room/profile 2026-09-18"
+    },
+    {
+      "room_id": "572575",
+      "display_name": "Rara",
+      "showroom_name": "Rara / ララ (JKT48)",
+      "room_url_key": "JKT48_Rara",
+      "member_full_name": "Fatimah Azzahra",
+      "idn_username": "jkt48_rara",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/f0516c039b62c39462a30d660a3cda2cc694d550c5ee761e2d938fea73e1f66d_m.jpeg?v=1784038805",
+      "source": "verified via /api/room/profile 2026-09-18"
+    },
+    {
+      "room_id": "572576",
+      "display_name": "Maxine",
+      "showroom_name": "Maxine / マキシン (JKT48)",
+      "room_url_key": "JKT48_Maxine",
+      "member_full_name": "Maxine Faye",
+      "idn_username": "jkt48_maxine",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/6d655ea53b453945a943ff83cf6fff60e1a53f524e7c1394972d39abaa6db830_m.jpeg?v=1788176845",
+      "source": "verified via /api/room/profile 2026-09-18"
+    },
+    {
+      "room_id": "572577",
+      "display_name": "Jazzy",
+      "showroom_name": "Jazzy / ジャジー (JKT48)",
+      "room_url_key": "JKT48_Jazzy",
+      "member_full_name": "Putry Jazyta",
+      "idn_username": "jkt48_jazzy",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/de0ca7ec814d7861c5674c8e5246a8d0d288e16f9dbb442831e4e3f8079c6e97_m.jpeg?v=1784038742",
+      "source": "verified via /api/room/profile 2026-09-18"
+    },
+    {
+      "room_id": "572579",
+      "display_name": "Sona",
+      "showroom_name": "Sona / ソナ (JKT48)",
+      "room_url_key": "JKT48_Sona",
+      "member_full_name": "Sona Kalyana",
+      "idn_username": "jkt48_sona",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/6a3b327a3a00f32242918c9eecab0d570b1d37335b564019e6e0a96d740c8a63_m.jpeg?v=1784038767",
+      "source": "verified via /api/room/profile 2026-09-18"
+    },
+    {
+      "room_id": "572587",
+      "display_name": "Ralyne",
+      "showroom_name": "Ralyne / レリン (JKT48)",
+      "room_url_key": "JKT48_Ralyne",
+      "member_full_name": "Ralyne Van Irwan",
+      "idn_username": "jkt48_ralyne",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/a9c6bbd97e3f4716b0300fe24ec0b697928a9a1ca09b4cd800335b9377eb951d_m.jpeg?v=1784039559",
+      "source": "verified via /api/room/profile 2026-09-18"
+    },
+    {
+      "room_id": "572589",
+      "display_name": "Fera",
+      "showroom_name": "Fera / フェラ (JKT48)",
+      "room_url_key": "JKT48_Fera",
+      "member_full_name": "Afera Thalia",
+      "idn_username": "jkt48_fera",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/7ccc802416ec9c4316cdd507369a5478dad05a5aac7a365099c85b6aba732d17_m.jpeg?v=1784035068",
+      "source": "verified via /api/room/profile 2026-09-18"
+    },
+    {
+      "room_id": "572591",
+      "display_name": "Heidi",
+      "showroom_name": "Heidi / ヘイディ (JKT48)",
+      "room_url_key": "JKT48_Heidi",
+      "member_full_name": "Heidi Suyangga",
+      "idn_username": "jkt48_heidi",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/6ffe457b6d28058c2837b1ab7078cebf8749e14591b41bbef31b7781f5fe9896_m.jpeg?v=1789312770",
+      "source": "verified via /api/room/profile 2026-09-18"
+    }
+  ],
+  "official_rooms": [
+    {
+      "room_id": "332503",
+      "display_name": "JKT48 Official SHOWROOM",
+      "showroom_name": "JKT48 Official SHOWROOM",
+      "profile_image": "https://static.showroom-live.com/image/room/cover/73f495d564945090f4af7338a42ce09ffa12d35fbfa8ce35c856220bcf96c5f3_s.png?v=1742307128"
+    }
+  ],
+  "review_issues": [
+    "nama Jepang \"エリン\" dipakai 2 room: 461475 Elin | 510000 Erine",
+    "nama Jepang \"リリー\" dipakai 2 room: 510012 Lily | 547063 Rilly"
+  ],
+  "idn_members_without_showroom_room": [],
+  "curation_log": [
+    {
+      "date": "2026-09-18",
+      "action": "add_idn",
+      "detail": "jkt48_anindya ditambahkan ke members.txt (dikonfirmasi pemilik proyek)"
+    },
+    {
+      "date": "2026-09-18",
+      "action": "remove_rooms",
+      "detail": "dihapus karena sudah tidak di JKT48: Amanda, Alya, Cathy, Gendis, Chelsea, Auwia"
+    },
+    {
+      "date": "2026-09-18",
+      "action": "add_rooms",
+      "detail": "10 room member baru (gen 16) ditambahkan & diverifikasi via API: Carissa(572572) -> jkt48_carissa, Bella(572573) -> jkt48_bella, Fahira(572574) -> jkt48_fahira, Rara(572575) -> jkt48_rara, Maxine(572576) -> jkt48_maxine, Jazzy(572577) -> jkt48_jazzy, Sona(572579) -> jkt48_sona, Ralyne(572587) -> jkt48_ralyne, Fera(572589) -> jkt48_fera, Heidi(572591) -> jkt48_heidi"
+    }
+  ],
+  "excluded_rooms": [
+    {
+      "room_id": "400710",
+      "display_name": "Amanda",
+      "reason": "sudah tidak di JKT48 (arahan pemilik proyek)"
+    },
+    {
+      "room_id": "461451",
+      "display_name": "Alya",
+      "reason": "sudah tidak di JKT48 (arahan pemilik proyek)"
+    },
+    {
+      "room_id": "461454",
+      "display_name": "Cathy",
+      "reason": "sudah tidak di JKT48 (arahan pemilik proyek)"
+    },
+    {
+      "room_id": "461476",
+      "display_name": "Gendis",
+      "reason": "sudah tidak di JKT48 (arahan pemilik proyek)"
+    },
+    {
+      "room_id": "461458",
+      "display_name": "Chelsea",
+      "reason": "sudah tidak di JKT48 (arahan pemilik proyek)"
+    },
+    {
+      "room_id": "547062",
+      "display_name": "Auwia",
+      "reason": "sudah tidak di JKT48 (arahan pemilik proyek)"
+    }
+  ]
+}

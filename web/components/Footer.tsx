@@ -1,0 +1,20 @@
+import Link from 'next/link';
+
+export default function Footer() {
+  return (
+    <footer className="footer">
+      <div className="container footer-content">
+        <div>
+          <p className="footer-brand">JKT48 Live Archive</p>
+          <p>Arsip komunitas. Tidak berafiliasi dengan JKT48 atau platform siaran.</p>
+        </div>
+        <nav className="footer-links" aria-label="Navigasi footer">
+          <Link href="/" className="footer-link">Jelajahi</Link>
+          <Link href="/members" className="footer-link">Member</Link>
+          <Link href="/about" className="footer-link">Tentang & privasi</Link>
+        </nav>
+      </div>
+    </footer>
+  );
+}
+

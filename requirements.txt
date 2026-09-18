@@ -1,0 +1,27 @@
+# JKT48 Live Downloader Bot - Dependencies
+
+# Telegram Userbot (supports up to 2GB upload)
+telethon==1.36.0
+
+# HTTP client for IDN API
+httpx==0.27.2
+requests==2.32.3
+
+# HLS downloader (handles quality selection, reconnect, auth headers)
+# ffmpeg is still required on the system for muxing: sudo apt install ffmpeg
+yt-dlp==2025.1.15
+
+# YouTube Data API v3
+google-api-python-client==2.149.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+
+# Async utilities
+asyncio-throttle==1.0.2
+
+# Environment & config
+python-dotenv==1.0.1
+
+# Progress bars & logging
+tqdm==4.66.5
+colorlog==6.8.2
