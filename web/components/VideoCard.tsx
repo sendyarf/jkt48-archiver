@@ -6,21 +6,11 @@ import type { VideoItem } from '@/lib/db';
 
 export default function VideoCard({ video }: { video: VideoItem }) {
   const watchUrl = `/watch/${video.youtube_video_id || video.id}`;
-  
-  // Format date nicely
-  let dateFormatted = video.started_at;
-  try {
-    const d = new Date(video.started_at);
-    if (!isNaN(d.getTime())) {
-      dateFormatted = d.toLocaleDateString('id-ID', {
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-      });
-    }
-  } catch {
-    // fallback
-  }
+
+  // Tanggal sudah dikonversi ke WIB di server (lib/wib.ts via VideoItem
+  // date_display) — kartu tidak boleh memformat sendiri di browser viewer,
+  // agar tidak bergantung zona waktu perangkat.
+  const dateFormatted = video.date_display || video.started_at;
 
   const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(video.streamer_name)}&background=1e293b&color=f43f5e&size=64&bold=true`;
 

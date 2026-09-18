@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { getVideoById, getAllVideos } from '@/lib/db';
+import { formatWibLong } from '@/lib/wib';
 import VideoPlayer from '@/components/VideoPlayer';
 
 export const dynamic = 'force-dynamic';
@@ -48,22 +49,9 @@ export default async function WatchPage({ params }: WatchPageProps) {
     (v) => v.youtube_video_id !== video.youtube_video_id
   );
 
-  let dateFormatted = video.started_at;
-  try {
-    const d = new Date(video.started_at);
-    if (!isNaN(d.getTime())) {
-      dateFormatted = d.toLocaleDateString('id-ID', {
-        weekday: 'long',
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    }
-  } catch {
-    // fallback
-  }
+  // Satu sumber konversi WIB (lib/wib.ts) — sama seperti yang membentuk judul,
+  // sehingga baris detail tidak lagi berbeda 1 jam dari judul.
+  const dateFormatted = formatWibLong(video.started_at) || video.started_at;
 
   const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(video.streamer_name)}&background=1e293b&color=f43f5e&size=128&bold=true`;
 
