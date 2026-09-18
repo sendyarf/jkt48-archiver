@@ -321,6 +321,29 @@ pm2 restart jkt48-archiver-bot
 Selama `SHOWROOM_ENABLED=false`, bot berjalan **persis seperti sebelumnya** —
 jalur Showroom tidak pernah dijalankan.
 
+### Ketahanan rekaman (pelajaran insiden 18 Sep 2026)
+
+Live Sona 18 Sep 20:18:39 WIB terekam hanya 1:16:17 padahal live berjalan
+±1:27:32 — bot baru berhasil merekam ±8-10 menit **setelah** live dimulai,
+karena HLS Showroom belum "feeding" saat deteksi: task gagal cepat, lalu
+menunggu siklus deteksi berikutnya, berulang-ulang. Perekam VOD pembanding
+tidak mengalami ini karena arsip Showroom selalu mulai dari detik pertama.
+
+Sekarang task rekaman Showroom **tetap tinggal** sampai live benar-benar
+berakhir:
+
+* Kalau yt-dlp berhenti lebih awal (HLS belum feeding, token kadaluarsa,
+  hiccup CDN), task resume dengan URL HLS segar dari API Showroom; setiap
+  potongan resume jadi `live_id` `_r<N>` tersendiri dan tetap masuk **satu
+  merge group** yang sama.
+* Task hanya menyerah bila room terbukti offline (debounce) atau kuota
+  resume (`SHOWROOM_MAX_RESUMES`) habis — jeda reconnect lebih panjang
+  ditangani deteksi ulang di loop utama seperti IDN.
+* Bot memindai Showroom **langsung saat start** (tidak menunggu satu siklus)
+  dan mencatat di log berapa detik jeda antara live dimulai vs mulai merekam
+  (`⚠️ ... mulai merekam Ns setelah live dimulai`) supaya kejadian seperti
+  ini langsung terlihat.
+
 ### Kebijakan waktu (keputusan D4)
 
 Kapan satu live Showroom dinyatakan selesai **sama dengan IDN**:
@@ -411,6 +434,10 @@ Catatan:
 | `SHOWROOM_TIMEOUT_SECONDS` | `8` | Timeout satu panggilan API Showroom |
 | `SHOWROOM_OFFLINE_CONFIRMATIONS` | `3` | Jumlah pembacaan offline berturut-turut sebelum offline dianggap sah (debounce) |
 | `SHOWROOM_ROOMS_FILE` | `showroom_rooms.json` | Sumber daftar room untuk seed |
+| `SHOWROOM_EMPTY_RETRIES` | `30` | Percobaan ulang yt-dlp saat HLS belum menghasilkan output (task tetap menunggu stream feeding) |
+| `SHOWROOM_MAX_RESUMES` | `40` | Maksimal resume per sesi saat yt-dlp berhenti lebih awal padahal live masih jalan |
+| `SHOWROOM_RESUME_DELAY_SECONDS` | `10` | Jeda sebelum tiap percobaan resume |
+| `SHOWROOM_LATE_START_WARN_SECONDS` | `60` | Log peringatan bila mulai merekam N detik setelah live resmi dimulai |
 
 ---
 

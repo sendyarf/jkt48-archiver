@@ -169,6 +169,30 @@ class Config:
     # Sumber daftar room Showroom untuk seed.
     SHOWROOM_ROOMS_FILE: str = os.getenv("SHOWROOM_ROOMS_FILE", "showroom_rooms.json")
 
+    # ── Ketahanan rekaman Showroom ────────────────────────────────────
+    # Insiden 18 Sep 2026 (Sona): live mulai 20:18:39 WIB tapi bot baru
+    # berhasil merekam ±8-10 menit kemudian karena HLS Showroom belum feeding
+    # saat deteksi — task gagal cepat, lalu menunggu siklus deteksi berikutnya,
+    # berulang-ulang. Sekarang task rekaman TETAP TINGGAL sampai live benar-
+    # benar berakhir: kalau yt-dlp berhenti lebih awal / belum menghasilkan
+    # output, task resume dengan URL HLS segar (token Showroom bisa berotasi).
+    SHOWROOM_EMPTY_RETRIES: int = int(os.getenv("SHOWROOM_EMPTY_RETRIES", "30"))
+
+    # Berapa banyak resume maksimal per sesi Showroom (40 × ±10 detik jeda +
+    # durasi tiap percobaan — cukup untuk jeda reconnect; jeda lebih panjang
+    # akan ditangani deteksi ulang di loop utama seperti IDN).
+    SHOWROOM_MAX_RESUMES: int = int(os.getenv("SHOWROOM_MAX_RESUMES", "40"))
+
+    # Jeda sebelum tiap percobaan resume (detik).
+    SHOWROOM_RESUME_DELAY_SECONDS: float = float(
+        os.getenv("SHOWROOM_RESUME_DELAY_SECONDS", "10")
+    )
+
+    # Mulai log PERINGATAN bila bot merekam N detik setelah live resmi dimulai.
+    SHOWROOM_LATE_START_WARN_SECONDS: int = int(
+        os.getenv("SHOWROOM_LATE_START_WARN_SECONDS", "60")
+    )
+
     # Waktu maksimal menunggu segmen aktif selesai saat bot dihentikan (shutdown),
     # supaya segmen parsial tidak hilang ketika `pm2 restart`.
     GRACEFUL_SHUTDOWN_SECONDS: int = int(

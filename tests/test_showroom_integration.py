@@ -35,6 +35,9 @@ class ShowroomIntegrationTestCase(unittest.TestCase):
         base = Path(self._tmp.name)
         self._old_db = Config.DB_PATH
         self._old_enabled = Config.SHOWROOM_ENABLED
+        self._old_resume_delay = Config.SHOWROOM_RESUME_DELAY_SECONDS
+        # Resume rekaman tidak boleh membuat tes lambat (jeda nyata di-nol-kan).
+        Config.SHOWROOM_RESUME_DELAY_SECONDS = 0
         Config.DB_PATH = str(base / "test.db")
         database.init_db()
         database.register_members_if_not_exists(["jkt48_lulu", "jkt48_feri"])
@@ -46,6 +49,7 @@ class ShowroomIntegrationTestCase(unittest.TestCase):
     def tearDown(self):
         Config.DB_PATH = self._old_db
         Config.SHOWROOM_ENABLED = self._old_enabled
+        Config.SHOWROOM_RESUME_DELAY_SECONDS = self._old_resume_delay
         self._tmp.cleanup()
 
     def _make_bot(self):
@@ -197,6 +201,13 @@ class TestRecordShowroomTask(ShowroomIntegrationTestCase):
 
         bot.merge_mgr.add_segment = fake_add_segment
 
+        # Task kini probe liveness room setelah yt-dlp selesai — stub agar tes
+        # tidak memanggil API Showroom sungguhan (room dianggap sudah berakhir).
+        async def fake_room_offline(room_id):
+            return False
+
+        bot.showroom.is_room_live = fake_room_offline
+
         room = {
             "username": "jkt48_feri",
             "display_name": "Feri",
@@ -252,6 +263,68 @@ class TestRecordShowroomTask(ShowroomIntegrationTestCase):
         bot.showroom.find_live_rooms = fake_find
         asyncio.run(bot._check_showroom())
         self.assertEqual(bot.active_showroom, set())
+
+    def test_resume_setelah_ytdlp_berhenti_awal(self):
+        """
+        yt-dlp berhenti (error) padahal live masih jalan → task resume dengan
+        bagian baru `_r1` memakai URL HLS segar, lalu berhenti saat room
+        terbukti offline. Ini pencegah kehilangan potongan awal/tengah live
+        seperti insiden 18 Sep 2026 (Sona).
+        """
+        bot = self._make_bot()
+        video = Path(self._tmp.name) / "seg2.mp4"
+        video.write_bytes(b"\x00" * 1024)
+        segmented = []
+        downloads = {"count": 0}
+        probes = {"count": 0}
+
+        async def fake_download(hls_url, member_username, live_id, **kwargs):
+            downloads["count"] += 1
+            if downloads["count"] == 1:
+                raise bot_main.DownloadError("stream belum feeding")
+            return video
+
+        async def fake_add_segment(**kwargs):
+            segmented.append(kwargs)
+
+        async def counting_is_room_live(room_id):
+            probes["count"] += 1
+            # Probe pertama (setelah kegagalan) → masih live;
+            # probe kedua (setelah bagian kedua selesai) → berakhir.
+            return probes["count"] <= 1
+
+        async def fake_fresh_url(room_id):
+            return "https://cdn.showroom.example/fresh.m3u8"
+
+        bot.merge_mgr.add_segment = fake_add_segment
+        bot.showroom.is_room_live = counting_is_room_live
+        bot.showroom.scraper.get_live_streaming_url = fake_fresh_url
+
+        room = {
+            "username": "jkt48_feri",
+            "display_name": "Feri",
+            "room_id": "318222",
+            "hls_url": "https://cdn.showroom.example/room.m3u8",
+        }
+        live_id = "sr_JKT48_Olla_123"
+
+        with patch("bot.main.download_stream", side_effect=fake_download):
+            asyncio.run(bot._record_showroom_task(room, live_id))
+
+        # Dua kali percobaan download: gagal → resume sukses.
+        self.assertEqual(downloads["count"], 2)
+        # Hanya bagian kedua yang sampai ke merge manager (bagian 1 gagal).
+        self.assertEqual(
+            [s["live_id"] for s in segmented], [f"{live_id}_r1"]
+        )
+        row0 = database.get_session(live_id)
+        row1 = database.get_session(f"{live_id}_r1")
+        assert row0 is not None and row1 is not None
+        self.assertEqual(row0["status"], "failed")
+        self.assertEqual(row1["status"], "segment_done")
+        # Bagian resume memakai URL HLS segar dari API Showroom.
+        self.assertEqual(row1["hls_url"], "https://cdn.showroom.example/fresh.m3u8")
+        self.assertNotIn("jkt48_feri", bot.active_showroom)
 
     def test_kandidat_hanya_member_showroom_aktif(self):
         """Member yang Showroom-nya dimatikan tidak ikut dipindai."""

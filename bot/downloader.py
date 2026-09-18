@@ -194,6 +194,8 @@ async def download_stream(
     live_id: str,
     on_progress: Optional[Callable[[str], None]] = None,
     auth_token: Optional[str] = None,
+    max_empty_retries: int = 5,
+    empty_retry_delay: float = 10,
 ) -> Path:
     """
     Download a live HLS stream to a local .mp4 file using yt-dlp.
@@ -229,8 +231,8 @@ async def download_stream(
     # code 1 and produces NO output file. Instead of failing immediately, retry
     # a few times with a short backoff so the segment is captured once the
     # stream resumes, and it can still be merged with the earlier part.
-    MAX_EMPTY_RETRIES = 5
-    RETRY_DELAY = 10
+    MAX_EMPTY_RETRIES = max(1, int(max_empty_retries))
+    RETRY_DELAY = max(0, float(empty_retry_delay))
 
     last_error: Optional[str] = None
     for attempt in range(1, MAX_EMPTY_RETRIES + 1):

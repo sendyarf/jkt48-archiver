@@ -70,6 +70,50 @@ def is_showroom_live_id(live_id: str) -> bool:
     return bool(live_id) and live_id.startswith(LIVE_ID_PREFIX)
 
 
+def detection_gap_seconds(started_at: Optional[str]) -> Optional[float]:
+    """
+    Jarak (detik) antara live Showroom dimulai (menurut API) dan SEKARANG.
+
+    Dipakai untuk observability: insiden 18 Sep 2026 (Sona) menunjukkan bot
+    bisa mulai merekam ±8-10 menit SETELAH live resmi dimulai dan potongan
+    awal itu hilang selamanya. Log angka ini membuat keterlambatan seperti
+    itu langsung terlihat di log.
+
+    None bila `started_at` kosong / tidak bisa diparse.
+    """
+    if not started_at:
+        return None
+    try:
+        start = datetime.fromisoformat(str(started_at))
+    except (TypeError, ValueError):
+        return None
+    if start.tzinfo is None:
+        # Tanpa offset dianggap UTC (konvensi timestamp internal bot).
+        start = start.replace(tzinfo=timezone.utc)
+    return max(0.0, (utc_now() - start).total_seconds())
+
+
+def should_resume_showroom(
+    resumes_done: int,
+    max_resumes: int,
+    room_live: Optional[bool],
+) -> bool:
+    """
+    Keputusan lanjut merekam setelah yt-dlp berhenti (error atau keluar lebih
+    awal) padahal live Showroom belum tentu berakhir.
+
+    True  → lanjut: room terbukti masih live, ATAU statusnya tidak diketahui
+            (API hiccup / debounce offline belum terkonfirmasi). Lanjut itu
+            aman: kalau stream memang sudah mati, yt-dlp gagal cepat dan
+            putusan berikutnya dipakai.
+    False → berhenti: live terbukti offline (sudah melewati konfirmasi
+            berturut-turut) atau kuota percobaan habis.
+    """
+    if resumes_done >= max_resumes:
+        return False
+    return room_live is not False
+
+
 @dataclass
 class OfflineCounter:
     """Penghitung pembacaan offline berturut-turut untuk satu room."""

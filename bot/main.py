@@ -22,7 +22,13 @@ import colorlog
 
 from bot.config import Config
 from bot import database
-from bot.showroom_monitor import RoomState, ShowroomMonitor, build_live_id
+from bot.showroom_monitor import (
+    RoomState,
+    ShowroomMonitor,
+    build_live_id,
+    detection_gap_seconds,
+    should_resume_showroom,
+)
 from bot.timeutil import utc_now_iso, utc_now
 from bot.admin_bot import AdminBot
 from bot.downloader import (
@@ -479,6 +485,12 @@ class JKT48LiveBot:
             yang sebelumnya hanya berasal dari YouTube.
           * Judul grup memakai nama room Showroom, supaya arsip web punya
             konteks meski tanpa judul dari IDN.
+          * Task TETAP TINGGAL sampai live benar-benar berakhir. Kalau yt-dlp
+            berhenti lebih awal (HLS Showroom belum feeding, token kadaluarsa,
+            hiccup CDN), task resume dengan URL HLS segar; setiap potongan
+            resume jadi live_id `_r<N>` tersendiri dan tetap masuk satu merge
+            group. Latar: insiden 18 Sep 2026 (Sona) — bot kehilangan ±8-10
+            menit awal live karena task gagal cepat saat HLS belum siap.
         """
         username = (room.get("username") or "").lower()
         display_name = room.get("display_name") or username
@@ -488,6 +500,17 @@ class JKT48LiveBot:
         room_name = room.get("room_name") or ""
         thumb = room.get("cover_image") or ""
 
+        # Observability: seberapa telat kita mulai merekam sejak live resmi
+        # dimulai (current_live_started_at). Telat = potongan awal hilang.
+        gap = detection_gap_seconds(started_at)
+        if gap is not None and gap >= Config.SHOWROOM_LATE_START_WARN_SECONDS:
+            logger.warning(
+                "⚠️ Showroom %s: mulai merekam %ds setelah live dimulai — "
+                "potongan awal live tidak terekam (cek uptime bot / "
+                "rate-limit API Showroom)",
+                display_name, int(gap),
+            )
+
         logger.info(
             "Showroom recording started for %s (room %s) [live_id=%s]",
             display_name, room_id, live_id,
@@ -495,57 +518,143 @@ class JKT48LiveBot:
 
         self.active_live_ids[f"sr:{username}"] = live_id
 
+        part_id = live_id
         database.insert_live(
-            live_id=live_id,
+            live_id=part_id,
             member_username=username,
             member_name=display_name,
             started_at=started_at,
             hls_url=hls_url,
             platform="showroom",
         )
-        database.update_status(live_id, "downloading", download_started_at=utc_now_iso())
         self.merge_mgr.download_started(username, "showroom")
 
+        resumes_done = 0
         try:
-            output_file = await download_stream(
-                hls_url=hls_url,
-                member_username=username,
-                live_id=live_id,
-            )
+            while True:
+                database.update_status(
+                    part_id, "downloading", download_started_at=utc_now_iso()
+                )
+                try:
+                    output_file = await download_stream(
+                        hls_url=hls_url,
+                        member_username=username,
+                        live_id=part_id,
+                        max_empty_retries=Config.SHOWROOM_EMPTY_RETRIES,
+                    )
+                except DownloadError as exc:
+                    database.update_status(part_id, "failed", error_message=str(exc))
+                    if not should_resume_showroom(
+                        resumes_done,
+                        Config.SHOWROOM_MAX_RESUMES,
+                        await self._showroom_room_live(room_id),
+                    ):
+                        raise
+                    resumes_done += 1
+                    logger.info(
+                        "Showroom %s: yt-dlp berhenti padahal live belum berakhir "
+                        "— resume bagian %d dengan URL segar",
+                        username, resumes_done,
+                    )
+                    await asyncio.sleep(Config.SHOWROOM_RESUME_DELAY_SECONDS)
+                    part_id = f"{live_id}_r{resumes_done}"
+                    hls_url = (
+                        await self.showroom.scraper.get_live_streaming_url(room_id)
+                        or hls_url
+                    )
+                    database.insert_live(
+                        live_id=part_id,
+                        member_username=username,
+                        member_name=display_name,
+                        started_at=started_at,
+                        hls_url=hls_url,
+                        platform="showroom",
+                    )
+                    continue
 
-            file_size = get_file_size_bytes(output_file)
-            database.update_status(
-                live_id,
-                "segment_done",
-                download_ended_at=utc_now_iso(),
-                file_path=str(output_file),
-                file_size_bytes=file_size,
-            )
-            database.update_member_last_live(username)
+                file_size = get_file_size_bytes(output_file)
+                database.update_status(
+                    part_id,
+                    "segment_done",
+                    download_ended_at=utc_now_iso(),
+                    file_path=str(output_file),
+                    file_size_bytes=file_size,
+                )
+                database.update_member_last_live(username)
 
-            logger.info("Showroom segment finished for %s. Adding to merge manager...", username)
-            await self.merge_mgr.add_segment(
-                live_id=live_id,
-                member_username=username,
-                member_name=display_name,
-                started_at=started_at,
-                file_path=str(output_file),
-                thumbnail_url=thumb,
-                live_title=room_name,
-                live_slug="",          # Showroom tidak punya slug IDN
-                platform="showroom",
-            )
+                logger.info(
+                    "Showroom segment finished for %s [bagian %d]. "
+                    "Adding to merge manager...",
+                    username, resumes_done,
+                )
+                await self.merge_mgr.add_segment(
+                    live_id=part_id,
+                    member_username=username,
+                    member_name=display_name,
+                    started_at=started_at,
+                    file_path=str(output_file),
+                    thumbnail_url=thumb,
+                    live_title=room_name,
+                    live_slug="",          # Showroom tidak punya slug IDN
+                    platform="showroom",
+                )
+
+                # yt-dlp keluar "bersih" padahal live masih jalan (mis. playlist
+                # berhenti diperbarui sesaat) → lanjut bagian berikutnya.
+                if not should_resume_showroom(
+                    resumes_done,
+                    Config.SHOWROOM_MAX_RESUMES,
+                    await self._showroom_room_live(room_id),
+                ):
+                    break
+                resumes_done += 1
+                logger.info(
+                    "Showroom %s: masih live setelah bagian selesai — "
+                    "lanjut bagian %d",
+                    username, resumes_done,
+                )
+                await asyncio.sleep(Config.SHOWROOM_RESUME_DELAY_SECONDS)
+                part_id = f"{live_id}_r{resumes_done}"
+                hls_url = (
+                    await self.showroom.scraper.get_live_streaming_url(room_id)
+                    or hls_url
+                )
+                database.insert_live(
+                    live_id=part_id,
+                    member_username=username,
+                    member_name=display_name,
+                    started_at=started_at,
+                    hls_url=hls_url,
+                    platform="showroom",
+                )
 
         except DownloadError as exc:
             logger.warning("Showroom download error for %s: %s", username, exc)
-            database.update_status(live_id, "failed", error_message=str(exc))
         except Exception as exc:
             logger.exception("Unexpected Showroom recording error for %s: %s", username, exc)
-            database.update_status(live_id, "failed", error_message=str(exc))
+            database.update_status(part_id, "failed", error_message=str(exc))
         finally:
             self.merge_mgr.download_ended(username, "showroom")
             self.active_showroom.discard(username)
             self.active_live_ids.pop(f"sr:{username}", None)
+
+    async def _showroom_room_live(self, room_id: str) -> Optional[bool]:
+        """
+        Status live room untuk keputusan resume rekaman Showroom.
+
+        Mengembalikan True (terbukti live) / False (offline terkonfirmasi
+        lewat debounce) / None (tidak diketahui) dari ShowroomMonitor.
+        """
+        if not str(room_id or "").strip():
+            # Tanpa room_id tidak ada yang bisa diprobe — perlakukan sebagai
+            # "sudah berakhir" agar task tidak memanggil API dengan parameter
+            # kosong dan perilaku lama (gagal → selesai) tetap terjaga.
+            return False
+        try:
+            return await self.showroom.is_room_live(room_id)
+        except Exception as exc:  # pragma: no cover - jalur jaringan
+            logger.debug("Probe liveness Showroom %s gagal: %s", room_id, exc)
+            return None
 
     async def _check_showroom(self) -> None:
         """
@@ -706,7 +815,12 @@ class JKT48LiveBot:
                 # 4. Showroom (OPSIONAL): cari room yang sedang live.
                 #    Interval terpisah + dibungkus try/except tersendiri supaya
                 #    kegagalan API Showroom tidak pernah mengganggu jalur IDN.
-                if Config.SHOWROOM_ENABLED and loop_counter % showroom_every == 0:
+                #    loop_counter == 1 → pindai langsung saat bot start agar
+                #    live yang sudah berjalan sebelum restart tetap dikejar
+                #    sejak detik pertama (potongan awal tidak hilang).
+                if Config.SHOWROOM_ENABLED and (
+                    loop_counter == 1 or loop_counter % showroom_every == 0
+                ):
                     try:
                         await self._check_showroom()
                     except Exception as exc:
