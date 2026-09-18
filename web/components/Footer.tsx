@@ -5,7 +5,7 @@ export default function Footer() {
     <footer className="footer">
       <div className="container footer-content">
         <div>
-          <p className="footer-brand">JKT48 Live Archive</p>
+          <p className="footer-brand">JKT48 Replay</p>
           <p>Arsip komunitas. Tidak berafiliasi dengan JKT48 atau platform siaran.</p>
         </div>
         <nav className="footer-links" aria-label="Navigasi footer">

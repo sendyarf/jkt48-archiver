@@ -2,7 +2,7 @@ import Link from 'next/link';
 import type { Metadata } from 'next';
 import { getPublicMembers } from '@/lib/db';
 export const dynamic = 'force-dynamic';
-export const metadata: Metadata = { title: 'Member | JKT48 Live Archive', description: 'Temukan rekaman publik berdasarkan member favorit Anda.' };
+export const metadata: Metadata = { title: 'Member', description: 'Temukan rekaman publik berdasarkan member favorit Anda.' };
 export default async function MemberDirectory({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q = '' } = await searchParams;
   const members = getPublicMembers().filter(m => `${m.display_name} ${m.username}`.toLowerCase().includes(q.toLowerCase()));

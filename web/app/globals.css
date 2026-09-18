@@ -140,19 +140,17 @@ button {
   gap: 12px;
 }
 
-.brand-logo {
-  display: flex;
+.brand-mark {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 40px;
   height: 40px;
+  flex-shrink: 0;
   border-radius: var(--radius-md);
   background: linear-gradient(135deg, var(--rose-500), var(--rose-600));
   box-shadow: var(--rose-glow);
   color: #fff;
-  font-family: var(--font-display);
-  font-weight: 900;
-  font-size: 1.1rem;
 }
 
 .brand-title {
@@ -164,16 +162,9 @@ button {
   -webkit-text-fill-color: transparent;
 }
 
-.brand-badge {
-  font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: 2px 7px;
-  background: rgba(244, 63, 94, 0.15);
-  border: 1px solid rgba(244, 63, 94, 0.35);
+.brand-title strong {
+  font-weight: 800;
   color: var(--rose-500);
-  border-radius: var(--radius-full);
 }
 
 .nav-menu {
@@ -284,8 +275,9 @@ button {
     flex: 1 1 auto;
   }
 
-  .brand-logo {
-    flex-shrink: 0;
+  .brand-mark {
+    width: 36px;
+    height: 36px;
   }
 
   .brand-title {
@@ -293,9 +285,7 @@ button {
     white-space: nowrap;
   }
 
-  .brand-badge {
-    display: none;
-  }
+  /* Badge ARCHIVE sudah dihapus dari markup; tidak ada lagi yang disembunyikan. */
 
   .nav-toggle {
     display: inline-flex;
@@ -492,7 +482,8 @@ button {
 
 .search-input-wrapper {
   position: relative;
-  min-width: 280px;
+  min-width: 0;
+  flex: 1 1 220px;
 }
 
 .search-input {
@@ -524,7 +515,7 @@ button {
 /* Video Grid */
 .video-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
   gap: 24px;
   margin-bottom: 56px;
 }
@@ -731,9 +722,10 @@ button {
 }
 
 .watch-title {
-  font-size: 1.4rem;
+  font-size: clamp(1.15rem, 1rem + 1.4vw, 1.4rem);
   font-weight: 800;
   line-height: 1.3;
+  overflow-wrap: break-word;
 }
 
 .watch-streamer-row {
@@ -853,7 +845,7 @@ button {
 /* Members Grid Page */
 .members-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
   gap: 20px;
   margin: 32px 0 64px;
 }
@@ -890,8 +882,9 @@ button {
 }
 
 .member-card-title {
-  font-size: 1.05rem;
+  font-size: clamp(0.95rem, 0.9rem + 0.6vw, 1.05rem);
   font-weight: 700;
+  overflow-wrap: break-word;
 }
 
 .member-card-username {

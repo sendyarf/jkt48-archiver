@@ -31,10 +31,13 @@ function NavbarInner() {
   return (
     <header className="navbar">
       <div className="container nav-container">
-        <Link href="/" className="brand" aria-label="JKT48 Live — Beranda">
-          <span className="brand-logo">48</span>
-          <span className="brand-title">JKT48 LIVE</span>
-          <span className="brand-badge">ARCHIVE</span>
+        <Link href="/" className="brand" aria-label="JKT48 Replay — Beranda">
+          <span className="brand-mark" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 64 64" fill="none">
+              <path d="M26 20v24l16-12z" fill="currentColor" />
+            </svg>
+          </span>
+          <span className="brand-title">JKT48 <strong>REPLAY</strong></span>
         </Link>
         <button
           type="button"

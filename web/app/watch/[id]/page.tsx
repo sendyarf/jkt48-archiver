@@ -17,14 +17,14 @@ export async function generateMetadata({ params }: WatchPageProps): Promise<Meta
   const { id } = await params;
   const video = getVideoById(id);
   if (!video) {
-    return { title: 'Video Tidak Ditemukan | JKT48 Live' };
+    return { title: 'Video Tidak Ditemukan' };
   }
   return {
-    title: `${video.title} - ${video.streamer_name} | JKT48 Live`,
+    title: `${video.title} - ${video.streamer_name}`,
     description: `Nonton siaran ulang ${video.title} oleh ${video.streamer_name}. Direkam dari ${video.platform === 'idn' ? 'IDN Live' : 'Showroom'}.`,
     openGraph: {
       title: `${video.title} - ${video.streamer_name}`,
-      description: `Arsip siaran ulang JKT48 Live`,
+      description: `Arsip siaran ulang JKT48 Replay`,
       images: [video.thumbnail_url],
     },
   };

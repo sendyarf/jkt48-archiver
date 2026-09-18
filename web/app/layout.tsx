@@ -23,17 +23,21 @@ function siteBaseUrl(): URL {
 
 export const metadata: Metadata = {
   metadataBase: siteBaseUrl(),
-  title: 'JKT48 Live Archival & Web Portal | Nonton Siaran Ulang IDN & Showroom',
+  title: {
+    default: 'JKT48 Replay | Nonton Siaran Ulang IDN & Showroom',
+    template: '%s | JKT48 Replay',
+  },
   description:
     'Jelajahi arsip komunitas siaran ulang member JKT48. Temukan rekaman berdasarkan member dan judul.',
   keywords: [
-    'JKT48 Live',
+    'JKT48 Replay',
     'Arsip JKT48',
     'IDN Live JKT48',
     'Showroom JKT48',
     'Rekaman Live JKT48',
   ],
-  authors: [{ name: 'JKT48 Live Stream Bot Engine' }],
+  authors: [{ name: 'JKT48 Replay' }],
+  icons: { icon: '/icon.svg', apple: '/icon.svg' },
 };
 
 export default function RootLayout({

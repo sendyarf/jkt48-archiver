@@ -4,7 +4,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 export const dynamic = 'force-dynamic';
-export const metadata: Metadata = { title: 'Administrasi | JKT48 Live', robots: { index: false, follow: false } };
+export const metadata: Metadata = { title: 'Administrasi', robots: { index: false, follow: false } };
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   if (!(await isAdmin())) redirect('/login');
   return <div className="admin-shell container">

@@ -8,11 +8,14 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
 .skip-link { position: fixed; left: 16px; top: -100px; z-index: 100; padding: 12px 20px; background: #fff; color: #111; border-radius: 8px; }
 .skip-link:focus { top: 12px; }
-.page-section { padding-top: 40px; padding-bottom: 64px; }
+.page-section { padding-top: clamp(28px, 6vw, 40px); padding-bottom: clamp(40px, 8vw, 64px); }
+.page-section > p { overflow-wrap: anywhere; }
+.container { min-width: 0; }
 .eyebrow { font-size: .72rem; letter-spacing: .16em; font-weight: 700; color: #fda4af; margin-bottom: 12px; }
-.section-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 28px; }
-.section-heading h1 { font-size: clamp(1.8rem, 4vw, 2.7rem); line-height: 1.2; margin-bottom: 10px; }
-.section-heading h2 { font-size: 1.8rem; }
+.section-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 28px; flex-wrap: wrap; }
+.section-heading > div { min-width: 0; flex: 1 1 220px; }
+.section-heading h1 { font-size: clamp(1.5rem, 1.1rem + 2.4vw, 2.7rem); line-height: 1.2; margin-bottom: 10px; overflow-wrap: break-word; }
+.section-heading h2 { font-size: clamp(1.25rem, 1.05rem + 1.2vw, 1.8rem); overflow-wrap: break-word; }
 .section-heading p:not(.eyebrow), .hero-copy, .help-text, .result-summary { color: var(--text-secondary); }
 .primary-button, .secondary-button, .text-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 18px; border-radius: 9px; font-weight: 600; font-size: .85rem; }
 .primary-button { background: #be123c; border: 1px solid #e11d48; color: white; }
@@ -20,24 +23,27 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .secondary-button { background: #171e2b; border: 1px solid var(--border-card); color: #f8fafc; }
 .secondary-button:hover { border-color: #94a3b8; }
 .text-button { color: #fda4af; }
-.catalog-hero { padding-top: 64px; padding-bottom: 56px; display: grid; grid-template-columns: 1.35fr 1fr; gap: 60px; align-items: center; }
-.catalog-hero h1 { font-size: clamp(2.3rem, 5vw, 4.5rem); line-height: 1.1; letter-spacing: -.045em; }
+.catalog-hero { padding-top: clamp(36px, 6vw, 64px); padding-bottom: clamp(36px, 5vw, 56px); display: grid; grid-template-columns: 1.35fr 1fr; gap: clamp(28px, 5vw, 60px); align-items: center; }
+.catalog-hero > div { min-width: 0; }
+.catalog-hero h1 { font-size: clamp(2rem, 1.4rem + 3.4vw, 4.5rem); line-height: 1.1; letter-spacing: -.045em; overflow-wrap: break-word; text-wrap: balance; }
 .catalog-hero h1 span { color: #fda4af; }
-.hero-copy { max-width: 560px; margin: 24px 0; line-height: 1.85; }
+.hero-copy { max-width: 560px; margin: 24px 0; line-height: 1.85; font-size: clamp(.95rem, .9rem + .6vw, 1.05rem); }
 .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; }
-.hero-note { position: relative; overflow: hidden; border: 1px solid #52303d; background: #20131c; border-radius: 20px; padding: 42px; min-height: 295px; display: flex; flex-direction: column; justify-content: center; }
+.hero-actions .primary-button, .hero-actions .text-button { flex: 1 1 200px; }
+.hero-note { position: relative; overflow: hidden; border: 1px solid #52303d; background: #20131c; border-radius: 20px; padding: clamp(24px, 4vw, 42px); min-height: 0; display: flex; flex-direction: column; justify-content: center; }
 .hero-note > :not(.hero-note-mark) { position: relative; }
 .hero-note > p { color: #fda4af; font-size: .7rem; letter-spacing: .2em; }
-.hero-note h2 { font-size: 2rem; line-height: 1.25; margin: 18px 0; }
+.hero-note h2 { font-size: clamp(1.4rem, 1.1rem + 1.6vw, 2rem); line-height: 1.25; margin: 18px 0; overflow-wrap: break-word; }
 .hero-note > span:last-child { color: #c6aeb8; font-size: .75rem; }
-.hero-note-mark { position: absolute; font-size: 220px; font-weight: 900; line-height: 1; right: -10px; bottom: -20px; color: #40202e; }
-.catalog-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 14px; padding: 20px; border: 1px solid var(--border-card); border-radius: 12px; background: #101622; }
-.catalog-filters label, .form-row label, .search-field { display: flex; flex-direction: column; gap: 8px; font-size: .8rem; font-weight: 600; }
-.catalog-search { flex: 1; min-width: 220px; }
+.hero-note-mark { position: absolute; font-size: clamp(120px, 22vw, 220px); font-weight: 900; line-height: 1; right: -10px; bottom: -20px; color: #40202e; pointer-events: none; }
+.catalog-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 14px; padding: clamp(16px, 3.5vw, 20px); border: 1px solid var(--border-card); border-radius: 12px; background: #101622; }
+.catalog-filters label, .form-row label, .search-field { display: flex; flex-direction: column; gap: 8px; font-size: .8rem; font-weight: 600; min-width: 0; }
+.catalog-filters .primary-button, .catalog-filters .secondary-button, .catalog-filters .text-button { flex: 0 1 auto; }
+.catalog-search { flex: 1 1 220px; min-width: 0; }
 /* Gaya form ini TIDAK boleh mengenai <input type="range"> milik pemutar video:
    min-height 44px + border + padding akan membengkakkan bilah progres. */
-.catalog-filters input:not([type="range"]), .catalog-filters select, .admin-shell input:not([type="range"]), .admin-shell select, .login-panel input:not([type="range"]) { width: 100%; min-height: 44px; background: #090e17; color: #f8fafc; border: 1px solid #374151; border-radius: 8px; padding: 10px 12px; }
-.input-with-icon { position: relative; display: block; }
+.catalog-filters input:not([type="range"]), .catalog-filters select, .admin-shell input:not([type="range"]), .admin-shell select, .login-panel input:not([type="range"]) { width: 100%; max-width: 100%; min-width: 0; min-height: 44px; background: #090e17; color: #f8fafc; border: 1px solid #374151; border-radius: 8px; padding: 10px 12px; }
+.input-with-icon { position: relative; display: block; min-width: 0; }
 .input-with-icon svg { position: absolute; left: 12px; top: 14px; color: #98a5ba; }
 .input-with-icon input { padding-left: 40px; }
 .result-summary { font-size: .82rem; margin: 24px 0; }
