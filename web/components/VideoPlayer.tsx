@@ -165,7 +165,8 @@ export default function VideoPlayer({
     return () => document.removeEventListener('fullscreenchange', sync);
   }, [isElementFullscreen, mounted]);
   const [isPaused, setIsPaused] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
+  // Autoplay dimulai senyap (kebijakan browser mobile) → status awal muted.
+  const [isMuted, setIsMuted] = useState(true);
   const [volume, setVolume] = useState(0.85);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -229,11 +230,7 @@ export default function VideoPlayer({
       return;
     }
 
-    // Interaksi pertama user = gestur sah untuk unmute.
-    if (playerRef.current?.muted) {
-      playerRef.current.muted = false;
-      setIsMuted(false);
-    }
+    // Tap layar TIDAK mengubah suara — unmute hanya lewat tombol khusus.
     if (!playerRef.current) return;
     if (playerRef.current.paused) {
       playerRef.current.play().catch(() => {});
@@ -251,12 +248,6 @@ export default function VideoPlayer({
   const togglePlayPause = (e?: React.MouseEvent) => {
     e?.stopPropagation();
     if (!playerRef.current) return;
-    // Interaksi pertama user = gestur sah untuk unmute (kebijakan autoplay
-    // Chrome/Brave/Safari mobile). Setelah itu video bersuara normal.
-    if (playerRef.current.muted) {
-      playerRef.current.muted = false;
-      setIsMuted(false);
-    }
     if (playerRef.current.paused) {
       // Optimistis: ikon langsung ganti agar tap terasa responsif.
       setIsPaused(false);
@@ -268,6 +259,23 @@ export default function VideoPlayer({
     } else {
       setIsPaused(true);
       playerRef.current.pause();
+    }
+    wakeControls();
+  };
+
+  // Tombol unmute khusus: autoplay dimulai senyap (kebijakan Chrome/Brave
+  // mobile), suara hanya menyala lewat tombol ini — bukan tap layar/play.
+  const handleUnmute = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!playerRef.current) return;
+    playerRef.current.muted = false;
+    setIsMuted(false);
+    if (playerRef.current.paused) {
+      setIsPaused(false);
+      playerRef.current.play().catch(() => {
+        setIsPaused(true);
+        showToastNotification('Ketuk sekali lagi untuk memutar.');
+      });
     }
     wakeControls();
   };
@@ -498,6 +506,23 @@ export default function VideoPlayer({
           <div className="center-tap-icon animate-pop">
             {isPaused ? '▶' : '⏸'}
           </div>
+        )}
+
+        {/* Tombol unmute khusus — tampil selama video masih senyap. */}
+        {isMuted && (
+          <button
+            type="button"
+            className="unmute-pill"
+            onClick={handleUnmute}
+            aria-label="Nyalakan suara"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" />
+              <line x1="23" y1="9" x2="17" y2="15" />
+              <line x1="17" y1="9" x2="23" y2="15" />
+            </svg>
+            <span>Nyalakan suara</span>
+          </button>
         )}
 
         {/* Bottom Floating Control Bar */}

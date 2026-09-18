@@ -1349,6 +1349,41 @@ input:checked + .slider:before {
   margin-top: 1px;
 }
 
+/* Tombol unmute khusus: autoplay senyap → user menyalakan suara lewat sini.
+   Selalu di atas blocker Vidstack dan bar kontrol, karena itulah satu-satunya
+   jalur suara (tap layar/play tidak mengubah mute). */
+.unmute-pill {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: var(--radius-full);
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(244, 63, 94, 0.45);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.unmute-pill:hover {
+  background: rgba(244, 63, 94, 0.28);
+  border-color: rgba(244, 63, 94, 0.7);
+}
+
+.unmute-pill svg {
+  width: 16px;
+  height: 16px;
+}
+
 /* Bottom Control Bar — selalu bisa diklik (tak terlihat = transisi opacity
    saja), agar tombol play/pause tidak pernah kehilangan hit-test di mobile. */
 .player-controls-bottom {
