@@ -484,11 +484,7 @@ export default function VideoPlayer({
         )}
 
         {/* Bottom Floating Control Bar */}
-        {/* inert saat tersembunyi: overlay transparan tidak memblokir tap di mobile */}
-        <div
-          className={`player-controls-bottom ${controlsVisible || isPaused || volumeOpen ? 'visible' : ''}`}
-          inert={controlsVisible || isPaused || volumeOpen ? undefined : (true as unknown as undefined)}
-        >
+        <div className={`player-controls-bottom ${controlsVisible || isPaused || volumeOpen ? 'visible' : ''}`}>
           {/* Scrubber Progress Slider */}
           <div className="scrubber-row">
             <input

@@ -1051,6 +1051,13 @@ input:checked + .slider:before {
   position: relative;
   z-index: 1;
 }
+/* pointer-events TIDAK diwariskan di CSS, jadi child elemen internal Vidstack
+   (mis. .vds-gesture, .vds-play-button) tetap punya pointer-events: auto secara
+   default dan menyerobot tap di mobile sebelum mencapai kontrol kustom.
+   Aturan ini mematikan seluruh interaksi pointer pada semua anak media-player. */
+.player-inner-container media-player * {
+  pointer-events: none !important;
+}
 
 .player-inner-container:fullscreen {
   width: 100%;
