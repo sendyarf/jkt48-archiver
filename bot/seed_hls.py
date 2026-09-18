@@ -66,6 +66,7 @@ KNOWN_HLS: dict[str, str] = {
     "jkt48_oline":    "gYN6fQPMCqs0",
     "jkt48_olla":     "QGp4Op9dfxOA",
     "jkt48_oniel":    "KGbEli9xlInK",
+    "jkt48_raisha":   "rjVZYmbffgGE",
     "jkt48_ralyne":   "QC3wCAqzZ0v9",
     "jkt48_rara":     "MzJvAVsJnOdF",
     "jkt48_ribka":    "m6srSRt8fTY6",
@@ -122,6 +123,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "jkt48_oline":    "Oline JKT48",
     "jkt48_olla":     "Olla JKT48",
     "jkt48_oniel":    "Oniel JKT48",
+    "jkt48_raisha":   "Raisha JKT48",
     "jkt48_ralyne":   "Ralyne JKT48",
     "jkt48_rara":     "Rara JKT48",
     "jkt48_ribka":    "Ribka JKT48",
@@ -135,7 +137,6 @@ UNKNOWN_HLS = [
     "jkt48_feni",
     "jkt48_fiony",
     "jkt48_kimmy",
-    "jkt48_raisha",
     "jkt48_trisha",
     "jkt48-official",
 ]
