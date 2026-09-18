@@ -171,6 +171,10 @@ export default function VideoPlayer({
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isReady, setIsReady] = useState(false);
+  // Buffering: YouTube iframe menampilkan chip jendela berwarna kuning miliknya
+  // saat stream menunggu data — kita tutup dengan overlay loading sampai video
+  // benar-benar bermain. Chip itu DI DALAM iframe (tak bisa di-styling).
+  const [isBuffering, setIsBuffering] = useState(true);
   const [showCenterIcon, setShowCenterIcon] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [volumeOpen, setVolumeOpen] = useState(false);
@@ -485,6 +489,8 @@ export default function VideoPlayer({
           playsInline
           style={getPlayerStyle() as PlayerStyle}
           onCanPlay={() => setIsReady(true)}
+          onWaiting={() => setIsBuffering(true)}
+          onPlaying={() => { setIsBuffering(false); setIsReady(true); }}
           onPlay={() => { setIsPaused(false); wakeControls(); }}
           onPause={() => { setIsPaused(true); wakeControls(); }}
           onTimeUpdate={(detail) => setCurrentTime(detail.currentTime)}
@@ -493,8 +499,9 @@ export default function VideoPlayer({
           <MediaProvider />
         </MediaPlayer>
 
-        {/* Loading Spinner Indicator */}
-        {!isReady && (
+        {/* Loading Spinner Indicator — latar hampir pekat agar UI internal
+            YouTube (chip pause kuning saat buffering) tidak tembus terlihat. */}
+        {(!isReady || isBuffering) && (
           <div className="player-loading-spinner">
             <div className="spinner-ring" />
             <span>Memuat video...</span>

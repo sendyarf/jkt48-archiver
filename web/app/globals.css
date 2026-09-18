@@ -1140,7 +1140,9 @@ input:checked + .slider:before {
   filter: blur(8px);
 }
 
-/* Loading Spinner Indicator — tidak boleh menelan tap saat video belum siap. */
+/* Loading Spinner Indicator — tidak boleh menelan tap saat video belum siap.
+   Latar dibuat hampir pekat: chip kuning internal YouTube (muncul di dalam
+   iframe saat buffering) tidak boleh tembus ke layar user. */
 .player-loading-spinner {
   position: absolute;
   inset: 0;
@@ -1149,8 +1151,7 @@ input:checked + .slider:before {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(4px);
+  background: rgba(7, 10, 16, 0.96);
   z-index: 20;
   font-size: 0.85rem;
   color: var(--text-secondary);
