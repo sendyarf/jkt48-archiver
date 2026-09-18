@@ -16,7 +16,7 @@ try {
     const height = width < 768 ? 844 : 900;
     await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 768 });
     for (const route of ['/', '/members', '/about', '/admin/status']) {
-      await send('Page.navigate', { url: 'http://localhost:3000' + route });
+      await send('Page.navigate', { url: 'http://localhost:3101' + route });
       const expectedPath = route === '/admin/status' ? '/login' : route;
       for (let i = 0; i < 100; i++) { await delay(250); if (await evaluate(`document.readyState === 'complete' && location.pathname === ${JSON.stringify(expectedPath)} && !!document.querySelector('h1')`)) break; }
       await delay(600);

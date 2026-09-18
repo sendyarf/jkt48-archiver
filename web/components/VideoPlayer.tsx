@@ -248,11 +248,11 @@ export default function VideoPlayer({
     if (!playerRef.current) return;
     if (playerRef.current.paused) {
       playerRef.current.play().catch(() => {});
-      setIsPaused(false);
     } else {
       playerRef.current.pause();
-      setIsPaused(true);
     }
+    // Ikon disinkronkan ulang lewat event onPlay/onPause milik Vidstack,
+    // sehingga tidak ada asumsi optimistis yang bisa tertinggal salah.
     wakeControls();
   };
 
@@ -434,7 +434,6 @@ export default function VideoPlayer({
         style={getContainerStyle()}
         onClick={handleTapScreen}
         onMouseMove={wakeControls}
-        onTouchEnd={handleTapScreen}
       >
         {/* Vidstack Media Player */}
         <MediaPlayer

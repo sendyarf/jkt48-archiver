@@ -1045,8 +1045,9 @@ input:checked + .slider:before {
   width: 100% !important;
   height: 100% !important;
   background: transparent !important;
-  /* Iframe YouTube harus bisa menerima tap — jangan biarkan overlay apa pun
-     (spinner, kontrol tersembunyi, toast) menutupinya secara hit-test. */
+  /* Bar kontrol kustom (z-index 30) hidup di atas .vds-blocker internal
+     Vidstack (z-index 1): tap tombol play/pause sampai, sedangkan iframe
+     YouTube tetap tertutup blocker agar kontrol kustom yang dipakai. */
   position: relative;
   z-index: 1;
 }
@@ -1213,7 +1214,7 @@ input:checked + .slider:before {
   100% { transform: translate(-50%, -90%) scale(1.6) rotate(15deg); opacity: 0; }
 }
 
-/* Top Header Bar inside Player */
+/* Top Header Bar inside Player — tak terlihat = tak bisa diklik. */
 .player-header-bar {
   position: absolute;
   top: 18px;
@@ -1224,6 +1225,7 @@ input:checked + .slider:before {
   transform: translateY(-8px);
   transition: opacity 0.3s ease, transform 0.3s ease;
   pointer-events: none;
+  visibility: hidden;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1232,6 +1234,7 @@ input:checked + .slider:before {
 .player-header-bar.visible {
   opacity: 1;
   transform: translateY(0);
+  visibility: visible;
 }
 
 .platform-tag {
@@ -1277,7 +1280,7 @@ input:checked + .slider:before {
   max-width: 80%;
 }
 
-/* Right Side Action Bar (Vertical IDN Live) */
+/* Right Side Action Bar (Vertical IDN Live) — tak terlihat = tak bisa diklik. */
 .side-action-bar {
   position: absolute;
   right: 12px;
@@ -1289,11 +1292,15 @@ input:checked + .slider:before {
   opacity: 0;
   transform: translateX(10px);
   transition: opacity 0.3s ease, transform 0.3s ease;
+  pointer-events: none;
+  visibility: hidden;
 }
 
 .side-action-bar.visible {
   opacity: 1;
   transform: translateX(0);
+  pointer-events: auto;
+  visibility: visible;
 }
 
 .side-action-btn {
