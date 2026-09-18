@@ -177,7 +177,7 @@ class MergeManager:
             # Cancel previous timer and start a fresh timer from this segment
             self._cancel_timer(u, platform)
             self._timers[scope] = asyncio.create_task(
-                self._finalize_group(u, group_id, platform)
+                self._finalize_group(u, group_id, platform=platform)
             )
 
     def _cancel_timer(self, member_username: str, platform: str = "idn") -> None:
@@ -225,7 +225,7 @@ class MergeManager:
             logger.info("Recovering pending merge group %d for %s (%s, delay: %.0fs)",
                         gid, member, platform, delay)
             self._timers[scope] = asyncio.create_task(
-                self._finalize_group(member, gid, delay, platform)
+                self._finalize_group(member, gid, delay, platform=platform)
             )
 
     async def _finalize_group(
@@ -263,7 +263,7 @@ class MergeManager:
                 member_username, group_id, delay,
             )
             self._timers[self._scope(member_username, platform)] = asyncio.create_task(
-                self._finalize_group(member_username, group_id, delay, platform)
+                self._finalize_group(member_username, group_id, delay, platform=platform)
             )
 
     async def _decide(self, group: dict) -> tuple:
