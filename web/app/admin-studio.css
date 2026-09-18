@@ -36,7 +36,23 @@
   .hero-note { min-height: 200px; padding: 28px; }
   .hero-note h2 { font-size: 1.6rem; }
   .admin-shell { grid-template-columns: 1fr; gap: 24px; }
-  .admin-sidebar nav { flex-direction: row; flex-wrap: wrap; }
+
+  /* Navigasi admin menjadi panel 2 kolom yang rapi, bukan teks menumpuk. */
+  .admin-sidebar nav { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .admin-sidebar nav a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    min-height: 48px;
+    padding: 12px 10px;
+    font-size: .82rem;
+    line-height: 1.35;
+    background: #171e2b;
+    border: 1px solid var(--border-card);
+    border-radius: 10px;
+  }
+  .admin-sidebar nav a:hover { background: #1c2534; }
   .admin-sidebar h2 { margin-bottom: 12px; }
   .section-heading { align-items: flex-start; flex-wrap: wrap; }
   .catalog-filters label { flex: 1 1 100%; }
