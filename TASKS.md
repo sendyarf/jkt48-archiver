@@ -76,6 +76,15 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
 - [x] Regresi Daisy: `tests/test_merge_reconnect.py::TestDaisyReconnectRegression`
       (3 slug judul sama ⇒ SATU grup; judul beda ⇒ dua video; split bisa dimatikan).
       Total **83 test** hijau.
+- [x] **Fitur "Download via Bot Telegram"**: dual-upload YouTube + channel arsip
+      Telegram privat (`TELEGRAM_ARCHIVE_CHANNEL_ID`), simpan semua message_id ke
+      kolom baru `live_sessions.telegram_message_ids`. Bot publik `bot/replay_bot.py`
+      (long polling httpx, pola AdminBot) menjawab deep-link `/start <youtube_video_id>`
+      lalu `copyMessage` dari channel arsip (tanpa re-upload). Tombol Download + modal
+      di `web/app/watch/[id]/page.tsx` (hanya tampil bila `telegram_archived`), link
+      `t.me/<REPLAY_BOT_USERNAME>?start=<youtube_video_id>`. File lokal hanya dihapus
+      setelah YouTube DAN arsip Telegram sukses; gagal salah satu → `pending_upload`.
+      Test: `tests/test_replay_bot.py` → total **202 test** hijau.
 
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 

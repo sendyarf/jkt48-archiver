@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS live_sessions (
     file_size_bytes     INTEGER,
     status              TEXT    NOT NULL DEFAULT 'detected',
     telegram_message_id INTEGER,
+    telegram_message_ids TEXT,
     youtube_video_id    TEXT,
     error_message       TEXT,
     merge_group_id      INTEGER,
@@ -114,6 +115,13 @@ def init_db() -> None:
         if "live_slug" not in cols:
             conn.execute("ALTER TABLE live_sessions ADD COLUMN live_slug TEXT")
             logger.info("Schema migration: added live_slug column to live_sessions")
+        if "telegram_message_ids" not in cols:
+            # Menyimpan SEMUA message_id pesan video di channel arsip privat
+            # (comma-separated, urut part) agar video multi-part bisa disalin
+            # lengkap oleh replay bot. Kolom telegram_message_id lama tetap
+            # dipakai untuk pesan notifikasi teks.
+            conn.execute("ALTER TABLE live_sessions ADD COLUMN telegram_message_ids TEXT")
+            logger.info("Schema migration: added telegram_message_ids column to live_sessions")
 
         # Migrate merge_groups columns if missing
         mg_cols = [r[1] for r in conn.execute("PRAGMA table_info(merge_groups)")]
@@ -273,6 +281,7 @@ def update_status(live_id: str, status: str, **kwargs) -> None:
         "file_path",
         "file_size_bytes",
         "telegram_message_id",
+        "telegram_message_ids",
         "youtube_video_id",
         "download_started_at",
         "download_ended_at",
@@ -284,6 +293,32 @@ def update_status(live_id: str, status: str, **kwargs) -> None:
     sql = f"UPDATE live_sessions SET {set_clause + ', ' if set_clause else ''}status = ? WHERE live_id = ?"
     with _get_conn() as conn:
         conn.execute(sql, values)
+
+
+def get_archived_session_by_youtube_id(youtube_video_id: str) -> Optional[dict]:
+    """
+    Sesi yang sudah punya arsip video di channel Telegram privat, dicari lewat
+    YouTube video ID (dipakai replay bot untuk payload deep-link ?start=).
+
+    Karena satu live bisa tersimpan sebagai beberapa baris segmen yang sama-sama
+    memakai youtube_video_id hasil merge, diambil baris pertama yang punya
+    telegram_message_ids tidak kosong.
+    """
+    yt = (youtube_video_id or "").strip()
+    if not yt:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            """SELECT live_id, member_username, member_name, started_at,
+                      telegram_message_ids, file_size_bytes
+               FROM live_sessions
+               WHERE youtube_video_id = ?
+                 AND telegram_message_ids IS NOT NULL
+                 AND telegram_message_ids != ''
+               ORDER BY id ASC LIMIT 1""",
+            (yt,),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def get_session(live_id: str) -> Optional[sqlite3.Row]:

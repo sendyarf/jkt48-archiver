@@ -67,6 +67,9 @@ export function getDb(): DatabaseSync {
         if (!existing.has('platform')) {
           _db.exec("ALTER TABLE live_sessions ADD COLUMN platform TEXT NOT NULL DEFAULT 'idn'");
         }
+        if (!existing.has('telegram_message_ids')) {
+          _db.exec('ALTER TABLE live_sessions ADD COLUMN telegram_message_ids TEXT');
+        }
       }
     } catch {
       // Tabel live_sessions belum ada (mis. database baru) — biarkan query
@@ -146,6 +149,8 @@ export interface VideoItem {
   youtube_video_id: string;
   thumbnail_url: string;
   created_at: string;
+  /** True bila replay sudah tersimpan di channel arsip Telegram (bisa diunduh via bot). */
+  telegram_archived?: boolean;
 }
 
 function cleanDisplayName(username: string, name?: string): string {
@@ -289,6 +294,7 @@ interface VideoDetailRow {
   created_at: string | null;
   download_ended_at: string | null;
   youtube_video_id: string | null;
+  telegram_message_ids: string | null;
 }
 
 export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
@@ -301,7 +307,8 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
       COALESCE(NULLIF(mg.live_title, ''), '') as title,
       ls.started_at,
       ls.created_at,
-      ls.youtube_video_id
+      ls.youtube_video_id,
+      ls.telegram_message_ids
     FROM live_sessions ls
     LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id
     LEFT JOIN member_hls mh ON ls.member_username = mh.username
@@ -333,6 +340,7 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     youtube_video_id: ytId,
     thumbnail_url: ytId ? `https://img.youtube.com/vi/${ytId}/maxresdefault.jpg` : '',
     created_at: r.created_at || '',
+    telegram_archived: !!(r.telegram_message_ids && r.telegram_message_ids.trim()),
   };
 }
 

@@ -4,6 +4,7 @@ import type { Metadata } from 'next';
 import { getVideoById, getAllVideos } from '@/lib/db';
 import { formatWibLong } from '@/lib/wib';
 import VideoPlayer from '@/components/VideoPlayer';
+import TelegramDownloadButton from '@/components/TelegramDownloadButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -87,6 +88,15 @@ export default async function WatchPage({ params }: WatchPageProps) {
                 {video.platform === 'idn' ? 'IDN' : 'Showroom'}
               </span>
             </div>
+
+            {video.telegram_archived && (
+              <div style={{ marginTop: '14px' }}>
+                <TelegramDownloadButton
+                  youtubeVideoId={video.youtube_video_id}
+                  title={video.title}
+                />
+              </div>
+            )}
           </div>
         </div>
 

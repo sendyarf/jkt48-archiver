@@ -46,6 +46,32 @@ class Config:
         os.getenv("ADMIN_BOT_ENABLED", "true").lower() == "true"
     )
 
+    # ─── Telegram Replay Bot (publik, BotFather token) ──────────────────
+    # Bot publik untuk fitur "Download via Bot Telegram" di halaman watch.
+    # User menekan tombol → t.me/<bot>?start=<youtube_video_id> → bot
+    # menyalin (copyMessage) video dari channel arsip privat ke user.
+    TELEGRAM_REPLAY_BOT_TOKEN: str = os.getenv("TELEGRAM_REPLAY_BOT_TOKEN", "").strip()
+
+    # Username bot publik (tanpa @) untuk membentuk link deep-link di website.
+    REPLAY_BOT_USERNAME: str = os.getenv("REPLAY_BOT_USERNAME", "").strip().lstrip("@")
+
+    # Channel Telegram PRIVAT sebagai database arsip video replay.
+    # Userbot Telethon (TELEGRAM_SESSION_STRING / phone) harus menjadi member
+    # dan bot publik harus menjadi admin agar bisa copyMessage dari sini.
+    TELEGRAM_ARCHIVE_CHANNEL_ID: int = int(os.getenv("TELEGRAM_ARCHIVE_CHANNEL_ID", "0"))
+
+    # Upload juga video ke channel arsip Telegram (selain YouTube). File lokal
+    # baru dihapus setelah KEDUA upload sukses; jika salah satu gagal, sesi
+    # ditandai pending_upload agar di-retry.
+    TELEGRAM_ARCHIVE_UPLOAD_ENABLED: bool = (
+        os.getenv("TELEGRAM_ARCHIVE_UPLOAD_ENABLED", "true").lower() == "true"
+    )
+
+    # Enable the public replay bot listener inside the main bot process (true/false)
+    REPLAY_BOT_ENABLED: bool = (
+        os.getenv("REPLAY_BOT_ENABLED", "true").lower() == "true"
+    )
+
     # Upload Target: "telegram" (default) or "youtube"
     UPLOAD_TARGET: str = os.getenv("UPLOAD_TARGET", "telegram").lower().strip()
 

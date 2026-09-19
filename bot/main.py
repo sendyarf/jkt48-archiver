@@ -43,6 +43,7 @@ from bot.hls_monitor import HLSMonitor
 from bot.idn_lookup import IDNLookup
 from bot.merger import MergeManager
 from bot.telegram_sender import TelegramSender, build_youtube_notification
+from bot.replay_bot import ReplayBot
 from bot.youtube_uploader import YouTubeChannelPool, YouTubeQuotaExceeded
 
 # Ukuran minimal file parsial agar layak didaftarkan sebagai segmen saat shutdown
@@ -112,6 +113,7 @@ class JKT48LiveBot:
         self.active_live_ids: dict[str, str] = {}  # kunci -> live_id sedang direkam
         self.recording_tasks: set[asyncio.Task] = set()
         self.admin_bot: Optional[AdminBot] = None
+        self.replay_bot: Optional[ReplayBot] = None
         self._stopped_members_logged: set[str] = set()
         self.running = False
 
@@ -138,6 +140,11 @@ class JKT48LiveBot:
         self.admin_bot = AdminBot(on_stop_recording=self._cancel_active_recording)
         if self.admin_bot.start():
             logger.info("Telegram admin bot listener started.")
+
+        # Telegram replay bot (publik, long polling) — download via deep-link
+        self.replay_bot = ReplayBot()
+        if self.replay_bot.start():
+            logger.info("Telegram replay bot listener started.")
 
         logger.info("Bot initialization completed successfully.")
 
@@ -358,6 +365,17 @@ class JKT48LiveBot:
                     )
                     logger.info("Successfully uploaded to YouTube (%s). Video ID: %s", channel_label, video_id)
 
+                    # Arsipkan juga ke channel Telegram privat (database replay)
+                    archive_ok = await self._archive_to_telegram(
+                        path=path,
+                        member_name=member_name or member_username,
+                        member_username=member_username,
+                        started_at=started_at,
+                        live_title=live_title,
+                        live_id=live_id,
+                        set_status=set_status,
+                    )
+
                     # Send Telegram notification
                     msg_text = build_youtube_notification(
                         member_name=member_name or member_username,
@@ -370,8 +388,8 @@ class JKT48LiveBot:
                     if msg_id:
                         set_status("done_youtube", telegram_message_id=msg_id)
 
-                    # Auto delete local file if configured
-                    if Config.AUTO_DELETE_AFTER_UPLOAD:
+                    # Auto delete local file only if EVERYTHING succeeded
+                    if Config.AUTO_DELETE_AFTER_UPLOAD and archive_ok:
                         delete_file(path)
                 else:
                     logger.error("YouTube upload returned no video ID for %s", live_id)
@@ -391,6 +409,66 @@ class JKT48LiveBot:
             except Exception as exc:
                 logger.exception("Unexpected error uploading %s to YouTube: %s", live_id, exc)
                 set_status("failed", error_message=str(exc))
+
+    async def _archive_to_telegram(
+        self,
+        *,
+        path,
+        member_name: str,
+        member_username: str,
+        started_at: str,
+        live_title: str,
+        live_id: str,
+        set_status,
+    ) -> bool:
+        """
+        Upload video hasil merge ke channel Telegram privat sebagai "database"
+        replay, lalu simpan SEMUA message_id ke kolom telegram_message_ids.
+
+        Mengembalikan True bila arsip sukses (atau fitur dimatikan); False bila
+        gagal — dalam hal ini sesi ditandai pending_upload agar file lokal TIDAK
+        dihapus dan bisa di-retry. Dipanggil hanya pada alur YouTube.
+        """
+        if not Config.TELEGRAM_ARCHIVE_UPLOAD_ENABLED:
+            return True
+        archive_channel = Config.TELEGRAM_ARCHIVE_CHANNEL_ID
+        if not archive_channel:
+            logger.warning(
+                "TELEGRAM_ARCHIVE_UPLOAD_ENABLED=true tapi TELEGRAM_ARCHIVE_CHANNEL_ID "
+                "kosong — arsip Telegram dilewati untuk %s.", live_id,
+            )
+            return True
+
+        try:
+            logger.info(
+                "Archiving video to Telegram channel %s for %s (%s)",
+                archive_channel, member_name, live_id,
+            )
+            msg_ids = await self.tg.upload_video_with_splitting(
+                file_path=path,
+                member_name=member_name,
+                member_username=member_username,
+                started_at=started_at,
+                live_title=live_title,
+                channel_id=archive_channel,
+            )
+            if msg_ids:
+                joined = ",".join(str(m) for m in msg_ids)
+                set_status("done_youtube", telegram_message_ids=joined)
+                logger.info(
+                    "Archived to Telegram (%s). Message IDs: %s", live_id, msg_ids,
+                )
+                return True
+            logger.error("Telegram archive returned no message ID for %s", live_id)
+            set_status(
+                "pending_upload",
+                error_message="Telegram archive upload returned no message ID",
+            )
+            return False
+        except Exception as exc:
+            logger.exception("Error archiving %s to Telegram: %s", live_id, exc)
+            set_status("pending_upload", error_message=f"telegram archive: {exc}")
+            return False
 
     async def _record_member_task(self, member: dict, live_id: str) -> None:
         """Background task that records a member's live stream via yt-dlp."""
@@ -886,6 +964,10 @@ class JKT48LiveBot:
         # Stop Telegram admin bot listener
         if self.admin_bot:
             await self.admin_bot.stop()
+
+        # Stop Telegram replay bot listener
+        if self.replay_bot:
+            await self.replay_bot.stop()
 
         await self._stop_recordings_gracefully()
 
