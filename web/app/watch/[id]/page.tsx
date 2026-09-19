@@ -72,8 +72,13 @@ export default async function WatchPage({ params }: WatchPageProps) {
   // panel "segera hadir" tanpa angka.
   const isPrerelease = !video.is_visible;
   const botUsername = (process.env.NEXT_PUBLIC_REPLAY_BOT_USERNAME || '').replace(/^@/, '');
+  // Payload berbeda per konteks:
+  //  - pra-rilis (countdown): "notify_<id>" → bot hanya konfirmasi, bukan kirim video
+  //  - sudah rilis (download): "<id>" asli → bot meng-copyMessage video dari arsip
   const telegramLink = botUsername && video.youtube_video_id
-    ? `https://t.me/${botUsername}?start=${encodeURIComponent(video.youtube_video_id)}`
+    ? `https://t.me/${botUsername}?start=${encodeURIComponent(
+        isPrerelease ? `notify_${video.youtube_video_id}` : video.youtube_video_id
+      )}`
     : undefined;
 
   return (

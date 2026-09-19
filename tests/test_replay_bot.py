@@ -117,6 +117,13 @@ class TestSendReplay(ReplayBotTestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertIn("tidak ditemukan", self.sent[0].lower())
 
+    def test_notify_payload_replies_confirmation_without_copy(self):
+        """Payload notify_<id> (pra-rilis) tidak boleh memicu copyMessage."""
+        asyncio.run(self.bot._send_replay(CHAT_ID, f"notify_{YT_ID}"))
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("masa tunggu", self.sent[0].lower())
+        self.assertEqual(self.copied, [])
+
 
 class TestDispatch(ReplayBotTestCase):
     def _send(self, text: str) -> None:

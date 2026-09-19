@@ -44,6 +44,12 @@ NOT_FOUND_TEXT = (
     "😕 Replay tidak ditemukan atau belum tersedia untuk diunduh.\n"
     "Coba lagi dari tombol download di halaman tontonan."
 )
+NOTIFY_TEXT = (
+    "🔔 <b>Siap!</b>\n\n"
+    "Replay ini masih dalam masa tunggu dan akan tersedia sebentar lagi. "
+    "Begitu terbit, kamu bisa kembali ke halaman tontonannya lalu menekan "
+    "tombol <b>Download via Bot Telegram</b> untuk menerima videonya di sini."
+)
 ERROR_TEXT = "❌ Terjadi kesalahan saat mengambil video. Coba lagi nanti."
 
 
@@ -263,7 +269,13 @@ class ReplayBot:
         await self.send_message(chat_id, WELCOME_TEXT, parse_mode="HTML")
 
     async def _send_replay(self, chat_id: int, payload: str) -> None:
-        """Kirim semua part video untuk payload youtube_video_id."""
+        """Tangani payload deep-link: 'notify_<id>' (pra-rilis) atau download."""
+        # Payload "notify_" = user menekan "Ingatkan" pada video yang BELUM rilis.
+        # Jangan coba kirim video (memang belum ada) — cukup konfirmasi.
+        if payload.startswith("notify_"):
+            await self.send_message(chat_id, NOTIFY_TEXT, parse_mode="HTML")
+            return
+
         session = database.get_archived_session_by_youtube_id(payload)
         if not session:
             logger.info("Payload tidak dikenal / belum diarsipkan: %r", payload)
