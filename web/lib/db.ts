@@ -340,6 +340,10 @@ export function getUpcomingVideos(limit = 6): VideoItem[] {
   if (AUTO_PUBLISH_AFTER_HOURS <= 0) return [];
   const db = getDb();
   const hours = AUTO_PUBLISH_AFTER_HOURS;
+  // Waktu acuan rilis = waktu TERAKHIR segmen selesai di seluruh grup (bukan per
+  // baris), agar live panjang yang tersimpan sebagai banyak segmen dinilai sebagai
+  // satu video. "Akan terbit" = belum visible (publicVisibilitySql=false) DAN
+  // publish_at masih di masa depan.
   const rows = db.prepare(`
     SELECT
       COALESCE(NULLIF(ls.platform, ''), 'idn') as platform,
@@ -349,7 +353,8 @@ export function getUpcomingVideos(limit = 6): VideoItem[] {
       MIN(ls.started_at) as started_at,
       MAX(ls.created_at) as created_at,
       ls.youtube_video_id,
-      datetime(COALESCE(MAX(ls.download_ended_at), MAX(ls.created_at)), '+${hours} hours') as publish_at
+      MAX(COALESCE(ls.download_ended_at, ls.created_at)) as last_end,
+      datetime(MAX(COALESCE(ls.download_ended_at, ls.created_at)), '+${hours} hours') as publish_at
     FROM live_sessions ls
     LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id
     LEFT JOIN member_hls mh ON ls.member_username = mh.username
@@ -357,8 +362,8 @@ export function getUpcomingVideos(limit = 6): VideoItem[] {
       AND COALESCE(ls.platform, 'idn') != 'showroom'
       AND NOT EXISTS (SELECT 1 FROM web_publications pw WHERE pw.youtube_video_id = ls.youtube_video_id AND pw.published = 0)
       AND NOT EXISTS (SELECT 1 FROM web_publications po WHERE po.youtube_video_id = ls.youtube_video_id AND po.published = 1)
-      AND (julianday('now') - julianday(COALESCE(ls.download_ended_at, ls.created_at))) * 24 < ${hours}
     GROUP BY ls.youtube_video_id
+    HAVING (julianday('now') - julianday(MAX(COALESCE(ls.download_ended_at, ls.created_at)))) * 24 < ${hours}
     ORDER BY publish_at ASC
     LIMIT ?
   `).all(limit) as unknown as Array<VideoRow & { publish_at: string | null }>;
