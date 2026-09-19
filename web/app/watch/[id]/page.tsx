@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
+import Image from 'next/image';
 import type { Metadata } from 'next';
 import { getVideoById, getAllVideos } from '@/lib/db';
 import { formatWibLong } from '@/lib/wib';
@@ -75,11 +76,12 @@ export default async function WatchPage({ params }: WatchPageProps) {
 
             <div className="watch-streamer-row">
               <Link href={`/?member=${video.streamer_username}`} className="streamer-profile-link">
-                <img src={avatarUrl} alt="" className="streamer-avatar-md" />
+                <Image src={avatarUrl} alt="" width={44} height={44} className="streamer-avatar-md" />
                 <div>
                   <h3 style={{ fontSize: '1rem', color: '#fff' }}>{video.streamer_name}</h3>
                   <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>
                     {dateFormatted}
+                    {video.duration_formatted ? ` • ${video.duration_formatted}` : ''}
                   </p>
                 </div>
               </Link>
@@ -119,9 +121,11 @@ export default async function WatchPage({ params }: WatchPageProps) {
                   className="related-card"
                 >
                   <div className="related-thumb-box">
-                    <img
+                    <Image
                       src={rel.thumbnail_url}
                       alt={rel.title}
+                      fill
+                      sizes="(max-width: 900px) 82vw, 120px"
                       className="related-thumb"
                     />
                   </div>

@@ -1,6 +1,8 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { Play, Calendar } from 'lucide-react';
 import type { VideoItem } from '@/lib/db';
 
@@ -12,28 +14,33 @@ export default function VideoCard({ video }: { video: VideoItem }) {
   // agar tidak bergantung zona waktu perangkat.
   const dateFormatted = video.date_display || video.started_at;
 
+  // Fallback ke hqdefault bila maxresdefault (kartu memakai hqdefault) tidak ada.
+  const [thumbSrc, setThumbSrc] = useState(video.thumbnail_url);
+
   const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(video.streamer_name)}&background=1e293b&color=f43f5e&size=64&bold=true`;
 
   return (
     <div className="video-card">
       <Link href={watchUrl} className="video-thumbnail-box">
-        <img
-          src={video.thumbnail_url}
+        <Image
+          src={thumbSrc}
           alt={video.title}
+          fill
+          sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
           className="video-thumbnail"
-          loading="lazy"
-          onError={(e) => {
-            // fallback if maxresdefault doesn't exist
-            (e.target as HTMLImageElement).src = `https://img.youtube.com/vi/${video.youtube_video_id}/hqdefault.jpg`;
+          onError={() => {
+            const fb = `https://img.youtube.com/vi/${video.youtube_video_id}/hqdefault.jpg`;
+            if (thumbSrc !== fb) setThumbSrc(fb);
           }}
         />
         <span className={`platform-badge ${video.platform}`}>
           {video.platform === 'idn' ? 'IDN' : 'Showroom'}
         </span>
+        {video.is_new ? <span className="new-badge">Baru</span> : null}
         {video.duration_formatted ? (
           <span className="duration-badge">{video.duration_formatted}</span>
         ) : null}
-        
+
         <div className="play-hover-overlay">
           <div className="play-btn-circle">
             <Play size={20} fill="#fff" />
@@ -49,9 +56,11 @@ export default function VideoCard({ video }: { video: VideoItem }) {
         </Link>
 
         <div className="video-meta">
-          <img
+          <Image
             src={avatarUrl}
             alt={video.streamer_name}
+            width={36}
+            height={36}
             className="streamer-avatar-sm"
           />
           <div className="streamer-details">

@@ -151,6 +151,37 @@ export interface VideoItem {
   created_at: string;
   /** True bila replay sudah tersimpan di channel arsip Telegram (bisa diunduh via bot). */
   telegram_archived?: boolean;
+  /** True bila rekaman berumur < 24 jam (untuk badge "BARU"). */
+  is_new?: boolean;
+}
+
+/** Format detik → "H:MM:SS" atau "M:SS". */
+function formatDuration(totalSeconds: number): string {
+  const s = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+  const ss = String(sec).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+/** Hitung durasi dari rentang waktu mulai & selesai (detik). 0 bila tidak valid. */
+function durationFromRange(start: string | null, end: string | null): number {
+  if (!start || !end) return 0;
+  const a = Date.parse(start);
+  const b = Date.parse(end);
+  if (Number.isNaN(a) || Number.isNaN(b)) return 0;
+  const diff = Math.round((b - a) / 1000);
+  return diff > 0 ? diff : 0;
+}
+
+/** True bila timestamp ISO berada dalam `hours` terakhir. */
+function isRecent(iso: string, hours = 24): boolean {
+  if (!iso) return false;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t < hours * 3600 * 1000;
 }
 
 function cleanDisplayName(username: string, name?: string): string {
@@ -187,6 +218,8 @@ interface VideoRow {
   started_at: string | null;
   created_at: string | null;
   youtube_video_id: string;
+  dur_start: string | null;
+  dur_end: string | null;
 }
 
 export function getAllVideos(options: {
@@ -211,11 +244,13 @@ export function getAllVideos(options: {
       COALESCE(NULLIF(mg.live_title, ''), '') as title,
       MIN(ls.started_at) as started_at,
       MAX(ls.created_at) as created_at,
-      ls.youtube_video_id
+      ls.youtube_video_id,
+      MIN(ls.download_started_at) as dur_start,
+      MAX(ls.download_ended_at) as dur_end
     FROM live_sessions ls
     LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id
     LEFT JOIN member_hls mh ON ls.member_username = mh.username
-    WHERE ls.youtube_video_id IS NOT NULL 
+    WHERE ls.youtube_video_id IS NOT NULL
       AND ls.youtube_video_id != ''
       AND ${publicVisibilitySql('ls')}
   `;
@@ -261,6 +296,7 @@ export function getAllVideos(options: {
     const platform = normalizePlatform(r.platform);
     const title = buildDisplayTitle(platform, dispName, startedAt);
     const ytId = r.youtube_video_id;
+    const durSec = durationFromRange(r.dur_start, r.dur_end);
     return {
       id: ytId,
       platform: platform,
@@ -269,11 +305,12 @@ export function getAllVideos(options: {
       title: title,
       started_at: startedAt,
       date_display: formatWibCardDate(startedAt),
-      duration_seconds: 0,
-      duration_formatted: '',
+      duration_seconds: durSec,
+      duration_formatted: durSec > 0 ? formatDuration(durSec) : '',
       youtube_video_id: ytId,
       thumbnail_url: `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`,
       created_at: r.created_at || '',
+      is_new: isRecent(startedAt, 24),
     };
   });
 
@@ -292,6 +329,7 @@ interface VideoDetailRow {
   title: string | null;
   started_at: string | null;
   created_at: string | null;
+  download_started_at: string | null;
   download_ended_at: string | null;
   youtube_video_id: string | null;
   telegram_message_ids: string | null;
@@ -307,6 +345,8 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
       COALESCE(NULLIF(mg.live_title, ''), '') as title,
       ls.started_at,
       ls.created_at,
+      ls.download_started_at,
+      ls.download_ended_at,
       ls.youtube_video_id,
       ls.telegram_message_ids
     FROM live_sessions ls
@@ -326,6 +366,7 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   const platform = normalizePlatform(r.platform);
   const title = buildDisplayTitle(platform, dispName, startedAt);
   const ytId = r.youtube_video_id || '';
+  const durSec = durationFromRange(r.download_started_at, r.download_ended_at);
 
   return {
     id: ytId,
@@ -335,12 +376,13 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     title: title,
     started_at: startedAt,
     date_display: formatWibCardDate(startedAt),
-    duration_seconds: 0,
-    duration_formatted: '',
+    duration_seconds: durSec,
+    duration_formatted: durSec > 0 ? formatDuration(durSec) : '',
     youtube_video_id: ytId,
     thumbnail_url: ytId ? `https://img.youtube.com/vi/${ytId}/maxresdefault.jpg` : '',
     created_at: r.created_at || '',
     telegram_archived: !!(r.telegram_message_ids && r.telegram_message_ids.trim()),
+    is_new: isRecent(startedAt, 24),
   };
 }
 

@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Download, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Check, Copy, Download, X } from 'lucide-react';
 
 interface Props {
   youtubeVideoId: string;
@@ -17,6 +17,10 @@ interface Props {
  */
 export default function TelegramDownloadButton({ youtubeVideoId, title }: Props) {
   const [open, setOpen] = useState(false);
+  const [launched, setLaunched] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+
   const botUsername = (process.env.NEXT_PUBLIC_REPLAY_BOT_USERNAME || '').replace(/^@/, '');
   const deepLink = botUsername
     ? `https://t.me/${botUsername}?start=${encodeURIComponent(youtubeVideoId)}`
@@ -28,13 +32,25 @@ export default function TelegramDownloadButton({ youtubeVideoId, title }: Props)
       if (e.key === 'Escape') setOpen(false);
     };
     document.addEventListener('keydown', onKey);
+    // Fokus awal ke tombol tutup agar mudah dikontrol keyboard / screen reader.
+    closeBtnRef.current?.focus();
     return () => document.removeEventListener('keydown', onKey);
   }, [open]);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(deepLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API bisa gagal bila bukan secure-context; abaikan saja.
+    }
+  };
 
   return (
     <>
       <button type="button" className="secondary-button" onClick={() => setOpen(true)}>
-        <Download size={16} aria-hidden="true" style={{ verticalAlign: '-2px', marginRight: 6 }} />
+        <Download size={16} aria-hidden="true" />
         Download
       </button>
 
@@ -43,55 +59,57 @@ export default function TelegramDownloadButton({ youtubeVideoId, title }: Props)
           role="dialog"
           aria-modal="true"
           aria-label="Download via Bot Telegram"
+          className="modal-overlay"
           onClick={() => setOpen(false)}
-          style={{
-            position: 'fixed', inset: 0, zIndex: 1000,
-            background: 'rgba(2,6,23,0.75)', backdropFilter: 'blur(4px)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
-          }}
         >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: '100%', maxWidth: 440, background: '#0f172a',
-              border: '1px solid #1e293b', borderRadius: 14, padding: 24,
-              boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-              <h2 style={{ margin: 0, fontSize: '1.1rem', color: '#fff' }}>Download via Bot Telegram</h2>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">Download via Bot Telegram</h2>
               <button
                 type="button"
                 aria-label="Tutup"
+                ref={closeBtnRef}
                 onClick={() => setOpen(false)}
-                style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 4 }}
+                className="modal-close"
               >
                 <X size={20} aria-hidden="true" />
               </button>
             </div>
 
-            <p style={{ color: '#cbd5e1', fontSize: '0.9rem', lineHeight: 1.6, margin: '14px 0' }}>
+            <p className="modal-body">
               Video <strong style={{ color: '#fff' }}>{title}</strong> akan dikirim ke kamu
               lewat bot Telegram resmi kami. Klik tombol di bawah, lalu tekan{' '}
-              <strong>Start</strong> / izinkan di Telegram — video otomatis terkirim.
+              <strong>Start</strong> di Telegram — video otomatis terkirim.
             </p>
 
             {deepLink ? (
-              <a
-                href={deepLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="primary-button"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}
-              >
-                Buka Bot Telegram ↗
-              </a>
+              <div className="modal-actions">
+                <a
+                  href={deepLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="primary-button"
+                  onClick={() => setLaunched(true)}
+                >
+                  Buka Bot Telegram ↗
+                </a>
+                <button type="button" className="secondary-button" onClick={handleCopy}>
+                  {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+                  {copied ? 'Tersalin' : 'Salin link'}
+                </button>
+              </div>
             ) : (
               <p className="notice">Bot download belum dikonfigurasi. Coba lagi nanti.</p>
             )}
 
-            <p style={{ color: '#64748b', fontSize: '0.78rem', marginTop: 16, marginBottom: 0 }}>
-              Video dikirim sebagai file yang bisa diputar & disimpan dari aplikasi Telegram.
+            {launched && !copied && (
+              <p className="modal-feedback" role="status">
+                ✓ Mengarahkan ke Telegram… tekan <strong>Start</strong> di aplikasi untuk menerima video.
+              </p>
+            )}
+
+            <p className="modal-hint">
+              Video dikirim sebagai file yang bisa diputar &amp; disimpan dari aplikasi Telegram.
             </p>
           </div>
         </div>
@@ -99,3 +117,4 @@ export default function TelegramDownloadButton({ youtubeVideoId, title }: Props)
     </>
   );
 }
+
