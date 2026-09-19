@@ -7,7 +7,7 @@ import { Play, Calendar } from 'lucide-react';
 import type { VideoItem } from '@/lib/db';
 
 export default function VideoCard({ video }: { video: VideoItem }) {
-  const watchUrl = `/watch/${video.youtube_video_id || video.id}`;
+  const watchUrl = `/watch/${video.watch_id || video.youtube_video_id || video.id}`;
 
   // Tanggal sudah dikonversi ke WIB di server (lib/wib.ts via VideoItem
   // date_display) — kartu tidak boleh memformat sendiri di browser viewer,

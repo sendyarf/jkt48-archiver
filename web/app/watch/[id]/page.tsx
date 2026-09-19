@@ -1,8 +1,9 @@
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
 import type { Metadata } from 'next';
 import { getVideoById, getAllVideos } from '@/lib/db';
+import { encodeWatchId, isRawYoutubeId } from '@/lib/codec';
 import { formatWibLong } from '@/lib/wib';
 import VideoPlayer from '@/components/VideoPlayer';
 import TelegramDownloadButton from '@/components/TelegramDownloadButton';
@@ -43,6 +44,12 @@ export default async function WatchPage({ params }: WatchPageProps) {
 
   if (!video) {
     notFound();
+  }
+
+  // URL kanonis memakai ID tersamar. Bila dibuka pakai YouTube ID mentah
+  // (link lama / dibagikan manual), arahkan permanen ke bentuk tersamar.
+  if (isRawYoutubeId(id) && video.youtube_video_id === id) {
+    redirect(`/watch/${encodeWatchId(id)}`);
   }
 
   // Fetch related videos from the same member or recent
@@ -136,7 +143,7 @@ export default async function WatchPage({ params }: WatchPageProps) {
               {filteredRelated.map((rel) => (
                 <Link
                   key={rel.youtube_video_id || rel.id}
-                  href={`/watch/${rel.youtube_video_id || rel.id}`}
+                  href={`/watch/${rel.watch_id || rel.youtube_video_id || rel.id}`}
                   className="related-card"
                 >
                   <div className="related-thumb-box">

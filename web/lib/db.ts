@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
+import { decodeWatchId, encodeWatchId, isRawYoutubeId } from './codec';
 
 let _db: DatabaseSync | null = null;
 
@@ -147,6 +148,8 @@ export interface VideoItem {
   duration_seconds: number;
   duration_formatted: string;
   youtube_video_id: string;
+  /** ID tersamar (Base64URL) untuk URL /watch publik. */
+  watch_id?: string;
   thumbnail_url: string;
   created_at: string;
   /** True bila replay sudah tersimpan di channel arsip Telegram (bisa diunduh via bot). */
@@ -312,6 +315,7 @@ export function getAllVideos(options: {
       duration_seconds: durSec,
       duration_formatted: durSec > 0 ? formatDuration(durSec) : '',
       youtube_video_id: ytId,
+      watch_id: ytId ? encodeWatchId(ytId) : '',
       thumbnail_url: `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`,
       created_at: r.created_at || '',
       is_new: isRecent(startedAt, 24),
@@ -376,6 +380,7 @@ export function getUpcomingVideos(limit = 6): VideoItem[] {
       duration_seconds: 0,
       duration_formatted: '',
       youtube_video_id: ytId,
+      watch_id: ytId ? encodeWatchId(ytId) : '',
       thumbnail_url: `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`,
       created_at: r.created_at || '',
       is_visible: false,
@@ -401,6 +406,10 @@ interface VideoDetailRow {
 
 export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   const db = getDb();
+  // Terima ID tersamar (Base64URL) maupun ID mentah; decode dulu agar lookup
+  // selalu memakai youtube_video_id asli. live_id / numeric id tetap didukung.
+  const decoded = decodeWatchId(videoIdOrLiveId);
+  const lookupId = decoded || videoIdOrLiveId;
   // Ambang jam per platform (Showroom langsung = 0). Waktu acuan download_ended_at
   // (UTC), jatuh ke created_at. publish_at = waktu acuan + ambang (diubah ke ISO UTC
   // dengan datetime(...)). Rekaman yang DITAHAN manual (published=0) tidak dikembalikan.
@@ -435,7 +444,7 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     LIMIT 1
   `;
   const stmt = db.prepare(sql);
-  const r = stmt.get(videoIdOrLiveId, videoIdOrLiveId, videoIdOrLiveId) as unknown as VideoDetailRow | undefined;
+  const r = stmt.get(lookupId, videoIdOrLiveId, videoIdOrLiveId) as unknown as VideoDetailRow | undefined;
   if (!r) return null;
 
   const dispName = cleanDisplayName(r.member_username, r.streamer_name || undefined);
@@ -460,6 +469,7 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     duration_seconds: durSec,
     duration_formatted: durSec > 0 ? formatDuration(durSec) : '',
     youtube_video_id: ytId,
+    watch_id: ytId ? encodeWatchId(ytId) : '',
     thumbnail_url: ytId ? `https://img.youtube.com/vi/${ytId}/maxresdefault.jpg` : '',
     created_at: r.created_at || '',
     telegram_archived: !!(r.telegram_message_ids && r.telegram_message_ids.trim()),
