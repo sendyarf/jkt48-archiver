@@ -581,16 +581,6 @@ select:focus-visible {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-/* Section "Segera Hadir" di home */
-.upcoming-section { padding-bottom: 8px; }
-.upcoming-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.8rem;
-  color: var(--text-tertiary);
-}
-
 .video-card:hover .video-thumbnail {
   transform: scale(1.05);
 }
