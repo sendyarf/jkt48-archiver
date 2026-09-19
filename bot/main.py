@@ -753,17 +753,34 @@ class JKT48LiveBot:
         self.running = True
         logger.info("Bot started. Monitoring HLS streams every %ds (Merge window: %ds)", Config.HLS_CHECK_INTERVAL_SECONDS, Config.MERGE_WINDOW_SECONDS)
         logger.info(
-            "Merge policy → window %ds sejak segmen terakhir | idle finalize %ds | "
-            "hard cap %.1f jam | IDN lookup: %s | Showroom: %s",
+            "Merge policy → window %ds jeda liputan antar segmen | idle finalize %ds | "
+            "hard cap %.1f jam | split-on-title: %s | IDN lookup: %s | Showroom: %s",
             Config.MERGE_WINDOW_SECONDS,
             Config.MERGE_IDLE_FINALIZE_SECONDS,
             Config.MERGE_MAX_GROUP_HOURS,
+            "AKTIF" if Config.MERGE_SPLIT_ON_TITLE_CHANGE else "nonaktif",
             "aktif" if Config.IDN_LOOKUP_ENABLED else "NONAKTIF (HLS-only)",
             (
                 f"AKTIF (polling %ds, debounce offline %dx)"
                 % (Config.SHOWROOM_CHECK_INTERVAL_SECONDS, Config.SHOWROOM_OFFLINE_CONFIRMATIONS)
             ) if Config.SHOWROOM_ENABLED else "NONAKTIF",
         )
+
+        # Peringatan setelan yang bisa MEMECAH satu live menjadi beberapa video.
+        # Ditempatkan di startup agar salah-setel langsung terlihat di log.
+        if Config.MERGE_SPLIT_ON_TITLE_CHANGE:
+            logger.warning(
+                "MERGE_SPLIT_ON_TITLE_CHANGE=AKTIF: member yang mengedit judul di "
+                "tengah live akan terpecah menjadi beberapa video (bukti: Carissa "
+                "15 Sep 2026, 3 judul dalam 11 menit = satu live)."
+            )
+        if Config.MERGE_IDLE_FINALIZE_SECONDS > 0:
+            logger.warning(
+                "MERGE_IDLE_FINALIZE_SECONDS=%ds: grup difinalisasi lebih cepat dari "
+                "window saat stream terbaca offline; pastikan nilainya > jeda "
+                "reconnect terpanjang, kalau tidak satu live bisa terpecah.",
+                Config.MERGE_IDLE_FINALIZE_SECONDS,
+            )
 
         # Showroom dipantau pada interval terpisah: 58 room tiap 5 detik akan
         # menghasilkan ~11,6 request/detik ke API Showroom (risiko rate-limit).

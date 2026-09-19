@@ -10,12 +10,24 @@ Kapan sebuah group dianggap selesai (finalize)?
   3. HLS offline & idle >= `MERGE_IDLE_FINALIZE_SECONDS` (percepatan upload), ATAU
   4. Hard cap `MERGE_MAX_GROUP_HOURS` tercapai (anti stream "hang" tanpa disconnect).
 
+Kapan segmen BARU masuk ke group yang sudah ada?
+  Window diukur sebagai **JEDA LIPUTAN**, bukan "sekarang - segmen terakhir":
+
+      (kapan segmen baru MULAI) - (kapan segmen terakhir group SELESAI) <= window
+
+  Alasannya penting: satu segmen bisa berdurasi lebih panjang daripada window
+  (live 2 jam tanpa reconnect). Dengan pembanding "sekarang", begitu segmen
+  panjang selesai jaraknya sudah > window sehingga group lama dianggap
+  kedaluwarsa dan live terpecah menjadi dua video — insiden jkt48_michie
+  (18 Sep 2026, dua video 22:16 & 22:18 WIB). Lihat database.get_active_merge_group.
+
 Finalize SELALU ditunda selama masih ada rekaman berjalan, dan penundaan dilakukan
 dengan menjadwalkan ulang (bukan membatalkan), sehingga segmen berikutnya tetap masuk
 ke group yang sama.
 """
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -27,6 +39,8 @@ from bot.database import (
     get_merge_group,
     get_merge_group_timing,
     get_active_merge_group,
+    get_session_started_utc,
+    get_latest_merge_group,
     get_merge_segments,
     get_waiting_merge_groups,
     get_orphaned_segments,
@@ -140,8 +154,16 @@ class MergeManager:
         u = member_username.lower()
         scope = self._scope(u, platform)
         live_key = live_key_from(live_slug, live_title)
+        # Kapan segmen ini MULAI (UTC). Dipakai untuk mengukur JEDA LIPUTAN
+        # terhadap segmen terakhir grup: segmen panjang (> window) tidak boleh
+        # membuat grup lama dianggap kedaluwarsa — lihat catatan di
+        # database.get_active_merge_group (insiden jkt48_michie 18 Sep 2026).
+        segment_started_utc = get_session_started_utc(live_id)
         async with self._lock:
-            group = get_active_merge_group(u, MERGE_WINDOW, platform=platform)
+            group = get_active_merge_group(
+                u, MERGE_WINDOW, platform=platform,
+                segment_started_utc=segment_started_utc,
+            )
 
             # Deteksi live baru via JUDUL live (slug mentah TIDAK dipakai)
             if group and live_key and SPLIT_ON_TITLE_CHANGE:
@@ -158,8 +180,12 @@ class MergeManager:
 
             if group:
                 group_id = group["id"]
-                logger.info("%s: adding segment to existing merge group %d (extending timer %ds)",
-                            u, group_id, MERGE_WINDOW)
+                logger.info(
+                    "%s: adding segment to existing merge group %d "
+                    "(extending timer %ds, jeda liputan dari segmen terakhir %.0fs)",
+                    u, group_id, MERGE_WINDOW,
+                    self._coverage_gap_seconds(group, segment_started_utc),
+                )
                 update_merge_group_last_segment(group_id)
                 update_merge_group_slug(group_id, live_slug, live_title, live_key)
             else:
@@ -171,6 +197,7 @@ class MergeManager:
                 update_merge_group_slug(group_id, live_slug, live_title, live_key)
                 logger.info("%s: started new merge group %d (platform %s, window %ds, judul '%s')",
                             u, group_id, platform, MERGE_WINDOW, live_key or "-")
+                self._warn_likely_split(u, platform, segment_started_utc)
 
             set_session_merge_group(live_id, group_id)
 
@@ -178,6 +205,61 @@ class MergeManager:
             self._cancel_timer(u, platform)
             self._timers[scope] = asyncio.create_task(
                 self._finalize_group(u, group_id, platform=platform)
+            )
+
+    @staticmethod
+    def _coverage_gap_seconds(group: dict, segment_started_utc: Optional[str]) -> float:
+        """
+        Jeda liputan (detik): MULAI segmen baru − SELESAI segmen terakhir grup.
+
+        Negatif berarti segmen baru mulai sebelum segmen terakhir selesai
+        (tumpang tindih) — tetap SATU live. -1.0 berarti tidak dapat dihitung
+        (timestamp kosong/tidak terbaca).
+        """
+        end_raw = (group or {}).get("last_segment_at") or (group or {}).get("created_at")
+        if not segment_started_utc or not end_raw:
+            return -1.0
+        try:
+            start = datetime.fromisoformat(str(segment_started_utc).replace("Z", "+00:00"))
+            end = datetime.fromisoformat(str(end_raw).replace("Z", "+00:00"))
+        except ValueError:
+            return -1.0
+        # Timestamp naif (nilai lama) diperlakukan UTC — sama seperti konvensi
+        # penyimpanan bot, dan konsisten dengan julianday() di SQL.
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        return (start - end).total_seconds()
+
+    def _warn_likely_split(
+        self,
+        member_username: str,
+        platform: str,
+        segment_started_utc: Optional[str],
+    ) -> None:
+        """
+        Peringatkan bila segmen ini memulai grup BARU padahal grup terakhir
+        member+platform baru saja ada (jeda liputan <= window).
+
+        Kondisi itu berarti live kemungkinan besar terpecah menjadi dua video —
+        sinyal untuk memeriksa log finalize / nilai MERGE_* di .env. Sengaja
+        hanya log (tidak mengubah perilaku) supaya keputusan merge tetap
+        konservatif dan mudah diaudit.
+        """
+        try:
+            previous = get_latest_merge_group(member_username, platform)
+        except Exception as exc:  # pragma: no cover - jalur DB
+            logger.debug("Gagal membaca grup merge terakhir %s: %s", member_username, exc)
+            return
+        if not previous:
+            return
+        gap = self._coverage_gap_seconds(previous, segment_started_utc)
+        if 0 <= gap <= MERGE_WINDOW:
+            logger.warning(
+                "%s: segmen ini memulai grup BARU padahal grup terakhir (%d, status=%s) "
+                "baru %.0fs sebelumnya — kemungkinan LIVE TERPECAH menjadi dua video",
+                member_username, previous.get("id"), previous.get("status"), gap,
             )
 
     def _cancel_timer(self, member_username: str, platform: str = "idn") -> None:

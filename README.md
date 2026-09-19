@@ -255,6 +255,21 @@ meng-upload setelah live benar-benar selesai.
 | 3 | (Opsional, **default NONAKTIF**) HLS offline & idle ≥ N detik | 0 = off | `MERGE_IDLE_FINALIZE_SECONDS` |
 | 4 | (Opsional, **default NONAKTIF — tidak andal**) judul live berubah | false | `MERGE_SPLIT_ON_TITLE_CHANGE` |
 
+Kapan sebuah **segmen baru** masuk ke grup yang sedang menunggu? Window diukur sebagai
+**jeda liputan**:
+
+```
+(kapan segmen baru MULAI) − (kapan segmen terakhir grup SELESAI) ≤ MERGE_WINDOW_SECONDS
+```
+
+Bukan "sekarang − segmen terakhir". Perbedaannya menentukan: satu segmen bisa berdurasi
+lebih panjang daripada window (live 2 jam tanpa reconnect sama sekali). Dengan pembanding
+"sekarang", begitu segmen panjang itu selesai jaraknya menjadi > window, grup lama
+dianggap kedaluwarsa, dan segmen panjang tadi membuka **grup baru** — satu live jadi dua
+video. Itu persis insiden `jkt48_michie` (18 Sep 2026): dua video 22:16 & 22:18 WIB
+padahal jeda live hanya ~1 menit. Dengan jeda liputan, yang diukur adalah lubang rekaman
+sebenarnya, sehingga segmen tetap satu live selama lubangnya ≤ window.
+
 Finalize **selalu ditunda** selama masih ada rekaman berjalan (tidak pernah memotong
 video di tengah rekaman).
 
@@ -276,8 +291,9 @@ jkt48_carissa:  my-bestie-ku-sini-join-260915164353
                 sini-my-bestie-akuu-260915165451        → semuanya SATU live
 ```
 
-Karena itu **penentu yang dipakai hanya jeda waktu**: reconnect yang jedanya kurang dari
-`MERGE_WINDOW_SECONDS` digabung menjadi satu video; kalau lebih, dianggap live terpisah.
+Karena itu **penentu yang dipakai hanya jeda waktu**: reconnect dengan jeda liputan
+(mulai segmen berikutnya − akhir segmen sebelumnya) kurang dari `MERGE_WINDOW_SECONDS`
+digabung menjadi satu video; kalau lubangnya lebih besar, dianggap live terpisah.
 Judul live (`live_key`) tetap disimpan, tapi hanya untuk caption/log dan tampilan.
 
 > ⚠️ Karena alasan di atas, `MERGE_SPLIT_ON_TITLE_CHANGE` sebaiknya **dibiarkan `false`**.

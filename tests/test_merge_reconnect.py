@@ -180,6 +180,117 @@ class TestMergeWindowRegression(MergeTestCase):
         self.assertIsNone(database.get_active_merge_group(MEMBER, 3600))
         # Grup tidak dihapus, hanya tidak dianggap aktif
         self.assertEqual(database.get_merge_group(gid)["status"], "waiting")
+
+
+class TestMergeCoverageGap(MergeTestCase):
+    """
+    REGRESI insiden jkt48_michie (18 Sep 2026): satu live jadi DUA video
+    berjarak 2 menit (22:16 & 22:18 WIB) padahal jeda live hanya ~1 menit.
+
+    Penyebabnya: window diukur "sekarang − akhir segmen terakhir". Bila segmen
+    terakhir berdurasi panjang (live ±2 jam tanpa reconnect), begitu segmen itu
+    selesai jaraknya sudah > window, sehingga grup lama dianggap kedaluwarsa dan
+    segmen panjang tadi membuka grup BARU.
+
+    Sekarang yang diukur JEDA LIPUTAN (coverage gap):
+    MULAI segmen baru − SELESAI segmen terakhir grup.
+    """
+
+    def _group_last_segment_minutes_ago(self, minutes_ago: int) -> int:
+        """Grup 'waiting' tanpa segmen, dengan last_segment_at di masa lalu."""
+        gid = self._make_group(with_segment=False)
+        with database._get_conn() as conn:
+            conn.execute(
+                "UPDATE merge_groups SET last_segment_at = datetime('now', ?) WHERE id = ?",
+                (f"-{minutes_ago} minutes", gid),
+            )
+        return gid
+
+    def _session_started_minutes_ago(self, live_id: str, minutes_ago: int) -> None:
+        """Sesi dengan created_at (UTC) dimundurkan — created_at = waktu segmen mulai."""
+        database.insert_live(
+            live_id=live_id,
+            member_username=MEMBER,
+            member_name=NAME,
+            started_at=datetime.now().isoformat(),
+            hls_url=HLS_LULU,
+        )
+        with database._get_conn() as conn:
+            conn.execute(
+                "UPDATE live_sessions SET created_at = datetime('now', ?) WHERE live_id = ?",
+                (f"-{minutes_ago} minutes", live_id),
+            )
+
+    def test_segmen_panjang_setelah_reconnect_tetap_satu_grup(self):
+        # Grup terakhir selesai 2 jam lalu; segmen baru MULAI 1 menit setelahnya
+        # dan baru selesai sekarang (durasi ±2 jam) → wajib SATU grup.
+        gid = self._group_last_segment_minutes_ago(minutes_ago=120)
+        self._session_started_minutes_ago("michie-seg2", minutes_ago=119)
+
+        started_utc = database.get_session_started_utc("michie-seg2")
+        self.assertIsNotNone(started_utc, "created_at sesi harus terbaca sebagai UTC")
+        found = database.get_active_merge_group(
+            MEMBER, 3600, segment_started_utc=started_utc
+        )
+        self.assertIsNotNone(
+            found, "segmen panjang (> window) tidak boleh memecah live jadi dua video"
+        )
+        self.assertEqual(found["id"], gid)
+
+    def test_perilaku_lama_akan_memecah_live(self):
+        """Membuktikan bug lama: tanpa jeda liputan, grup dianggap kedaluwarsa."""
+        self._group_last_segment_minutes_ago(minutes_ago=120)
+        self._session_started_minutes_ago("michie-seg2", minutes_ago=119)
+        self.assertIsNone(
+            database.get_active_merge_group(MEMBER, 3600),
+            "pembanding 'sekarang' memang memecah live (dasar perbaikan ini)",
+        )
+
+    def test_jeda_liputan_besar_membuat_grup_baru(self):
+        # Lubang rekaman 5 jam = live benar-benar berbeda → grup baru.
+        self._group_last_segment_minutes_ago(minutes_ago=300)
+        self._session_started_minutes_ago("michie-live-baru", minutes_ago=0)
+        started_utc = database.get_session_started_utc("michie-live-baru")
+        self.assertIsNone(
+            database.get_active_merge_group(MEMBER, 3600, segment_started_utc=started_utc)
+        )
+
+    def test_add_segment_menggabungkan_segmen_panjang(self):
+        """End-to-end: add_segment menaruh segmen panjang ke grup yang sama."""
+        gid = self._group_last_segment_minutes_ago(minutes_ago=120)
+        path = self._dummy_video("michie-seg2.mp4")
+        self._session_started_minutes_ago("michie-seg2-live", minutes_ago=119)
+        database.update_status(
+            "michie-seg2-live", "segment_done",
+            file_path=str(path), file_size_bytes=4096,
+            download_ended_at=datetime.now().isoformat(),
+        )
+
+        async def scenario():
+            try:
+                await self.mgr.add_segment(
+                    live_id="michie-seg2-live",
+                    member_username=MEMBER,
+                    member_name=NAME,
+                    started_at=datetime.now().isoformat(),
+                    file_path=str(path),
+                    live_title="",
+                    live_slug="",
+                    platform="idn",
+                )
+            finally:
+                # Timer finalize memakai event loop ini; batalkan sebelum loop tutup.
+                self.mgr._cancel_timer(MEMBER)
+
+        asyncio.run(scenario())
+
+        row = database.get_session("michie-seg2-live")
+        self.assertEqual(
+            row["merge_group_id"], gid,
+            "segmen panjang harus masuk grup yang sama, bukan membuat video baru",
+        )
+
+
 class TestMergeDecision(MergeTestCase):
     """Matriks keputusan finalize/defer."""
 

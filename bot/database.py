@@ -412,14 +412,25 @@ def get_active_merge_group(
     member_username: str,
     within_seconds: int = 600,
     platform: Optional[str] = None,
+    segment_started_utc: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Return the latest 'waiting' merge group for this member if within time window.
 
-    Window dihitung dari **segmen terakhir** (`last_segment_at`), bukan kapan grup
-    dibuat. Penting: grup hasil reconnect panjang bisa berumur > 1 jam sejak dibuat
-    padahal jeda dari segmen terakhirnya baru beberapa menit — itu tetap SATU live dan
-    tidak boleh dipecah menjadi beberapa video.
+    Window diukur sebagai **JEDA LIPUTAN** (coverage gap):
+
+        (kapan segmen baru MULAI) - (kapan segmen terakhir grup SELESAI) <= window
+
+    Bila `segment_started_utc` tidak diberikan, pembandingnya `datetime('now')`
+    (= akhir segmen baru, perilaku lama).
+
+    Mengapa jeda liputan, bukan "sekarang - segmen terakhir": satu segmen bisa
+    berdurasi lebih panjang daripada window (live 2 jam tanpa reconnect sama
+    sekali). Dengan perbandingan ke "sekarang", saat segmen panjang itu selesai
+    jaraknya sudah > window sehingga grup lama dianggap kedaluwarsa dan live
+    terpecah jadi dua video — persis insiden jkt48_michie (18 Sep 2026, dua
+    video berjarak 2 menit). Dengan jeda liputan, yang diukur adalah lubang
+    rekaman sebenarnya: selama tidak ada lubang > window, segmen tetap satu live.
 
     `platform` menyaring grup berdasarkan asal sesi. Ini penting untuk member yang
     punya IDN dan Showroom sekaligus: tanpa filter, segmen Showroom bisa masuk ke
@@ -428,8 +439,51 @@ def get_active_merge_group(
     """
     sql = """SELECT * FROM merge_groups
              WHERE member_username = ? AND status = 'waiting'
-               AND (julianday('now') - julianday(COALESCE(last_segment_at, created_at))) * 86400 <= ?"""
-    params: list = [member_username.strip().lower(), within_seconds]
+               AND (julianday(COALESCE(?, datetime('now')))
+                    - julianday(COALESCE(last_segment_at, created_at))) * 86400 <= ?"""
+    params: list = [member_username.strip().lower(), segment_started_utc, within_seconds]
+    if platform:
+        sql += " AND platform = ?"
+        params.append(platform)
+    sql += " ORDER BY id DESC LIMIT 1"
+
+    with _get_conn() as conn:
+        row = conn.execute(sql, tuple(params)).fetchone()
+    return dict(row) if row else None
+
+
+def get_session_started_utc(live_id: str) -> Optional[str]:
+    """
+    Waktu UTC saat sebuah segmen MULAI, untuk mengukur jeda liputan.
+
+    Diambil dari `live_sessions.created_at` (diisi SQLite `datetime('now')` =
+    UTC) sehingga nilainya pasti UTC dan bisa langsung dipakai `julianday()`.
+
+    JANGAN memakai `started_at` / `download_started_at` untuk perbandingan waktu:
+    baris lama menyimpan waktu dinding server **tanpa** penanda zona waktu,
+    sehingga perbandingan lintas baris bisa meleset beberapa jam.
+    """
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT created_at FROM live_sessions WHERE live_id = ?", (live_id,)
+        ).fetchone()
+    if not row:
+        return None
+    return row["created_at"]
+
+
+def get_latest_merge_group(
+    member_username: str, platform: Optional[str] = None
+) -> Optional[dict]:
+    """
+    Grup merge TERAKHIR untuk member (+platform) dalam status apa pun.
+
+    Dipakai sebagai diagnostik: ketika `add_segment` harus membuat grup baru,
+    merger membandingkan grup baru ini dengan grup terakhir untuk mengetahui
+    apakah live kemungkinan terpecah (lihat merger._warn_likely_split).
+    """
+    sql = "SELECT * FROM merge_groups WHERE member_username = ?"
+    params: list = [member_username.strip().lower()]
     if platform:
         sql += " AND platform = ?"
         params.append(platform)
