@@ -2,14 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Bell, Clock } from 'lucide-react';
+import { Clock } from 'lucide-react';
 
 interface Props {
   /** ISO timestamp UTC kapan replay terbit. */
   publishAt: string;
   title: string;
-  /** Deep-link bot Telegram untuk "ingatkan saya" (opsional). */
-  telegramLink?: string;
 }
 
 function pad(n: number): string {
@@ -20,7 +18,7 @@ function pad(n: number): string {
  * Panel countdown pra-rilis: menghitung mundur ke publishAt, lalu me-refresh
  * halaman agar server merender ulang dengan player (is_visible berubah).
  */
-export default function CountdownTimer({ publishAt, title, telegramLink }: Props) {
+export default function CountdownTimer({ publishAt, title }: Props) {
   const router = useRouter();
   const target = new Date(publishAt).getTime();
   const [now, setNow] = useState(() => Date.now());
@@ -84,18 +82,6 @@ export default function CountdownTimer({ publishAt, title, telegramLink }: Props
       </div>
 
       <p className="countdown-sub">Pemutar akan terbuka otomatis saat waktu rilis tiba.</p>
-
-      {telegramLink && (
-        <a
-          href={telegramLink}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="secondary-button countdown-notify"
-        >
-          <Bell size={16} aria-hidden="true" />
-          Ingatkan via Telegram
-        </a>
-      )}
     </div>
   );
 }

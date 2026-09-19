@@ -1844,10 +1844,6 @@ input:checked + .slider:before {
   margin: 0;
 }
 
-.countdown-notify {
-  margin-top: 6px;
-}
-
 @media (max-width: 560px) {
   .countdown-num { min-width: 52px; padding: 8px 10px; }
   .countdown-unit { min-width: 50px; }
