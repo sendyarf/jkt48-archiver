@@ -1,9 +1,28 @@
 import type { Metadata } from 'next';
+import { Bricolage_Grotesque, Plus_Jakarta_Sans } from 'next/font/google';
 import './globals.css';
 import './portal.css';
 import './admin-studio.css';
 import Navbar from '@/components/PublicNavbar';
 import Footer from '@/components/Footer';
+
+/** Display font (judul/hero): ekspresif, playful — vibe idol/fandom.
+ * next/font menyuntik nilainya langsung ke variabel --font-display di bawah. */
+const displayFont = Bricolage_Grotesque({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700', '800'],
+  variable: '--font-display',
+  display: 'swap',
+});
+
+/** Body font: hangat & legibel untuk teks Indonesia.
+ * next/font menyuntik nilainya langsung ke variabel --font-body di bawah. */
+const bodyFont = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-body',
+  display: 'swap',
+});
 
 export const viewport = {
   width: 'device-width',
@@ -46,7 +65,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="id">
+    <html lang="id" className={`${displayFont.variable} ${bodyFont.variable}`}>
       <body>
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
           <a href="#main-content" className="skip-link">Lewati ke konten</a>
