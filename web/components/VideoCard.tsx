@@ -34,7 +34,11 @@ export default function VideoCard({ video }: { video: VideoItem }) {
         <span className={`platform-badge ${video.platform}`}>
           {video.platform === 'idn' ? 'IDN' : 'Showroom'}
         </span>
-        {video.is_new ? <span className="new-badge">Baru</span> : null}
+        {video.is_visible === false ? (
+          <span className="upcoming-badge">Segera</span>
+        ) : video.is_new ? (
+          <span className="new-badge">Baru</span>
+        ) : null}
         {video.duration_formatted ? (
           <span className="duration-badge">{video.duration_formatted}</span>
         ) : null}

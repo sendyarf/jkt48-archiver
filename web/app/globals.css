@@ -565,6 +565,32 @@ select:focus-visible {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
+/* Badge "SEGERA" untuk rekaman pra-rilis (belum bisa ditonton) */
+.upcoming-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #fff;
+  background: rgba(245, 158, 11, 0.92);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* Section "Segera Hadir" di home */
+.upcoming-section { padding-bottom: 8px; }
+.upcoming-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+}
+
 .video-card:hover .video-thumbnail {
   transform: scale(1.05);
 }

@@ -326,6 +326,64 @@ export function getAllVideos(options: {
   };
 }
 
+/**
+ * Rekaman yang AKAN terbit (pra-rilis): sudah ter-upload ke YouTube, belum lewat
+ * ambang auto-publish, dan TIDAK ditahan manual. Dipakai untuk section "Segera
+ * Hadir" di home agar pengunjung bisa menemukan halaman countdown-nya.
+ * Showroom tidak disertakan (ambangnya 0 = langsung terbit).
+ */
+export function getUpcomingVideos(limit = 6): VideoItem[] {
+  if (AUTO_PUBLISH_AFTER_HOURS <= 0) return [];
+  const db = getDb();
+  const hours = AUTO_PUBLISH_AFTER_HOURS;
+  const rows = db.prepare(`
+    SELECT
+      COALESCE(NULLIF(ls.platform, ''), 'idn') as platform,
+      ls.member_username,
+      COALESCE(NULLIF(ls.member_name, ''), NULLIF(mh.display_name, ''), ls.member_username) as streamer_name,
+      COALESCE(NULLIF(mg.live_title, ''), '') as title,
+      MIN(ls.started_at) as started_at,
+      MAX(ls.created_at) as created_at,
+      ls.youtube_video_id,
+      datetime(COALESCE(MAX(ls.download_ended_at), MAX(ls.created_at)), '+${hours} hours') as publish_at
+    FROM live_sessions ls
+    LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id
+    LEFT JOIN member_hls mh ON ls.member_username = mh.username
+    WHERE ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != ''
+      AND COALESCE(ls.platform, 'idn') != 'showroom'
+      AND NOT EXISTS (SELECT 1 FROM web_publications pw WHERE pw.youtube_video_id = ls.youtube_video_id AND pw.published = 0)
+      AND NOT EXISTS (SELECT 1 FROM web_publications po WHERE po.youtube_video_id = ls.youtube_video_id AND po.published = 1)
+      AND (julianday('now') - julianday(COALESCE(ls.download_ended_at, ls.created_at))) * 24 < ${hours}
+    GROUP BY ls.youtube_video_id
+    ORDER BY publish_at ASC
+    LIMIT ?
+  `).all(limit) as unknown as Array<VideoRow & { publish_at: string | null }>;
+
+  return rows.map((r) => {
+    const dispName = cleanDisplayName(r.member_username, r.streamer_name || undefined);
+    const startedAt = r.started_at || r.created_at || '';
+    const platform = normalizePlatform(r.platform);
+    const title = buildDisplayTitle(platform, dispName, startedAt);
+    const ytId = r.youtube_video_id;
+    return {
+      id: ytId,
+      platform,
+      streamer_username: r.member_username,
+      streamer_name: dispName,
+      title,
+      started_at: startedAt,
+      date_display: formatWibCardDate(startedAt),
+      duration_seconds: 0,
+      duration_formatted: '',
+      youtube_video_id: ytId,
+      thumbnail_url: `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`,
+      created_at: r.created_at || '',
+      is_visible: false,
+      publish_at: r.publish_at ? r.publish_at.replace(' ', 'T') + 'Z' : '',
+    };
+  });
+}
+
 interface VideoDetailRow {
   platform: string | null;
   member_username: string;
