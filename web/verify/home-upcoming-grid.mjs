@@ -52,8 +52,45 @@ for (const id of [...PENDING, ...OLD, WITHHELD, MANUAL, SHOWROOM_NEW, SHOWROOM_O
   assert.equal(id.length, 11, `ID fixture harus 11 karakter: ${id}`);
 }
 
+/**
+ * Date search unit checks against the real extractSearchDates (web/lib/wib.ts).
+ * Expectations are computed from the live server clock so the script stays
+ * green whatever day it runs (see checkDateCases() below).
+ */
+
 const inserts = [];
 const publications = [];
+
+/**
+ * Unit checks for extractSearchDates() (web/lib/wib.ts), the date parser
+ * behind keyword date search. Expected values are derived from the real clock
+ * so the script is green on any run date. wib.ts has no dependencies, so it
+ * is imported directly (Node strips types).
+ */
+async function checkDateCases() {
+  const { extractSearchDates } = await import('../lib/wib.ts');
+  const now = new Date();
+  const y = now.getFullYear();
+  const pad = (n) => String(n).padStart(2, '0');
+  const isoToday = `${y}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const monthToday = isoToday.slice(0, 7);
+  const lastYear = `${y - 1}-${pad(now.getMonth() + 1)}`;
+  const cases = [
+    [`${now.getDate()} ${['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'][now.getMonth()]}`, [isoToday, `${y - 1}-${isoToday.slice(5)}`]],
+    [`${now.getDate()} ${['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'][now.getMonth()]} ${y}`, [isoToday]],
+    [`${['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'][now.getMonth()]} ${y}`, [monthToday]],
+    [`${['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'][now.getMonth()]}`, [monthToday, lastYear]],
+    ['18/09/2026', ['2026-09-18']],
+    ['2026-09-18', ['2026-09-18']],
+    [`${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${y}`, [isoToday]],
+    ['lulu', []],
+    ['live idn', []],
+    ['september', ['2026-09', '2025-09'].map((d) => d.replace(/^2026-09$/, monthToday).replace(/^2025-09$/, lastYear))],
+  ];
+  for (const [keyword, expected] of cases) {
+    assert.deepEqual(extractSearchDates(keyword), expected, `extractSearchDates(${JSON.stringify(keyword)})`);
+  }
+}
 
 /**
  * Satu baris rekaman. `endedHoursAgo` menentukan status (pra-rilis vs terbit)
@@ -241,6 +278,28 @@ try {
   const searchHtml = await getHtml(live, '/?q=uji');
   assert.equal(countOf(searchHtml, CARD_UPCOMING), 0, 'Hasil pencarian kata kunci tidak boleh dicampur pra-rilis');
 
+  // ── Bagian 1b: pencarian tanggal ──────────────────────────────────────────
+  // Fixture memakai jam berjalan: "tanggal"-nya = tanggal hari ini (WIB ±1 hari).
+  await checkDateCases();
+  const nowParts = new Intl.DateTimeFormat('id-ID', {
+    timeZone: 'Asia/Jakarta', day: 'numeric', month: 'long', year: 'numeric',
+  }).formatToParts(new Date());
+  const part = (t) => nowParts.find((p) => p.type === t).value;
+  const todayId = `${part('day')} ${part('month')} ${part('year')}`; // mis. "19 September 2026"
+  const monthYearId = `${part('month')} ${part('year')}`; // mis. "September 2026"
+  for (const keyword of [todayId, monthYearId, todayId.toLowerCase()]) {
+    const dateHtml = await getHtml(live, `/?q=${encodeURIComponent(keyword)}`);
+    // Ringkasan pencarian menggemakan kata kunci (tanda kutip khas "..." plus
+    // pemisah komentar khas render React di antara node teks).
+    assert.ok(/untuk /.test(dateHtml) && dateHtml.includes(keyword),
+      `Ringkasan pencarian harus menggemakan kata kunci ${JSON.stringify(keyword)}`);
+    assert.ok(countOf(dateHtml, 'video-card') >= 1 || !/Tidak ada rekaman yang cocok/.test(dateHtml),
+      `Pencarian tanggal ${JSON.stringify(keyword)} tidak boleh kosong total`);
+  }
+  // Kontrol negatif: tanggal yang pasti tidak ada di fixture tetap kosong.
+  const emptyHtml = await getHtml(live, '/?q=17%20Januari%201990');
+  assert.match(emptyHtml, /Tidak ada rekaman yang cocok/, 'Tanggal fiktif harus tetap menampilkan empty state');
+
   // Halaman 2 tidak menggandakan kartu pra-rilis.
   const page2 = await getHtml(live, '/?page=2');
   assert.equal(countOf(page2, CARD_UPCOMING), 0, 'Kartu pra-rilis hanya dipasang di halaman 1');
@@ -279,7 +338,7 @@ try {
   assert.equal(srOld.status, 200);
   assert.doesNotMatch(await srOld.text(), /Replay segera hadir/, 'Showroom lewat ambang 12 jam harus sudah terbit');
 
-  console.log('PASS: semua rekaman pra-rilis tampil di grid home (tanpa batas 6), urut terbaru dulu, yang ditahan admin tetap tersembunyi, filter member/platform tetap menampilkan pra-rilis, dan Showroom mengikuti ambangnya.');
+  console.log('PASS: semua rekaman pra-rilis tampil di grid home (tanpa batas 6), urut terbaru dulu, yang ditahan admin tetap tersembunyi, filter member/platform tetap menampilkan pra-rilis, pencarian tanggal berfungsi, dan Showroom mengikuti ambangnya.');
 } finally {
   for (const server of servers) {
     if (server.child.exitCode === null && server.child.signalCode === null) {

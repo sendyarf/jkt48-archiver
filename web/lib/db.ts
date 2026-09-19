@@ -210,7 +210,7 @@ function cleanDisplayName(username: string, name?: string): string {
 }
 
 // Konversi & format WIB dipusatkan di lib/wib.ts (server-side saja).
-import { buildDisplayTitle, formatWibCardDate } from './wib';
+import { buildDisplayTitle, extractSearchDates, formatWibCardDate } from './wib';
 
 export { buildDisplayTitle };
 
@@ -280,14 +280,31 @@ export function getAllVideos(options: {
   }
 
   if (options.search) {
+    // Tanggal yang terlihat di judul ("18 September 2026") dibentuk belakangan
+    // dari started_at, jadi kata kunci tanggal tidak akan cocok ke kolom teks.
+    // Karena itu tanggal diekstrak dulu dari kata kunci lalu dicocokkan ke
+    // `date(..., 'unixepoch', '+7 hours')` — artinya "tanggal berapa di WIB saat
+    // live MULAI" — persis tanggal yang dirender buildDisplayTitle. started_at
+    // ditulis bot sebagai jam dinding server ATAU UTC berpenanda, jadi kedua
+    // tafsir dicoba (tanpa 'unixepoch' ATAU dengan 'unixepoch').
+    const dateKeys = extractSearchDates(options.search);
+    const wallClock = `date(COALESCE(ls.started_at, ls.created_at))`;
+    const wallClockUtc = `date(COALESCE(ls.started_at, ls.created_at), 'unixepoch')`;
+    const dateCond = dateKeys.length
+      ? ` OR strftime('%Y-%m', ${wallClock}) IN (${dateKeys.map(() => '?').join(', ')})
+         OR ${wallClock} IN (${dateKeys.map(() => '?').join(', ')})
+         OR strftime('%Y-%m', ${wallClockUtc}) IN (${dateKeys.map(() => '?').join(', ')})
+         OR ${wallClockUtc} IN (${dateKeys.map(() => '?').join(', ')})`
+      : '';
     baseQuery += ` AND (
-      LOWER(ls.member_username) LIKE ? 
-      OR LOWER(ls.member_name) LIKE ? 
+      LOWER(ls.member_username) LIKE ?
+      OR LOWER(ls.member_name) LIKE ?
       OR LOWER(mg.live_title) LIKE ?
-      OR LOWER(mh.display_name) LIKE ?
+      OR LOWER(mh.display_name) LIKE ?${dateCond}
     )`;
     const s = `%${options.search.toLowerCase()}%`;
     params.push(s, s, s, s);
+    for (let i = 0; i < 4; i++) params.push(...dateKeys);
   }
 
   baseQuery += ` GROUP BY ls.youtube_video_id`;
