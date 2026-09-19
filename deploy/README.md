@@ -141,6 +141,11 @@ adalah 25 detik). `kill_timeout` bawaan PM2 hanya 1600 ms, sehingga tanpa
 pengaturan ini `pm2 restart` akan SIGKILL bot lebih dulu dan **segmen parsial
 hilang** — kebalikan dari jaminan di README.
 
+Sejak 19 Sep 2026 shutdown tidak lagi membatalkan task rekaman seketika: setiap
+yt-dlp di-SIGTERM lebih dulu, task diberi waktu `GRACEFUL_SHUTDOWN_SECONDS`, dan
+file parsial yang tertinggal (≥ 5 MB) didaftarkan sebagai segmen sah lalu masuk
+merge group. Jadi `pm2 restart` di tengah live tidak lagi membuang potongan
+rekaman — asalkan `kill_timeout` tetap ≥ `GRACEFUL_SHUTDOWN_SECONDS + 10`.
 ## 6. nginx + HTTPS
 
 > **Urutan ini penting.** Konfigurasi nginx di repo menunjuk berkas sertifikat di

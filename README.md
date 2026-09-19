@@ -328,8 +328,17 @@ dengan HLS + jeda waktu saja.
 - **Stream hang** (playlist masih HTTP 200 tapi tidak ada data baru) tidak menunda
   upload tanpa batas berkat hard cap.
 - **`pm2 restart` aman**: bot menghentikan yt-dlp secara graceful (SIGTERM) dan
-  menunggu segmen tersimpan (±25s) sebelum keluar, sehingga segmen parsial tidak
-  hilang. Grup `waiting` dijadwalkan ulang otomatis saat boot.
+  menunggu segmen tersimpan (`GRACEFUL_SHUTDOWN_SECONDS`, default ±25s) sebelum
+  keluar, sehingga segmen parsial tidak hilang. Grup `waiting` dijadwalkan ulang
+  otomatis saat boot.
+- **Segmen parsial tidak dibuang saat shutdown** (perbaikan 19 Sep 2026). Sebelumnya
+  `shutdown()` membatalkan semua task rekaman seketika dan `GRACEFUL_SHUTDOWN_SECONDS`
+  tidak dipakai sama sekali: sesi masih berstatus `downloading`, lalu dihapus
+  `clean_interrupted_downloads()` saat boot, sehingga file yang sudah ditutup rapi
+  oleh yt-dlp tidak pernah diupload. Sekarang urutannya: SIGTERM ke setiap yt-dlp →
+  tunggu task selesai maksimal `GRACEFUL_SHUTDOWN_SECONDS` → batalkan paksa sisanya →
+  **selamatkan file parsial** yang tertinggal (≥ 5 MB) sebagai segmen sah dan
+  masukkan ke merge group yang sama.
 
 ---
 

@@ -45,6 +45,12 @@ from bot.merger import MergeManager
 from bot.telegram_sender import TelegramSender, build_youtube_notification
 from bot.youtube_uploader import YouTubeChannelPool, YouTubeQuotaExceeded
 
+# Ukuran minimal file parsial agar layak didaftarkan sebagai segmen saat shutdown
+# (lihat JKT48LiveBot._salvage_partial_segments). ~5 MB ≈ puluhan detik video:
+# file lebih kecil dari ini kemungkinan container-nya belum final sehingga bisa
+# merusak hasil penggabungan.
+_MIN_PARTIAL_BYTES = 5 * 1024 * 1024
+
 # ─── Logging Setup ────────────────────────────────────────────────────────────
 def _setup_logging() -> None:
     handler = colorlog.StreamHandler()
@@ -535,6 +541,10 @@ class JKT48LiveBot:
                 database.update_status(
                     part_id, "downloading", download_started_at=utc_now_iso()
                 )
+                # Bagian resume memakai live_id `_r<N>` sendiri; pemetaan ini harus
+                # ikut diperbarui supaya shutdown/admin bisa SIGTERM proses yang
+                # benar (lihat _stop_recordings_gracefully).
+                self.active_live_ids[f"sr:{username}"] = part_id
                 try:
                     output_file = await download_stream(
                         hls_url=hls_url,
@@ -859,7 +869,17 @@ class JKT48LiveBot:
             await asyncio.sleep(Config.HLS_CHECK_INTERVAL_SECONDS)
 
     async def shutdown(self) -> None:
-        """Graceful shutdown of all components and tasks."""
+        """
+        Graceful shutdown of all components and tasks.
+
+        Rekaman aktif TIDAK langsung dibatalkan. yt-dlp di-SIGTERM lebih dulu
+        supaya container file ditutup rapi, lalu task diberi waktu
+        `GRACEFUL_SHUTDOWN_SECONDS` untuk menyelesaikan jalur normalnya
+        (`segment_done` + masuk merge group). Tanpa ini, setiap `pm2 restart` di
+        tengah live membuang potongan rekaman: sesinya masih berstatus
+        'downloading' sehingga `clean_interrupted_downloads()` menghapusnya saat
+        boot, dan file parsial yang sudah ditutup rapi tidak pernah diupload.
+        """
         logger.info("Shutting down bot...")
         self.running = False
 
@@ -867,10 +887,7 @@ class JKT48LiveBot:
         if self.admin_bot:
             await self.admin_bot.stop()
 
-        # Cancel recording tasks
-        for task in list(self.recording_tasks):
-            if not task.done():
-                task.cancel()
+        await self._stop_recordings_gracefully()
 
         await self.merge_mgr.shutdown()
         await self.hls_discovery.close()
@@ -878,6 +895,118 @@ class JKT48LiveBot:
         await self.showroom.close()
         await self.tg.disconnect()
         logger.info("Bot shutdown complete.")
+
+    async def _stop_recordings_gracefully(self) -> None:
+        """
+        Hentikan rekaman aktif tanpa membuang segmen parsial.
+
+        Urutan: SIGTERM semua yt-dlp aktif → tunggu task selesai maksimal
+        `GRACEFUL_SHUTDOWN_SECONDS` → batalkan paksa sisanya → selamatkan file
+        parsial yang tertinggal. `active_live_ids` disalin SEBELUM apa pun
+        dibatalkan karena task yang berhenti menghapus entri itu di blok
+        `finally` — snapshot inilah yang dipakai untuk penyelamatan.
+        """
+        tasks = [t for t in list(self.recording_tasks) if not t.done()]
+        if not tasks:
+            return
+
+        snapshot = dict(self.active_live_ids)
+        for key, live_id in snapshot.items():
+            if cancel_download(live_id):
+                logger.info(
+                    "Shutdown: SIGTERM yt-dlp %s [live_id=%s] — file parsial "
+                    "ditutup rapi lalu didaftarkan sebagai segmen",
+                    key, live_id,
+                )
+
+        grace = max(0, int(Config.GRACEFUL_SHUTDOWN_SECONDS))
+        if grace:
+            _, pending = await asyncio.wait(tasks, timeout=grace)
+        else:
+            pending = set(tasks)
+
+        for task in pending:
+            task.cancel()
+        if not pending:
+            logger.info("Shutdown: %d task rekaman selesai dengan rapi", len(tasks))
+            return
+
+        logger.warning(
+            "Shutdown: %d task rekaman tidak selesai dalam %ds — dibatalkan paksa",
+            len(pending), grace,
+        )
+        await asyncio.gather(*pending, return_exceptions=True)
+        await self._salvage_partial_segments(snapshot)
+
+    async def _salvage_partial_segments(self, snapshot: dict) -> None:
+        """
+        Daftarkan file parsial yang tertinggal sebagai segmen sah (best-effort).
+
+        Jaring pengaman terakhir, hanya untuk kasus task yang sudah dibatalkan
+        paksa: file yang cukup besar dianggap masih bisa diputar. Sesi seperti
+        ini masuk merge group yang sama seperti segmen normal, sehingga grup
+        tetap difinalisasi (atau dipulihkan saat boot oleh
+        `MergeManager.recover_stuck_groups`).
+        """
+        directory = Path(Config.DOWNLOAD_DIR)
+        for key, live_id in snapshot.items():
+            try:
+                username = key.split(":", 1)[-1].lower()
+                session = database.get_session(live_id)
+                if not session or (session["status"] or "") != "downloading":
+                    continue
+                path = self._find_partial_file(directory, username, live_id)
+                if not path:
+                    continue
+                size = path.stat().st_size
+                database.update_status(
+                    live_id,
+                    "segment_done",
+                    download_ended_at=utc_now_iso(),
+                    file_path=str(path),
+                    file_size_bytes=size,
+                )
+                database.update_member_last_live(username)
+                await self.merge_mgr.add_segment(
+                    live_id=live_id,
+                    member_username=username,
+                    member_name=session["member_name"] or username,
+                    started_at=session["started_at"] or utc_now_iso(),
+                    file_path=str(path),
+                    platform=session["platform"] or "idn",
+                )
+                logger.info(
+                    "Shutdown: segmen parsial %s diselamatkan (%.1f MB) dan "
+                    "dimasukkan ke merge group",
+                    live_id, size / (1024 * 1024),
+                )
+            except Exception as exc:  # pragma: no cover - jaring pengaman
+                logger.warning(
+                    "Shutdown: gagal menyelamatkan segmen parsial %s: %s", live_id, exc
+                )
+
+    @staticmethod
+    def _find_partial_file(directory: Path, username: str, live_id: str) -> Optional[Path]:
+        """
+        Cari file output yt-dlp milik sebuah sesi.
+
+        Nama file dibuat `downloader._output_path` memakai timestamp saat itu
+        (`<username>_<yyyymmdd_HHMMSS>_<live_id>.<ext>`), jadi timestamp tidak
+        bisa direkonstruksi — dicari dengan glob lalu diambil yang terbesar
+        (paling lengkap).
+        """
+        if not directory.exists():
+            return None
+        candidates: list[Path] = []
+        for candidate in directory.glob(f"{username}_*_{live_id}.*"):
+            try:
+                if candidate.is_file() and candidate.stat().st_size >= _MIN_PARTIAL_BYTES:
+                    candidates.append(candidate)
+            except OSError:
+                continue
+        if not candidates:
+            return None
+        return max(candidates, key=lambda p: p.stat().st_size)
 
 
 async def main() -> None:
