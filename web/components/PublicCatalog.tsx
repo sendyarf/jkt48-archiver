@@ -10,10 +10,13 @@ export default async function PublicCatalog({ searchParams }: { searchParams: Pr
   const result = getAllVideos({ search: q, member, platform, page: parseInt(params.page || '1', 10), limit: 24 });
   const members = getPublicMembers();
   const filtered = !!(q || member || platform);
-  // Rekaman yang akan terbit digabung ke grid utama (bukan section terpisah) dan
-  // diurutkan berdasarkan waktu live terbaru bersama rekaman yang sudah publish.
-  // Hanya ditambahkan saat tidak memfilter, agar hasil penelusuran tetap murni.
-  const upcoming = filtered ? [] : getUpcomingVideos(6);
+  // Rekaman pra-rilis ("Segera") digabung ke grid utama (bukan section terpisah)
+  // lalu diurutkan bersama rekaman yang sudah terbit. Jumlahnya TIDAK dibatasi —
+  // dulu hanya 6 item terdekat yang diambil, sehingga konten pra-rilis terbaru
+  // tidak pernah muncul di grid. Pencarian kata kunci (q) tetap murni; filter
+  // member/platform tetap menampilkan pra-rilis yang cocok. Hanya dipasang di
+  // halaman 1 agar tidak ada kartu ganda saat berpindah halaman.
+  const upcoming = !q && result.page === 1 ? getUpcomingVideos({ member, platform }) : [];
   const merged = [...upcoming, ...result.videos].sort(
     (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()
   );

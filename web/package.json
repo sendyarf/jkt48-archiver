@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "verify:auto-publish": "node verify/auto-publish-check.mjs",
+    "verify:home-upcoming": "node verify/home-upcoming-grid.mjs"
   },
   "dependencies": {
     "@vidstack/react": "^1.15.6",

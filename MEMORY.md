@@ -88,6 +88,22 @@ mengerjakan proyek ini. Jangan melanggar tanpa alasan yang jelas dan disepakati.
   kirim. Jangan asumsikan `download_complete` = sudah terkirim.
 - Jaga logika `_active_downloads` / `_active_hls_urls` agar tidak ada duplikasi
   download untuk URL yang sama.
+- **Konten pra-rilis harus UTUH di grid home.** `getUpcomingVideos()` mengembalikan
+  SEMUA rekaman yang belum lewat ambang (`LIMIT -1`, urut terbaru lebih dulu) dan
+  mengikuti filter `member`/`platform`; hanya pencarian kata kunci (`q`) yang murni.
+  Batas kecil + urut `publish_at ASC` pernah membuat rekaman pra-rilis TERBARU tidak
+  pernah muncul di grid. Kartu "Segera" dipasang di halaman 1 saja (anti-duplikat).
+- **Ambang per platform dibaca NILAI-nya, bukan hanya tandanya.**
+  `AUTO_PUBLISH_AFTER_HOURS_SHOWROOM`: 0 = langsung tampil (default, tanpa jeda),
+  positif = tunggu N jam (muncul sebagai pra-rilis berjadwal), negatif = wajib
+  persetujuan admin. Jangan kembali ke pola `>= 0 ? '1' : '0'`.
+- **Status HTTP rute dinamis Next 16.3.5 tidak bisa dipakai untuk menguji 404/redirect.**
+  `notFound()` dan `redirect()` di rute `[id]` mengembalikan **200** (isi halaman
+  404/login-nya benar dan tidak membocorkan data); hanya rute statis yang benar 404.
+  Skrip `web/verify/*.mjs` harus menilai **konten** (mis. `countdown-panel`,
+  `video-player-container`), bukan `res.status === 404`. Karena ini:
+  `public-private-check.mjs` (masih memakai `location`/`status 404` untuk
+  `/watch/...`) sudah **stale** dan belum diperbarui.
 
 ## Sumber Kebenaran Pemantauan Channel (WAJIB DIINGAT)
 

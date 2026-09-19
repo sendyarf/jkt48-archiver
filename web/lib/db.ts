@@ -119,16 +119,22 @@ export const AUTO_PUBLISH_AFTER_HOURS_SHOWROOM: number = (() => {
  * ('now') yang juga UTC — jadi tidak bergantung zona waktu server.
  *
  * Ambang per platform: showroom memakai AUTO_PUBLISH_AFTER_HOURS_SHOWROOM
- * (default 0 = langsung), platform lain memakai AUTO_PUBLISH_AFTER_HOURS
- * (default 72; 0 = nonaktif, wajib manual). Baris tanpa kolom/platform
- * diperlakukan 'idn' agar perilaku lama tidak berubah.
+ * (default 0 = langsung tampil; positif = tunggu N jam; negatif = wajib manual),
+ * platform lain memakai AUTO_PUBLISH_AFTER_HOURS (default 72; 0 = nonaktif, wajib
+ * manual). Baris tanpa kolom/platform diperlakukan 'idn' agar perilaku lama tidak
+ * berubah.
  */
 function publicVisibilitySql(alias = 'ls'): string {
   const explicitOn = `EXISTS (SELECT 1 FROM web_publications p WHERE p.youtube_video_id = ${alias}.youtube_video_id AND p.published = 1)`;
   const withheld = `EXISTS (SELECT 1 FROM web_publications p0 WHERE p0.youtube_video_id = ${alias}.youtube_video_id AND p0.published = 0)`;
   const elapsedHours = `(julianday('now') - julianday(COALESCE(${alias}.download_ended_at, ${alias}.created_at))) * 24`;
-  // Showroom: ambang 0 = langsung tampil (konstanta 1); negatif = nonaktif.
-  const showroomAuto = AUTO_PUBLISH_AFTER_HOURS_SHOWROOM >= 0 ? '1' : '0';
+  // Showroom: 0 = langsung tampil (konstanta 1, tanpa jeda), negatif = nonaktif,
+  // positif = terjadwal N jam. Nilai positif sebelumnya diperlakukan sama dengan 0
+  // sehingga jadwal rilis Showroom tidak pernah berlaku (padahal getUpcomingVideos
+  // sudah menandainya pra-rilis → kartu muncul di grid tapi pemutar ikut muncul).
+  const showroomAuto = AUTO_PUBLISH_AFTER_HOURS_SHOWROOM > 0
+    ? `(${elapsedHours} >= ${AUTO_PUBLISH_AFTER_HOURS_SHOWROOM})`
+    : (AUTO_PUBLISH_AFTER_HOURS_SHOWROOM === 0 ? '1' : '0');
   // IDN & platform lain: butuh lewat ambang; 0 = nonaktif (wajib manual).
   const idnAuto = AUTO_PUBLISH_AFTER_HOURS > 0
     ? `(${elapsedHours} >= ${AUTO_PUBLISH_AFTER_HOURS})`
@@ -330,20 +336,66 @@ export function getAllVideos(options: {
   };
 }
 
+/** Opsi pemilihan rekaman pra-rilis (belum lewat ambang auto-publish). */
+export interface UpcomingOptions {
+  /**
+   * Batas jumlah item. `<= 0` (default) = SEMUA rekaman pra-rilis. Jangan
+   * dibatasi diam-diam: item yang terpotong itulah yang dianggap "hilang"
+   * dari grid oleh pengunjung.
+   */
+  limit?: number;
+  /** Saring per member (username) agar pra-rilis tetap tampil saat difilter. */
+  member?: string;
+  /** Saring per platform ('idn'/'showroom'); kosong = semua platform. */
+  platform?: string;
+}
+
 /**
  * Rekaman yang AKAN terbit (pra-rilis): sudah ter-upload ke YouTube, belum lewat
- * ambang auto-publish, dan TIDAK ditahan manual. Dipakai untuk section "Segera
- * Hadir" di home agar pengunjung bisa menemukan halaman countdown-nya.
- * Showroom tidak disertakan (ambangnya 0 = langsung terbit).
+ * ambang auto-publish, dan TIDAK ditahan admin. Dipakai untuk menggabungkan kartu
+ * "Segera" ke grid utama home agar pengunjung bisa menemukan halaman countdown-nya.
+ *
+ * Aturan:
+ *  - SEMUA rekaman pra-rilis dikembalikan (tanpa batas bawaan). Versi sebelumnya
+ *    hanya mengambil 6 item terurut `publish_at ASC`, sehingga rekaman pra-rilis
+ *    TERBARU tidak pernah muncul di grid.
+ *  - Showroom hanya ikut bila ambangnya > 0. Ambang 0 (default) = Showroom langsung
+ *    terbit, ambang negatif = wajib persetujuan admin — keduanya bukan pra-rilis
+ *    terjadwal, jadi tidak ditampilkan sebagai "Segera hadir" berjadwal.
  */
-export function getUpcomingVideos(limit = 6): VideoItem[] {
-  if (AUTO_PUBLISH_AFTER_HOURS <= 0) return [];
-  const db = getDb();
+export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
+  const { limit = 0, member, platform } = options;
   const hours = AUTO_PUBLISH_AFTER_HOURS;
+  if (hours <= 0) return []; // rilis otomatis IDN nonaktif → tidak ada jadwal rilis
+  const showroomHours = AUTO_PUBLISH_AFTER_HOURS_SHOWROOM > 0 ? AUTO_PUBLISH_AFTER_HOURS_SHOWROOM : 0;
+  const wantedPlatform = (platform || '').trim().toLowerCase();
+  if (wantedPlatform === 'showroom' && showroomHours <= 0) return [];
+
+  const conditions = [
+    `ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != ''`,
+    // Ditahan admin (published = 0) / terbit manual (published = 1) bukan pra-rilis.
+    `NOT EXISTS (SELECT 1 FROM web_publications pw WHERE pw.youtube_video_id = ls.youtube_video_id AND pw.published = 0)`,
+    `NOT EXISTS (SELECT 1 FROM web_publications po WHERE po.youtube_video_id = ls.youtube_video_id AND po.published = 1)`,
+  ];
+  const params: (string | number)[] = [];
+  if (showroomHours <= 0) conditions.push(`COALESCE(ls.platform, 'idn') != 'showroom'`);
+  if (wantedPlatform) {
+    conditions.push(`COALESCE(NULLIF(ls.platform, ''), 'idn') = ?`);
+    params.push(wantedPlatform);
+  }
+  if (member) {
+    conditions.push(`LOWER(ls.member_username) = ?`);
+    params.push(member.toLowerCase());
+  }
+  // limit <= 0 → LIMIT -1 (tanpa batas atas) di SQLite.
+  const rowLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : -1;
+
+  const db = getDb();
   // Waktu acuan rilis = waktu TERAKHIR segmen selesai di seluruh grup (bukan per
   // baris), agar live panjang yang tersimpan sebagai banyak segmen dinilai sebagai
   // satu video. "Akan terbit" = belum visible (publicVisibilitySql=false) DAN
-  // publish_at masih di masa depan.
+  // publish_at masih di masa depan. Terbaru lebih dulu supaya bila pemanggil
+  // membatasi jumlah, yang terambil adalah rekaman pra-rilis paling baru.
   const rows = db.prepare(`
     SELECT
       COALESCE(NULLIF(ls.platform, ''), 'idn') as platform,
@@ -354,19 +406,21 @@ export function getUpcomingVideos(limit = 6): VideoItem[] {
       MAX(ls.created_at) as created_at,
       ls.youtube_video_id,
       MAX(COALESCE(ls.download_ended_at, ls.created_at)) as last_end,
-      datetime(MAX(COALESCE(ls.download_ended_at, ls.created_at)), '+${hours} hours') as publish_at
+      CASE
+        WHEN COALESCE(ls.platform, 'idn') = 'showroom'
+          THEN datetime(MAX(COALESCE(ls.download_ended_at, ls.created_at)), '+${showroomHours} hours')
+        ELSE datetime(MAX(COALESCE(ls.download_ended_at, ls.created_at)), '+${hours} hours')
+      END as publish_at
     FROM live_sessions ls
     LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id
     LEFT JOIN member_hls mh ON ls.member_username = mh.username
-    WHERE ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != ''
-      AND COALESCE(ls.platform, 'idn') != 'showroom'
-      AND NOT EXISTS (SELECT 1 FROM web_publications pw WHERE pw.youtube_video_id = ls.youtube_video_id AND pw.published = 0)
-      AND NOT EXISTS (SELECT 1 FROM web_publications po WHERE po.youtube_video_id = ls.youtube_video_id AND po.published = 1)
+    WHERE ${conditions.join('\n      AND ')}
     GROUP BY ls.youtube_video_id
-    HAVING (julianday('now') - julianday(MAX(COALESCE(ls.download_ended_at, ls.created_at)))) * 24 < ${hours}
-    ORDER BY publish_at ASC
+    HAVING (julianday('now') - julianday(MAX(COALESCE(ls.download_ended_at, ls.created_at)))) * 24
+      < CASE WHEN COALESCE(ls.platform, 'idn') = 'showroom' THEN ${showroomHours} ELSE ${hours} END
+    ORDER BY last_end DESC
     LIMIT ?
-  `).all(limit) as unknown as Array<VideoRow & { publish_at: string | null }>;
+  `).all(...params, rowLimit) as unknown as Array<VideoRow & { publish_at: string | null }>;
 
   return rows.map((r) => {
     const dispName = cleanDisplayName(r.member_username, r.streamer_name || undefined);
@@ -418,7 +472,11 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   // Ambang jam per platform (Showroom langsung = 0). Waktu acuan download_ended_at
   // (UTC), jatuh ke created_at. publish_at = waktu acuan + ambang (diubah ke ISO UTC
   // dengan datetime(...)). Rekaman yang DITAHAN manual (published=0) tidak dikembalikan.
+  // Showroom hanya punya jadwal rilis bila ambangnya > 0 — dengan ambang 0 (langsung
+  // terbit) atau negatif (wajib persetujuan admin) tidak ada tanggal rilis.
   const idnHours = AUTO_PUBLISH_AFTER_HOURS > 0 ? AUTO_PUBLISH_AFTER_HOURS : 0;
+  const showroomHours = AUTO_PUBLISH_AFTER_HOURS_SHOWROOM > 0 ? AUTO_PUBLISH_AFTER_HOURS_SHOWROOM : 0;
+  const publishAtSql = (hours: number) => `datetime(COALESCE(ls.download_ended_at, ls.created_at), '+${hours} hours')`;
   const sql = `
     SELECT
       COALESCE(NULLIF(ls.platform, ''), 'idn') as platform,
@@ -433,9 +491,9 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
       ls.telegram_message_ids,
       (${publicVisibilitySql('ls')}) as is_visible,
       CASE
-        WHEN COALESCE(ls.platform, 'idn') = 'showroom' THEN NULL
+        WHEN COALESCE(ls.platform, 'idn') = 'showroom' THEN ${showroomHours > 0 ? publishAtSql(showroomHours) : 'NULL'}
         WHEN ${idnHours} <= 0 THEN NULL
-        ELSE datetime(COALESCE(ls.download_ended_at, ls.created_at), '+${idnHours} hours')
+        ELSE ${publishAtSql(idnHours)}
       END as publish_at
     FROM live_sessions ls
     LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id

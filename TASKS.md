@@ -85,6 +85,21 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       `t.me/<REPLAY_BOT_USERNAME>?start=<youtube_video_id>`. File lokal hanya dihapus
       setelah YouTube DAN arsip Telegram sukses; gagal salah satu → `pending_upload`.
       Test: `tests/test_replay_bot.py` → total **202 test** hijau.
+- [x] **Kartu pra-rilis ("Segera") masuk grid home secara UTUH**: `getUpcomingVideos()`
+      dulu `ORDER BY publish_at ASC LIMIT 6`, sehingga rekaman pra-rilis TERBARU tidak
+      pernah muncul di grid (jam kerja nyata: hanya 6 item terdekat yang tampil,
+      sisanya seolah hilang). Sekarang **tanpa batas** (`LIMIT -1`), urut terbaru
+      dulu, plus saringan `member`/`platform` supaya pra-rilis tetap tampil saat
+      pengunjung memfilter (pencarian kata kunci tetap murni, dan kartu hanya
+      dipasang di halaman 1 agar tidak digandakan).
+      Sekaligus diperbaiki: `publicVisibilitySql()` memperlakukan **setiap** nilai
+      non-negatif `AUTO_PUBLISH_AFTER_HOURS_SHOWROOM` sebagai "langsung tampil",
+      sehingga ambang positif (mis. 12 jam) tidak pernah berlaku dan Showroom
+      berjadwal tampil sebagai pra-rilis di grid tapi pemutarnya ikut terbuka.
+      Verifikasi: `web/verify/home-upcoming-grid.mjs` (baru, port 3113/3114) →
+      `npm run verify:home-upcoming`; `auto-publish-check.mjs` diperbarui
+      (skema fixture + ekspektasi countdown/pra-rilis) → `npm run verify:auto-publish`.
+      Keduanya **PASS**.
 
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 
