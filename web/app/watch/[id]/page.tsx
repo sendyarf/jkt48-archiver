@@ -55,8 +55,6 @@ export default async function WatchPage({ params }: WatchPageProps) {
   // sehingga baris detail tidak lagi berbeda 1 jam dari judul.
   const dateFormatted = formatWibLong(video.started_at) || video.started_at;
 
-  const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(video.streamer_name)}&background=1e293b&color=f43f5e&size=128&bold=true`;
-
   return (
     <div className="container" style={{ paddingTop: '24px' }}>
       <div className="watch-layout">
@@ -76,7 +74,6 @@ export default async function WatchPage({ params }: WatchPageProps) {
 
             <div className="watch-streamer-row">
               <Link href={`/?member=${video.streamer_username}`} className="streamer-profile-link">
-                <Image src={avatarUrl} alt="" width={44} height={44} className="streamer-avatar-md" />
                 <div>
                   <h3 style={{ fontSize: '1rem', color: '#fff' }}>{video.streamer_name}</h3>
                   <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>

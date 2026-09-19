@@ -6,8 +6,6 @@ const nextConfig: NextConfig = {
       // Thumbnail YouTube (img.youtube.com & i.ytimg.com)
       { protocol: 'https', hostname: 'img.youtube.com' },
       { protocol: 'https', hostname: 'i.ytimg.com' },
-      // Avatar otomatis per member
-      { protocol: 'https', hostname: 'ui-avatars.com' },
     ],
   },
 };

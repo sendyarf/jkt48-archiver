@@ -482,7 +482,6 @@ export interface Streamer {
   last_live_at: string | null;
   video_count: number;
   total_sessions: number;
-  avatar_url: string;
 }
 
 export function getStreamersList(): Streamer[] {
@@ -512,7 +511,6 @@ export function getStreamersList(): Streamer[] {
     last_live_at: r.last_live_at,
     video_count: r.video_count || 0,
     total_sessions: r.total_sessions || 0,
-    avatar_url: `https://ui-avatars.com/api/?name=${encodeURIComponent(cleanDisplayName(r.username, r.display_name || undefined))}&background=1e293b&color=f43f5e&size=128&bold=true`,
   }));
 }
 

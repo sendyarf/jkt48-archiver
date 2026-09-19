@@ -549,20 +549,20 @@ select:focus-visible {
   transform: scale(1.05);
 }
 
-/* Badge "BARU" untuk rekaman < 24 jam */
+/* Badge "BARU" untuk rekaman < 24 jam — solid, konsisten dengan badge lain */
 .new-badge {
   position: absolute;
   top: 10px;
   right: 10px;
   padding: 3px 9px;
   border-radius: var(--radius-sm);
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #022c22;
-  background: linear-gradient(90deg, var(--cyan-400), var(--emerald-400));
-  box-shadow: var(--cyan-glow);
+  color: #fff;
+  background: rgba(16, 185, 129, 0.9);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 .video-card:hover .video-thumbnail {
@@ -661,15 +661,6 @@ select:focus-visible {
   margin-top: auto;
 }
 
-.streamer-avatar-sm {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: #1e293b;
-  border: 1px solid var(--border-subtle);
-  object-fit: cover;
-}
-
 .streamer-details {
   display: flex;
   flex-direction: column;
@@ -756,13 +747,6 @@ select:focus-visible {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-
-.streamer-avatar-md {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 2px solid var(--rose-500);
 }
 
 /* Related Videos Sidebar */

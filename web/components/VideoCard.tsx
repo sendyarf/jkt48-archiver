@@ -17,8 +17,6 @@ export default function VideoCard({ video }: { video: VideoItem }) {
   // Fallback ke hqdefault bila maxresdefault (kartu memakai hqdefault) tidak ada.
   const [thumbSrc, setThumbSrc] = useState(video.thumbnail_url);
 
-  const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(video.streamer_name)}&background=1e293b&color=f43f5e&size=64&bold=true`;
-
   return (
     <div className="video-card">
       <Link href={watchUrl} className="video-thumbnail-box">
@@ -56,13 +54,6 @@ export default function VideoCard({ video }: { video: VideoItem }) {
         </Link>
 
         <div className="video-meta">
-          <Image
-            src={avatarUrl}
-            alt={video.streamer_name}
-            width={36}
-            height={36}
-            className="streamer-avatar-sm"
-          />
           <div className="streamer-details">
             <span className="streamer-name">{video.streamer_name}</span>
             <span className="video-date">
