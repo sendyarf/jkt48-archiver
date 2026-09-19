@@ -97,6 +97,12 @@ mengerjakan proyek ini. Jangan melanggar tanpa alasan yang jelas dan disepakati.
   `AUTO_PUBLISH_AFTER_HOURS_SHOWROOM`: 0 = langsung tampil (default, tanpa jeda),
   positif = tunggu N jam (muncul sebagai pra-rilis berjadwal), negatif = wajib
   persetujuan admin. Jangan kembali ke pola `>= 0 ? '1' : '0'`.
+- **Label platform di pesan Telegram harus mengikuti kolom `platform`, jangan
+  di-hardcode.** `build_telegram_video_caption()` dan `build_youtube_notification()`
+  memakai `_platform_label(platform)` → header "IDN LIVE REPLAY" / "SHOWROOM LIVE
+  REPLAY". Pemanggil wajib meneruskan platform (`plat` di `bot/main.py`,
+  `item["platform"]` di `bot/upload_pending.py`); tanpa itu rekaman Showroom
+  dilabeli IDN (regresi 19 Sep 2026: Heidi JKT48).
 - **Status HTTP rute dinamis Next 16.3.5 tidak bisa dipakai untuk menguji 404/redirect.**
   `notFound()` dan `redirect()` di rute `[id]` mengembalikan **200** (isi halaman
   404/login-nya benar dan tidak membocorkan data); hanya rute statis yang benar 404.

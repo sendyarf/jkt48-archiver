@@ -89,6 +89,10 @@ async def collect_pending_items(scan_dir: bool = False) -> list[dict]:
                     "member_username": s.get("member_username") or "jkt48",
                     "member_name": s.get("member_name") or s.get("member_username") or "JKT48 Member",
                     "started_at": s.get("started_at") or s.get("created_at") or timeutil.utc_now_iso(),
+                    # Platform menentukan label header di Telegram (IDN/SHOWROOM).
+                    # Kolom platform bisa kosong di baris lama → fallback ke
+                    # get_platform_for_live() (prefix live_id / database).
+                    "platform": s.get("platform") or database.get_platform_for_live(s.get("live_id") or ""),
                     "file_path": p,
                     "size_bytes": p.stat().st_size,
                     "db_status": s.get("status"),
@@ -121,6 +125,7 @@ async def collect_pending_items(scan_dir: bool = False) -> list[dict]:
                             "started_at": datetime.fromtimestamp(
                         f.stat().st_mtime, timezone.utc
                     ).isoformat(),
+                            "platform": database.get_platform_for_live(f.stem),
                             "file_path": f,
                             "size_bytes": f.stat().st_size,
                             "db_status": "untracked",
@@ -184,6 +189,7 @@ async def process_uploads(items: list[dict], dry_run: bool = False, keep_files: 
                     member_name=name,
                     member_username=username,
                     started_at=started,
+                    platform=item.get("platform") or "",
                 )
 
                 if msg_ids:

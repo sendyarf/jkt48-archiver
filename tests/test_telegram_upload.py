@@ -8,7 +8,11 @@ import unittest
 from pathlib import Path
 
 from bot.config import Config
-from bot.telegram_sender import build_telegram_video_caption, _format_size
+from bot.telegram_sender import (
+    build_telegram_video_caption,
+    build_youtube_notification,
+    _format_size,
+)
 from bot.video_splitter import (
     VideoPart,
     cleanup_video_parts,
@@ -38,6 +42,8 @@ class TestConfigAndCaptions(unittest.TestCase):
         self.assertIn("Live Santai", caption)
         self.assertIn("500.0 MB", caption)
         self.assertNotIn("Part 1/", caption)
+        # Tanpa platform (baris lama) → tetap IDN.
+        self.assertIn("IDN LIVE REPLAY", caption)
 
     def test_multi_part_caption(self):
         caption = build_telegram_video_caption(
@@ -53,6 +59,60 @@ class TestConfigAndCaptions(unittest.TestCase):
         self.assertIn("Part 2 dari 3", caption)
         self.assertIn("Lulu JKT48", caption)
         self.assertIn("Makan Bareng", caption)
+
+    def test_showroom_caption_uses_showroom_header(self):
+        """Rekaman Showroom tidak boleh dilabeli IDN (regresi laporan 19 Sep 2026)."""
+        caption = build_telegram_video_caption(
+            member_name="Heidi JKT48",
+            member_username="jkt48_heidi",
+            started_at="2026-09-19T12:30:00Z",
+            live_title="",
+            part_number=1,
+            total_parts=1,
+            file_size_bytes=0,
+            platform="showroom",
+        )
+        self.assertIn("SHOWROOM LIVE REPLAY", caption)
+        self.assertNotIn("IDN", caption)
+        self.assertIn("Heidi JKT48", caption)
+
+    def test_explicit_idn_platform_caption(self):
+        caption = build_telegram_video_caption(
+            member_name="Michie JKT48",
+            member_username="jkt48_michie",
+            started_at="2026-09-19T12:30:00Z",
+            platform="idn",
+        )
+        self.assertIn("IDN LIVE REPLAY", caption)
+
+    def test_youtube_notification_header_follows_platform(self):
+        showroom = build_youtube_notification(
+            member_name="Heidi JKT48",
+            member_username="jkt48_heidi",
+            started_at="2026-09-19T12:30:00Z",
+            video_id="abcdefghijk",
+            platform="showroom",
+        )
+        self.assertIn("SHOWROOM LIVE REPLAY", showroom)
+        self.assertNotIn("IDN", showroom)
+        self.assertIn("https://youtu.be/abcdefghijk", showroom)
+
+        idn = build_youtube_notification(
+            member_name="Michie JKT48",
+            member_username="jkt48_michie",
+            started_at="2026-09-19T12:30:00Z",
+            video_id="lmnopqrstuv",
+            platform="idn",
+        )
+        self.assertIn("IDN LIVE REPLAY", idn)
+        # Tanpa platform (pemanggil lama) → default IDN, tidak error.
+        legacy = build_youtube_notification(
+            member_name="Michie JKT48",
+            member_username="jkt48_michie",
+            started_at="2026-09-19T12:30:00Z",
+            video_id="lmnopqrstuv",
+        )
+        self.assertIn("IDN LIVE REPLAY", legacy)
 
 
 class TestVideoSplitter(unittest.TestCase):

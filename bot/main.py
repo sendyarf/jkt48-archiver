@@ -318,6 +318,7 @@ class JKT48LiveBot:
                     member_username=member_username,
                     started_at=started_at,
                     live_title=live_title,
+                    platform=plat,
                 )
 
                 if msg_ids:
@@ -374,6 +375,7 @@ class JKT48LiveBot:
                         live_title=live_title,
                         live_id=live_id,
                         set_status=set_status,
+                        platform=plat,
                     )
 
                     # Send Telegram notification
@@ -383,6 +385,7 @@ class JKT48LiveBot:
                         started_at=started_at,
                         video_id=video_id,
                         live_title=live_title,
+                        platform=plat,
                     )
                     msg_id = await self.tg.send_message(msg_text)
                     if msg_id:
@@ -420,10 +423,14 @@ class JKT48LiveBot:
         live_title: str,
         live_id: str,
         set_status,
+        platform: str = "",
     ) -> bool:
         """
         Upload video hasil merge ke channel Telegram privat sebagai "database"
         replay, lalu simpan SEMUA message_id ke kolom telegram_message_ids.
+
+        `platform` diteruskan ke caption arsip supaya header memakai label yang
+        benar (IDN vs SHOWROOM).
 
         Mengembalikan True bila arsip sukses (atau fitur dimatikan); False bila
         gagal — dalam hal ini sesi ditandai pending_upload agar file lokal TIDAK
@@ -451,6 +458,7 @@ class JKT48LiveBot:
                 started_at=started_at,
                 live_title=live_title,
                 channel_id=archive_channel,
+                platform=platform,
             )
             if msg_ids:
                 joined = ",".join(str(m) for m in msg_ids)

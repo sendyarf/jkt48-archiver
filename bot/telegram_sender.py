@@ -192,10 +192,14 @@ class TelegramSender:
         live_title: str = "",
         channel_id: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        platform: str = "",
     ) -> list[int]:
         """
         Splits video if > 2GB (TELEGRAM_MAX_FILE_SIZE_MB) and uploads all parts
         sequentially to the Telegram channel.
+
+        `platform` ('idn'/'showroom') dipakai untuk header caption agar rekaman
+        Showroom tidak lagi dilabeli "IDN LIVE REPLAY".
 
         Returns a list of sent message IDs.
         """
@@ -224,6 +228,7 @@ class TelegramSender:
                     part_number=part.part_number,
                     total_parts=total_parts,
                     file_size_bytes=part.size_bytes,
+                    platform=platform,
                 )
 
                 logger.info(
@@ -323,6 +328,15 @@ def _dot_at(username: str) -> str:
     return "@." + u
 
 
+def _platform_label(platform: str) -> str:
+    """
+    Label platform untuk header pesan Telegram: 'showroom' -> 'SHOWROOM',
+    lainnya -> 'IDN'. Sama dengan pembentukan judul web (`buildDisplayTitle`) dan
+    judul YouTube (`YouTubeChannelPool.build_title`) agar sebutannya konsisten.
+    """
+    return "SHOWROOM" if (platform or "").strip().lower() == "showroom" else "IDN"
+
+
 def build_telegram_video_caption(
     member_name: str,
     member_username: str,
@@ -331,14 +345,18 @@ def build_telegram_video_caption(
     part_number: int = 1,
     total_parts: int = 1,
     file_size_bytes: int = 0,
+    platform: str = "",
 ) -> str:
     """
     Build HTML caption for video uploaded directly to Telegram.
+
+    Header mengikuti platform rekaman ('IDN LIVE REPLAY' / 'SHOWROOM LIVE REPLAY')
+    supaya tidak ada lagi label IDN pada video Showroom.
     """
     live_time = _format_live_time(started_at)
     size_str = _format_size(file_size_bytes)
 
-    header = "🔴 <b>IDN LIVE REPLAY</b>"
+    header = f"🔴 <b>{_platform_label(platform)} LIVE REPLAY</b>"
     if total_parts > 1:
         header += f" <b>[Part {part_number}/{total_parts}]</b>"
 
@@ -366,15 +384,18 @@ def build_youtube_notification(
     started_at: str,
     video_id: str,
     live_title: str = "",
+    platform: str = "",
 ) -> str:
     """
     Build the Telegram notification message for a newly uploaded YouTube video.
+
+    Header mengikuti platform rekaman ('IDN LIVE REPLAY' / 'SHOWROOM LIVE REPLAY').
     """
     live_time = _format_live_time(started_at)
     yt_url = f"https://youtu.be/{video_id}"
 
     lines = [
-        "🔴 <b>IDN LIVE REPLAY</b>",
+        f"🔴 <b>{_platform_label(platform)} LIVE REPLAY</b>",
         "",
         f"👤 <b>{member_name}</b> ({_dot_at(member_username)})",
     ]

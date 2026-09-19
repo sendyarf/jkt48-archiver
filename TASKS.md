@@ -85,6 +85,14 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       `t.me/<REPLAY_BOT_USERNAME>?start=<youtube_video_id>`. File lokal hanya dihapus
       setelah YouTube DAN arsip Telegram sukses; gagal salah satu → `pending_upload`.
       Test: `tests/test_replay_bot.py` → total **202 test** hijau.
+- [x] **Label platform pesan Telegram diperbaiki**: caption arsip Telegram &
+      notifikasi YouTube dulu **hardcode** `🔴 IDN LIVE REPLAY`, sehingga rekaman
+      Showroom (mis. Heidi JKT48, 19 Sep 2026) dilaporkan sebagai IDN.
+      Sekarang header mengikuti kolom `platform` lewat `_platform_label()`
+      (IDN/SHOWROOM), dan `platform` diteruskan di semua jalur upload: `main.py`
+      (UPLOAD_TARGET=telegram, arsip Telegram, notifikasi YouTube) serta
+      `upload_pending.py` (retry; fallback `get_platform_for_live()`).
+      Test: `tests/test_telegram_upload.py` (+3 kasus) → total **206 test** hijau.
 - [x] **Kartu pra-rilis ("Segera") masuk grid home secara UTUH**: `getUpcomingVideos()`
       dulu `ORDER BY publish_at ASC LIMIT 6`, sehingga rekaman pra-rilis TERBARU tidak
       pernah muncul di grid (jam kerja nyata: hanya 6 item terdekat yang tampil,
