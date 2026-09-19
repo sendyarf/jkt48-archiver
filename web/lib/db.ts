@@ -153,6 +153,10 @@ export interface VideoItem {
   telegram_archived?: boolean;
   /** True bila rekaman berumur < 24 jam (untuk badge "BARU"). */
   is_new?: boolean;
+  /** True bila rekaman sudah boleh tampil publik (sudah lewat ambang / diterbitkan). */
+  is_visible?: boolean;
+  /** ISO timestamp kapan rekaman otomatis terbit (untuk countdown pra-rilis). Kosong bila tidak dijadwalkan. */
+  publish_at?: string;
 }
 
 /** Format detik → "H:MM:SS" atau "M:SS". */
@@ -333,12 +337,18 @@ interface VideoDetailRow {
   download_ended_at: string | null;
   youtube_video_id: string | null;
   telegram_message_ids: string | null;
+  is_visible: number;
+  publish_at: string | null;
 }
 
 export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   const db = getDb();
+  // Ambang jam per platform (Showroom langsung = 0). Waktu acuan download_ended_at
+  // (UTC), jatuh ke created_at. publish_at = waktu acuan + ambang (diubah ke ISO UTC
+  // dengan datetime(...)). Rekaman yang DITAHAN manual (published=0) tidak dikembalikan.
+  const idnHours = AUTO_PUBLISH_AFTER_HOURS > 0 ? AUTO_PUBLISH_AFTER_HOURS : 0;
   const sql = `
-    SELECT 
+    SELECT
       COALESCE(NULLIF(ls.platform, ''), 'idn') as platform,
       ls.member_username,
       COALESCE(NULLIF(ls.member_name, ''), NULLIF(mh.display_name, ''), ls.member_username) as streamer_name,
@@ -348,12 +358,21 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
       ls.download_started_at,
       ls.download_ended_at,
       ls.youtube_video_id,
-      ls.telegram_message_ids
+      ls.telegram_message_ids,
+      (${publicVisibilitySql('ls')}) as is_visible,
+      CASE
+        WHEN COALESCE(ls.platform, 'idn') = 'showroom' THEN NULL
+        WHEN ${idnHours} <= 0 THEN NULL
+        ELSE datetime(COALESCE(ls.download_ended_at, ls.created_at), '+${idnHours} hours')
+      END as publish_at
     FROM live_sessions ls
     LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id
     LEFT JOIN member_hls mh ON ls.member_username = mh.username
     WHERE (ls.youtube_video_id = ? OR ls.live_id = ? OR ls.id = ?)
-      AND ${publicVisibilitySql('ls')}
+      AND NOT EXISTS (
+        SELECT 1 FROM web_publications pw
+        WHERE pw.youtube_video_id = ls.youtube_video_id AND pw.published = 0
+      )
     ORDER BY ls.id DESC
     LIMIT 1
   `;
@@ -367,6 +386,10 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   const title = buildDisplayTitle(platform, dispName, startedAt);
   const ytId = r.youtube_video_id || '';
   const durSec = durationFromRange(r.download_started_at, r.download_ended_at);
+
+  // publish_at dari datetime() berbentuk "YYYY-MM-DD HH:MM:SS" (UTC) — tambahkan 'Z'
+  // agar diparse sebagai UTC, bukan waktu lokal browser.
+  const publishAt = r.publish_at ? r.publish_at.replace(' ', 'T') + 'Z' : '';
 
   return {
     id: ytId,
@@ -383,6 +406,8 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     created_at: r.created_at || '',
     telegram_archived: !!(r.telegram_message_ids && r.telegram_message_ids.trim()),
     is_new: isRecent(startedAt, 24),
+    is_visible: !!r.is_visible,
+    publish_at: publishAt,
   };
 }
 

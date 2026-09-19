@@ -6,6 +6,7 @@ import { getVideoById, getAllVideos } from '@/lib/db';
 import { formatWibLong } from '@/lib/wib';
 import VideoPlayer from '@/components/VideoPlayer';
 import TelegramDownloadButton from '@/components/TelegramDownloadButton';
+import CountdownTimer from '@/components/CountdownTimer';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +24,11 @@ export async function generateMetadata({ params }: WatchPageProps): Promise<Meta
   }
   return {
     title: `${video.title} - ${video.streamer_name}`,
-    description: `Nonton siaran ulang ${video.title} oleh ${video.streamer_name}. Direkam dari ${video.platform === 'idn' ? 'IDN Live' : 'Showroom'}.`,
+    description: video.is_visible
+      ? `Nonton siaran ulang ${video.title} oleh ${video.streamer_name}. Direkam dari ${video.platform === 'idn' ? 'IDN Live' : 'Showroom'}.`
+      : `Siaran ulang ${video.title} oleh ${video.streamer_name} segera hadir.`,
+    // Pra-rilis tidak boleh diindex mesin pencari sampai benar-benar terbit.
+    robots: video.is_visible ? undefined : { index: false, follow: false },
     openGraph: {
       title: `${video.title} - ${video.streamer_name}`,
       description: `Arsip siaran ulang JKT48 Replay`,
@@ -55,18 +60,35 @@ export default async function WatchPage({ params }: WatchPageProps) {
   // sehingga baris detail tidak lagi berbeda 1 jam dari judul.
   const dateFormatted = formatWibLong(video.started_at) || video.started_at;
 
+  // Pra-rilis: video belum boleh ditonton. Tampilkan countdown bila ada jadwal
+  // rilis; jika tidak ada jadwal (mis. ambang dinonaktifkan) tetap tampilkan
+  // panel "segera hadir" tanpa angka.
+  const isPrerelease = !video.is_visible;
+  const botUsername = (process.env.NEXT_PUBLIC_REPLAY_BOT_USERNAME || '').replace(/^@/, '');
+  const telegramLink = botUsername && video.youtube_video_id
+    ? `https://t.me/${botUsername}?start=${encodeURIComponent(video.youtube_video_id)}`
+    : undefined;
+
   return (
     <div className="container" style={{ paddingTop: '24px' }}>
       <div className="watch-layout">
         {/* Left Column: Player & Video Details */}
         <div>
           <div id="video-player-container">
-            <VideoPlayer
-              youtubeId={video.youtube_video_id}
-              title={video.title}
-              poster={video.thumbnail_url}
-              platform={video.platform}
-            />
+            {isPrerelease ? (
+              <CountdownTimer
+                publishAt={video.publish_at || ''}
+                title={video.title}
+                telegramLink={telegramLink}
+              />
+            ) : (
+              <VideoPlayer
+                youtubeId={video.youtube_video_id}
+                title={video.title}
+                poster={video.thumbnail_url}
+                platform={video.platform}
+              />
+            )}
           </div>
 
           <div className="watch-details-card">
@@ -88,7 +110,7 @@ export default async function WatchPage({ params }: WatchPageProps) {
               </span>
             </div>
 
-            {video.telegram_archived && (
+            {!isPrerelease && video.telegram_archived && (
               <div style={{ marginTop: '14px' }}>
                 <TelegramDownloadButton
                   youtubeVideoId={video.youtube_video_id}
