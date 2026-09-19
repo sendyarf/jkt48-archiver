@@ -117,6 +117,20 @@ diterbitkan admin atau lewat `AUTO_PUBLISH_AFTER_HOURS`. Rekaman **Showroom**
 langsung tampil di situs tanpa menunggu ambang (aturan web
 `AUTO_PUBLISH_AFTER_HOURS_SHOWROOM`, default `0`).
 
+**Diagnostik `.env` saat start.** Bot memeriksa `.env` sekali setiap start dan
+menulis PERINGATAN untuk dua masalah yang dulu berjalan diam-diam:
+
+* Baris `.env` yang tidak bisa diparse (mis. catatan yang lupa diberi `#`) —
+  nomor barisnya dicari dari isi berkas, jadi tidak meleset seperti pesan bawaan
+  python-dotenv.
+* Nilai `.env` yang dikalahkan environment proses. `load_dotenv()` tidak menimpa
+  variabel yang sudah ada, dan pm2 menyimpan environment saat proses pertama
+  dijalankan: `pm2 restart` biasa **tidak** memperbarui cache itu. Bila muncul
+  peringatan seperti ini, sinkronkan dengan
+  `pm2 restart jkt48-archiver-bot --update-env` (atau `pm2 delete` + `pm2 start
+  deploy/ecosystem.config.js`). Nilai kredensial (token/session) selalu
+  disamarkan di log.
+
 ## ⚙️ Pengaturan Multi-Channel YouTube
 
 1. Buka [Google Cloud Console](https://console.cloud.google.com/).

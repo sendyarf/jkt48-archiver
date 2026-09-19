@@ -20,7 +20,7 @@ from typing import Optional
 
 import colorlog
 
-from bot.config import Config
+from bot.config import Config, warn_env_overrides
 from bot import database
 from bot.showroom_monitor import (
     RoomState,
@@ -751,6 +751,10 @@ class JKT48LiveBot:
     async def run(self) -> None:
         """Main polling loop."""
         self.running = True
+        # Diagnostik .env SEKALI di awal: laporkan baris yang tidak terbaca dan
+        # nilai .env yang dikalahkan environment proses (mis. cache pm2), supaya
+        # salah-setel tidak berjalan diam-diam selama berhari-hari.
+        warn_env_overrides()
         logger.info("Bot started. Monitoring HLS streams every %ds (Merge window: %ds)", Config.HLS_CHECK_INTERVAL_SECONDS, Config.MERGE_WINDOW_SECONDS)
         logger.info(
             "Merge policy → window %ds jeda liputan antar segmen | idle finalize %ds | "

@@ -3,8 +3,14 @@ config.py - Centralized configuration loader for JKT48 Live Bot.
 Reads all settings from environment variables / .env file.
 """
 import os
+import logging
+import re
 from dataclasses import dataclass
-from dotenv import load_dotenv
+from pathlib import Path
+from typing import Optional
+
+from dotenv import dotenv_values, find_dotenv, load_dotenv
+from dotenv.parser import parse_stream
 
 load_dotenv()
 
@@ -302,3 +308,182 @@ class Config:
                 f"Missing required environment variables: {', '.join(missing)}\n"
                 "Please copy .env.example → .env and fill in the values."
             )
+# ─── Diagnostik .env (dipanggil sekali saat bot start) ────────────────────────
+#
+# Dua masalah .env yang sulit terlihat dan pernah menimbulkan kebingungan nyata:
+#
+#   1. Baris yang tidak bisa diparse python-dotenv — diabaikan DIAM-DIAM, hanya
+#      muncul sebagai satu baris peringatan tanpa konteks. Nomor barisnya pun
+#      bisa meleset satu baris bila ada baris kosong tepat sebelumnya (perilaku
+#      parser: nomor mengikuti posisi penanda, bukan baris statement).
+#      Kasus nyata: catatan "Offset zona waktu penonton terhadap UTC: 7 = WIB …"
+#      yang lupa diberi tanda '#'.
+#
+#   2. Nilai .env yang DIKALAHKAN environment proses. `load_dotenv()` dipanggil
+#      tanpa override=True, jadi variabel yang sudah ada di environment proses
+#      selalu menang. Di VPS, pm2 menyimpan environment saat proses pertama
+#      dijalankan dan memakainya ulang setiap restart (`pm2 restart` biasa tidak
+#      memperbarui cache — perlu `--update-env`). Kasus nyata:
+#      SHOWROOM_CHECK_INTERVAL_SECONDS tetap 10 padahal .env sudah 30.
+
+logger = logging.getLogger(__name__)
+
+# Nama variabel yang nilainya tidak boleh muncul di log.
+_SENSITIVE_KEY_RE = re.compile(
+    r"(TOKEN|SECRET|HASH|SESSION|PASSWORD|PASSWD|PHONE|API_ID|_KEY)",
+    re.IGNORECASE,
+)
+
+
+def env_file_path() -> Optional[str]:
+    """Lokasi berkas .env yang dipakai bot (resolusi sama seperti load_dotenv())."""
+    try:
+        return find_dotenv() or None
+    except Exception:  # pragma: no cover - sangat langka
+        return None
+
+
+def _env_path_or_default(env_path: Optional[str]) -> Optional[str]:
+    """Pakai path yang diberikan; kalau tidak, cari .env seperti load_dotenv()."""
+    path = env_path or env_file_path()
+    if not path or not os.path.exists(path):
+        return None
+    return path
+
+
+def mask_env_value(key: str, value: Optional[str]) -> str:
+    """
+    Samarkan nilai sensitif sebelum ditulis ke log.
+
+    Nilai kredensial hanya ditampilkan panjangnya, sehingga perbandingan
+    ".env vs environment" tetap bisa didiagnosis tanpa membocorkan isi.
+    """
+    if value is None:
+        return "(tidak ada)"
+    if _SENSITIVE_KEY_RE.search(key or ""):
+        return f"<disembunyikan: {len(value)} karakter>"
+    return value if len(value) <= 60 else value[:57] + "..."
+
+
+def mask_env_statement(statement: str) -> str:
+    """
+    Samarkan sisi nilai sebuah baris .env bila nama variabelnya sensitif.
+
+    Dipakai saat melaporkan baris .env yang tidak terbaca: baris rusak bisa saja
+    memuat token, dan pesan diagnostik tidak boleh menjadi jalan kebocoran.
+    """
+    text = (statement or "").strip()
+    if "=" not in text:
+        return text
+    key, value = text.split("=", 1)
+    if _SENSITIVE_KEY_RE.search(key):
+        return f"{key.strip()}=<disembunyikan: {len(value.strip())} karakter>"
+    return text
+def _last_statement_line(raw: str) -> str:
+    """Baris terakhir yang tidak kosong dari teks statement mentah."""
+    for line in reversed((raw or "").splitlines()):
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _locate_line(lines: list[str], statement: str) -> int:
+    """Nomor baris (1-based) sebuah statement; 0 bila tidak ditemukan."""
+    if not statement:
+        return 0
+    for index, line in enumerate(lines, start=1):
+        if line.strip() == statement:
+            return index
+    return 0
+
+
+def find_invalid_env_lines(env_path: Optional[str] = None) -> list:
+    """
+    Baris .env yang DIABAIKAN python-dotenv, beserta nomor barisnya.
+
+    Nomor baris dicari ulang dengan mencocokkan ISI baris di berkas, bukan
+    memakai nomor dari python-dotenv yang bisa meleset satu baris.
+
+    Return: daftar (nomor_baris, isi_baris). Nomor 0 = baris tidak ditemukan.
+    """
+    path = _env_path_or_default(env_path)
+    if not path:
+        return []
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+        problems: list = []
+        with open(path, encoding="utf-8") as handle:
+            for binding in parse_stream(handle):
+                if not binding.error:
+                    continue
+                statement = _last_statement_line(binding.original.string)
+                problems.append((_locate_line(lines, statement), statement))
+        return problems
+    except Exception as exc:  # pragma: no cover - jalur IO
+        logger.debug("Gagal memeriksa baris .env %s: %s", path, exc)
+        return []
+
+
+def env_value_overrides(env_path: Optional[str] = None) -> list:
+    """
+    Variabel yang nilainya BERBEDA antara .env dan environment proses.
+
+    Variabel yang hanya ada di .env (tidak ada di environment) BUKAN override:
+    `load_dotenv()` sudah memasukkannya ke environment, jadi nilainya berlaku.
+
+    Return: daftar dict {key, file_value, process_value}.
+    """
+    path = _env_path_or_default(env_path)
+    if not path:
+        return []
+    try:
+        file_values = dotenv_values(path)
+    except Exception as exc:  # pragma: no cover - jalur IO
+        logger.debug("Gagal membaca .env %s: %s", path, exc)
+        return []
+
+    overrides: list = []
+    for key, file_value in file_values.items():
+        process_value = os.environ.get(key)
+        if process_value is None:
+            continue
+        if (file_value or "").strip() != process_value.strip():
+            overrides.append(
+                {
+                    "key": key,
+                    "file_value": file_value,
+                    "process_value": process_value,
+                }
+            )
+    return overrides
+
+
+def warn_env_overrides(env_path: Optional[str] = None) -> None:
+    """
+    Log peringatan untuk baris .env rusak & nilai .env yang dikalahkan environment.
+
+    Dipanggil sekali saat bot start. Tidak mengubah environment apa pun, jadi
+    aman dipanggil di produksi.
+    """
+    path = _env_path_or_default(env_path)
+    if not path:
+        logger.info("Berkas .env tidak ditemukan — memakai environment proses apa adanya.")
+        return
+
+    for number, statement in find_invalid_env_lines(path):
+        where = f"baris {number}" if number else "nomor baris tidak terdeteksi"
+        logger.warning(
+            "Baris .env TIDAK TERBACA (%s) dan diabaikan: %r — beri tanda '#' bila "
+            "itu hanya catatan, atau tulis sebagai NAMA=nilai.",
+            where, mask_env_statement(statement),
+        )
+
+    for item in env_value_overrides(path):
+        logger.warning(
+            "%s: nilai dari environment proses DIPAKAI, .env diabaikan "
+            "(.env=%s, proses=%s). Perbarui cache pm2 dengan "
+            "`pm2 restart <app> --update-env` bila ingin memakai nilai .env.",
+            item["key"],
+            mask_env_value(item["key"], item["file_value"]),
+            mask_env_value(item["key"], item["process_value"]),
+        )
