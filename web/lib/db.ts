@@ -95,19 +95,41 @@ export const AUTO_PUBLISH_AFTER_HOURS: number = (() => {
 })();
 
 /**
+ * Ambang rilis otomatis khusus rekaman **Showroom** (jam setelah live selesai).
+ * Default `0` = rekaman Showroom **langsung tampil** segera setelah tersimpan,
+ * tanpa menunggu ambang IDN — permintaan pemilik (Sep 2026). Isi nilai negatif
+ * untuk mematikan rilis otomatis Showroom (wajib persetujuan admin).
+ * Keputusan admin (terbit/tahan) tetap selalu menang atas aturan ini.
+ */
+export const AUTO_PUBLISH_AFTER_HOURS_SHOWROOM: number = (() => {
+  const raw = Number(process.env.AUTO_PUBLISH_AFTER_HOURS_SHOWROOM ?? '0');
+  return Number.isFinite(raw) && raw >= 0 ? raw : -1;
+})();
+
+/**
  * Predikat SQL untuk rekaman yang boleh tampil di halaman publik.
  * `alias` adalah alias tabel live_sessions pada query pemanggil.
  *
  * Waktu acuan memakai `download_ended_at` (kapan rekaman selesai) dan jatuh
  * ke `created_at` bila kosong. Keduanya UTC, dibandingkan dengan julianday
  * ('now') yang juga UTC — jadi tidak bergantung zona waktu server.
+ *
+ * Ambang per platform: showroom memakai AUTO_PUBLISH_AFTER_HOURS_SHOWROOM
+ * (default 0 = langsung), platform lain memakai AUTO_PUBLISH_AFTER_HOURS
+ * (default 72; 0 = nonaktif, wajib manual). Baris tanpa kolom/platform
+ * diperlakukan 'idn' agar perilaku lama tidak berubah.
  */
 function publicVisibilitySql(alias = 'ls'): string {
   const explicitOn = `EXISTS (SELECT 1 FROM web_publications p WHERE p.youtube_video_id = ${alias}.youtube_video_id AND p.published = 1)`;
-  if (AUTO_PUBLISH_AFTER_HOURS <= 0) return explicitOn;
   const withheld = `EXISTS (SELECT 1 FROM web_publications p0 WHERE p0.youtube_video_id = ${alias}.youtube_video_id AND p0.published = 0)`;
   const elapsedHours = `(julianday('now') - julianday(COALESCE(${alias}.download_ended_at, ${alias}.created_at))) * 24`;
-  return `(${explicitOn} OR (NOT ${withheld} AND ${elapsedHours} >= ${AUTO_PUBLISH_AFTER_HOURS}))`;
+  // Showroom: ambang 0 = langsung tampil (konstanta 1); negatif = nonaktif.
+  const showroomAuto = AUTO_PUBLISH_AFTER_HOURS_SHOWROOM >= 0 ? '1' : '0';
+  // IDN & platform lain: butuh lewat ambang; 0 = nonaktif (wajib manual).
+  const idnAuto = AUTO_PUBLISH_AFTER_HOURS > 0
+    ? `(${elapsedHours} >= ${AUTO_PUBLISH_AFTER_HOURS})`
+    : '0';
+  return `(${explicitOn} OR (NOT ${withheld} AND (CASE WHEN COALESCE(${alias}.platform, 'idn') = 'showroom' THEN ${showroomAuto} ELSE ${idnAuto} END)))`;
 }
 
 export interface VideoItem {
@@ -336,6 +358,8 @@ export interface Publication {
   youtube_video_id: string;
   title: string;
   member_name: string;
+  /** Sumber rekaman: 'idn' | 'showroom' | ... (baris lama = 'idn') */
+  platform: string;
   /** 1 = admin menerbitkan eksplisit, 0 = admin menahan eksplisit */
   published: number;
   /** 1 = admin pernah memutuskan (terbit atau tahan) */
@@ -343,16 +367,6 @@ export interface Publication {
   /** 1 = saat ini tampil di halaman publik (hasil aturan lengkap) */
   visible: number;
   /** Jam sejak live selesai; null bila waktunya tidak terbaca */
-  hours_since_end: number | null;
-}
-
-export interface Publication {
-  youtube_video_id: string;
-  title: string;
-  member_name: string;
-  published: number;
-  decided: number;
-  visible: number;
   hours_since_end: number | null;
 }
 

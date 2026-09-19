@@ -113,7 +113,9 @@ dibaca benar.
 **Catatan `UPLOAD_TARGET`.** Katalog website dibangun dari `live_sessions.youtube_video_id`.
 Dengan `UPLOAD_TARGET=telegram`, rekaman baru **tidak akan pernah muncul di website**.
 Rekaman YouTube diunggah sebagai **unlisted**, dan tetap tersembunyi dari situs sampai
-diterbitkan admin atau lewat `AUTO_PUBLISH_AFTER_HOURS`.
+diterbitkan admin atau lewat `AUTO_PUBLISH_AFTER_HOURS`. Rekaman **Showroom**
+langsung tampil di situs tanpa menunggu ambang (aturan web
+`AUTO_PUBLISH_AFTER_HOURS_SHOWROOM`, default `0`).
 
 ## ⚙️ Pengaturan Multi-Channel YouTube
 

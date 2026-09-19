@@ -25,6 +25,7 @@ export default function PublicationsPage() {
   const label = (v: Publication) => {
     if (v.decided && v.published) return 'Disetujui manual';
     if (v.decided && !v.published) return 'Ditahan manual';
+    if (v.platform === 'showroom') return 'Otomatis (Showroom langsung)';
     if (v.visible) return `Otomatis (lewat ${autoHours} jam)`;
     return 'Menunggu waktu rilis';
   };
@@ -41,7 +42,7 @@ export default function PublicationsPage() {
     } catch (e) { setMessage(e instanceof Error ? e.message : 'Koneksi gagal.'); }
     finally { setBusy(false); }
   }
-  return <section><div className="section-heading"><div><p className="eyebrow">KURASI ARSIP</p><h1>Publikasi</h1><p>{autoHours > 0 ? `Rekaman tampil otomatis ${autoHours} jam setelah live selesai. Anda tetap bisa menerbitkan lebih cepat atau menahannya.` : 'Rekaman baru tersembunyi sampai Anda menyetujuinya.'}</p></div></div>
+  return <section><div className="section-heading"><div><p className="eyebrow">KURASI ARSIP</p><h1>Publikasi</h1><p>{autoHours > 0 ? `Rekaman IDN tampil otomatis ${autoHours} jam setelah live selesai; rekaman Showroom langsung tampil. Anda tetap bisa menerbitkan lebih cepat atau menahannya.` : 'Rekaman IDN baru tersembunyi sampai Anda menyetujuinya; rekaman Showroom langsung tampil.'}</p></div></div>
     <p className="notice">Hanya terbitkan konten yang memiliki izin distribusi publik. Status unlisted YouTube bukan persetujuan publikasi.</p>
     <form className="form-row" onSubmit={e => { e.preventDefault(); setRevision(r => r + 1); setLoading(true); setMessage(''); setPage(1); setQuery(String(new FormData(e.currentTarget).get('q') || '')); }}><label>Cari rekaman<input name="q" type="search" maxLength={100} placeholder="Judul atau member" /></label><button className="secondary-button">Cari</button></form>
     <div role="status" aria-live="polite">{message && <p className="notice">{message}</p>}</div>

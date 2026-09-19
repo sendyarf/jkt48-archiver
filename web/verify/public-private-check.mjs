@@ -16,9 +16,11 @@ INSERT INTO merge_groups VALUES (1, 'UNUSED_GROUP_TITLE_ONE', 'INTERNAL_KEY_SENT
 INSERT INTO live_sessions VALUES (1, 'private-live-one', 'jkt48_test', 'Test Member', 1, '2026-09-01', '2026-09-01', '2026-09-01 12:00:00', 'idn', 'R8pnx79dyDQ', 'done_youtube', 9000), (2, 'private-live-two', 'jkt48_test', 'Test Member', 2, '2026-09-02', '2026-09-02', '2026-09-02 12:00:00', 'idn', 'abcdefghijk', 'done_youtube', 9000), (3, 'sr_JKT48_Test_1', 'jkt48_test', 'Test Member', 3, '2026-09-03', '2026-09-03', '2026-09-03 12:00:00', 'showroom', 'lmnopqrstuv', 'done_youtube', 9000);`);
 const origin = 'http://localhost:3107';
 const secret = randomBytes(32).toString('hex');
-// AUTO_PUBLISH_AFTER_HOURS=0 → gerbang manual diuji secara deterministik,
+// AUTO_PUBLISH_AFTER_HOURS=0 → gerbang manual IDN diuji secara deterministik,
 // tanpa bergantung jarak waktu antara data uji dan jam berjalan.
 // Aturan 72 jam diuji terpisah di verify/auto-publish-check.mjs.
+// Catatan: baris SHOWROOM di fixture langsung tampil (ambang Showroom = 0),
+// sehingga /api/members tidak lagi kosong sejak awal.
 const child = spawn(process.execPath, [join(root, 'node_modules/next/dist/bin/next'), 'start', '-p', '3107'], { cwd: root, env: { ...process.env, NODE_ENV: 'production', ADMIN_SECRET: secret, APP_ORIGIN: origin, DB_PATH: join(temp, 'fixture.db'), AUTO_PUBLISH_AFTER_HOURS: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
 let logs = ''; child.stdout.on('data', d => logs += d); child.stderr.on('data', d => logs += d);
 const call = (route, options = {}) => fetch(origin + route, { redirect: 'manual', ...options });
@@ -34,7 +36,10 @@ try {
   assert.equal((await call('/admin/status')).headers.get('location'), '/login');
   assert.equal((await call('/status')).headers.get('location'), '/admin/status');
   assert.equal((await call('/watch/R8pnx79dyDQ')).status, 404);
-  assert.deepEqual((await (await call('/api/members')).json()).members, []);
+  // Hanya rekaman Showroom yang tampil otomatis; IDN masih tersembunyi.
+  assert.deepEqual((await (await call('/api/members')).json()).members, [
+    { username: 'jkt48_test', display_name: 'Test Member', video_count: 1 },
+  ]);
   assert.equal((await post('/api/auth', { secret }, '', 'https://untrusted.invalid')).status, 403);
   assert.equal((await post('/api/auth', { secret: 'incorrect' })).status, 401);
   const login = await post('/api/auth', { secret }); assert.equal(login.status, 200);
@@ -47,7 +52,7 @@ try {
   assert.equal((await call('/watch/R8pnx79dyDQ')).status, 200);
   assert.equal((await call('/watch/abcdefghijk')).status, 404);
   const members = (await (await call('/api/members')).json()).members;
-  assert.deepEqual(Object.keys(members[0]).sort(), ['display_name', 'username', 'video_count']); assert.equal(members[0].video_count, 1);
+  assert.deepEqual(Object.keys(members[0]).sort(), ['display_name', 'username', 'video_count']); assert.equal(members[0].video_count, 2);
   assert.doesNotMatch(await (await call('/?platform=showroom')).text(), /LIVE IDN TEST MEMBER/);
   assert.equal((await call('/?page=invalid')).status, 200);
   // Filter platform: rekaman Showroom hanya muncul di filternya sendiri, dan
@@ -72,7 +77,7 @@ try {
   assert.doesNotMatch(await (await call('/')).text(), /LIVE IDN TEST MEMBER/);
   assert.equal((await call('/api/auth', { method: 'DELETE', headers: { Cookie: cookie, Origin: origin } })).status, 200);
   assert.equal((await call('/api/admin/members', { headers: { Cookie: cookie } })).status, 401);
-  console.log('PASS: private defaults (auto-publish off), public DTO, direct watch/metadata gate, publication/revocation, filters, admin auth, origin checks, cookie flags, logout.');
+  console.log('PASS: private defaults (auto-publish IDN off), Showroom langsung publik, public DTO, direct watch/metadata gate, publication/revocation, filters, admin auth, origin checks, cookie flags, logout.');
 } finally {
   if (child.exitCode === null && child.signalCode === null) {
     child.kill();

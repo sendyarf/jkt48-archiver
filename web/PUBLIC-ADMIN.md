@@ -7,7 +7,8 @@ Konfigurasi environment server:
 - `DB_PATH`: path absolut database bot yang sudah diinisialisasi.
 - `ADMIN_SECRET`: secret acak minimal 32 karakter. Tidak ada password fallback; login dinonaktifkan bila konfigurasi tidak memenuhi syarat.
 - `APP_ORIGIN`: origin situs yang tepat (scheme + host + port, tanpa trailing slash), terutama ketika di belakang reverse proxy.
-- `AUTO_PUBLISH_AFTER_HOURS`: berapa jam setelah live **selesai** sebuah rekaman otomatis tampil publik. Default `72`. Isi `0` untuk mematikan dan mewajibkan persetujuan admin untuk setiap rekaman.
+- `AUTO_PUBLISH_AFTER_HOURS`: berapa jam setelah live **selesai** sebuah rekaman **IDN** otomatis tampil publik. Default `72`. Isi `0` untuk mematikan dan mewajibkan persetujuan admin untuk setiap rekaman IDN.
+- `AUTO_PUBLISH_AFTER_HOURS_SHOWROOM`: ambang khusus rekaman **Showroom**. Default `0` = rekaman Showroom **langsung tampil** segera setelah tersimpan, tanpa menunggu ambang IDN. Isi nilai negatif untuk mematikan rilis otomatis Showroom (wajib persetujuan admin). Keputusan admin (terbit/tahan) tetap selalu menang atas kedua aturan otomatis.
 
 Gunakan HTTPS pada produksi: cookie admin memakai Secure pada NODE_ENV=production. Jangan gunakan prefix NEXT_PUBLIC untuk secret. Jangan commit environment/kredensial. Rotasi ADMIN_SECRET membatalkan semua sesi lama.
 
@@ -15,8 +16,9 @@ Gunakan HTTPS pada produksi: cookie admin memakai Secure pada NODE_ENV=productio
 Aturan visibilitas berlapis, dievaluasi pada katalog, pencarian, direktori member, rekomendasi, metadata, dan akses watch:
 1. Admin memilih **Terbitkan** → publik (menang atas aturan otomatis).
 2. Admin memilih **Tarik publikasi** → tersembunyi (menang atas aturan otomatis).
-3. Belum ada keputusan admin dan sudah lewat `AUTO_PUBLISH_AFTER_HOURS` sejak live selesai → otomatis publik.
-4. Belum ada keputusan admin dan belum lewat ambang → tersembunyi.
+3. Belum ada keputusan admin, bukan rekaman Showroom, dan sudah lewat `AUTO_PUBLISH_AFTER_HOURS` sejak live selesai → otomatis publik.
+4. Belum ada keputusan admin dan rekaman **Showroom** → langsung otomatis publik (kecuali `AUTO_PUBLISH_AFTER_HOURS_SHOWROOM` diisi negatif).
+5. Belum ada keputusan admin dan belum lewat ambang → tersembunyi.
 
 Waktu acuan adalah `download_ended_at` (kapan rekaman selesai) dan jatuh ke `created_at` bila kosong; keduanya dibandingkan sebagai UTC sehingga hasilnya sama di server zona waktu mana pun. Halaman `/admin/publications` menampilkan apakah sebuah rekaman publik karena keputusan manual atau karena aturan otomatis, beserta umur rekaman.
 
@@ -35,7 +37,7 @@ Halaman publik saat ini menganggap situs sebagai arsip komunitas non-resmi. Hala
 - `npm run build`
 - `npx tsc --noEmit` dan `npx eslint .`: keduanya tanpa temuan.
 - `node c:\Sendy\jkt48-live\web\verify\public-private-check.mjs` (setelah build): DB fixture di direktori temp, server produksi pada port 3107, dibersihkan otomatis. Menguji default privat, DTO publik, gerbang watch/metadata, publikasi/penarikan, filter member/platform, auth admin, pemeriksaan origin, flag cookie, dan logout.
-- `node c:\Sendy\jkt48-live\web\verify\auto-publish-check.mjs` (setelah build): dua server (port 3111 & 3112) pada satu fixture DB. Menguji rilis otomatis 72 jam, rekaman belum lewat ambang tetap tersembunyi, keputusan admin (terbit/tahan) menang atas aturan otomatis, jumlah arsip publik hanya menghitung rekaman yang tampil, serta `AUTO_PUBLISH_AFTER_HOURS=0` mematikan rilis otomatis.
+- `node c:\Sendy\jkt48-live\web\verify\auto-publish-check.mjs` (setelah build): dua server (port 3111 & 3112) pada satu fixture DB. Menguji rilis otomatis 72 jam untuk IDN, rekaman belum lewat ambang tetap tersembunyi, rekaman Showroom **langsung tampil** (dan tetap tunduk keputusan admin), keputusan admin (terbit/tahan) menang atas aturan otomatis, jumlah arsip publik hanya menghitung rekaman yang tampil, serta `AUTO_PUBLISH_AFTER_HOURS=0` mematikan rilis otomatis IDN.
 - `node c:\Sendy\jkt48-live\web\verify\portal-browser-check.mjs`: halaman publik 1440px dan 390px, tanpa overflow, tanpa data operasional, admin dialihkan ke login (memerlukan dev/prod server di port 3000 dan Chrome dengan `--remote-debugging-port=9222`).
 - `node c:\Sendy\jkt48-live\web\verify\player-trial-check.mjs` (setelah build): ujicoba pemutar di `/admin/trial`. Menguji landscape Showroom (16/9, tanpa tombol rasio vertikal) berbeda dari vertikal IDN (3/4, dengan tombol rasio), **fullscreen elemen landscape** (wrapper mengisi viewport, container 16/9, tanpa theater satu halaman, scroll tidak dikunci, pemutar tetap ter-mount) beserta pemulihan status tombol saat keluar, **geometri bilah progres tetap 4 px tanpa min-height/border/padding bocor dari gaya formulir admin**, pemutar ter-render di keduanya, dan akses tanpa sesi dialihkan ke `/login`. Server port 3110. Screenshot: `verify/trial-showroom-fullscreen.png`.
 - `node c:\Sendy\jkt48-live\web\verify\player-check.mjs` (setelah build): Fixture DB dengan video yang dipublikasikan, server pada port 3108. Menguji player render, theater + fullscreen, 9 kombinasi rasio/responsif, identitas instance player, urutan Escape volume → theater, pemulihan fokus, persistensi mode fit setelah reload, dan tidak ada error hidrasi.
