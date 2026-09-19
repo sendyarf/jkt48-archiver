@@ -47,13 +47,14 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .catalog-filters input:not([type="range"]), .catalog-filters select, .admin-shell input:not([type="range"]), .admin-shell select, .login-panel input:not([type="range"]) { width: 100%; max-width: 100%; min-width: 0; min-height: 44px; background: #090e17; color: #f8fafc; border: 1px solid #374151; border-radius: 10px; padding: 10px 14px; transition: border-color .2s ease, box-shadow .2s ease; }
 .catalog-filters input:not([type="range"]):focus, .catalog-filters select:focus, .admin-shell input:not([type="range"]):focus, .admin-shell select:focus { border-color: var(--rose-500); box-shadow: 0 0 0 3px rgba(244,63,94,.18); outline: none; }
 .input-with-icon { position: relative; display: block; min-width: 0; }
-/* Ikon diposisikan di tengah vertikal input agar tidak bertumpuk dengan teks. */
+/* Ikon dipusatkan vertikal & teks digeser; spesifisitas diperkuat (.catalog-filters)
+   agar padding-left ikon tidak dikalahkan oleh aturan padding umum input. */
 .input-with-icon svg { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #98a5ba; pointer-events: none; }
-.input-with-icon input { padding-left: 42px; }
+.catalog-filters .input-with-icon input:not([type="range"]) { padding-left: 44px; }
 /* Dropdown dengan ikon di kiri */
 .select-with-icon { position: relative; display: block; min-width: 0; }
 .select-with-icon svg { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #98a5ba; pointer-events: none; z-index: 1; }
-.select-with-icon select { padding-left: 42px; appearance: none; -webkit-appearance: none; padding-right: 34px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2398a5ba' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; cursor: pointer; }
+.catalog-filters .select-with-icon select { padding-left: 44px; appearance: none; -webkit-appearance: none; padding-right: 34px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2398a5ba' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; cursor: pointer; }
 .result-summary { font-size: .82rem; margin: 24px 0; }
 .empty-state { padding: 60px 24px; text-align: center; background: #101622; border: 1px dashed #374151; border-radius: 14px; }
 .empty-state h2 { margin: 16px 0 8px; }
