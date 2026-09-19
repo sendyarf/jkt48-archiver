@@ -252,7 +252,7 @@ try {
   assert.ok(html.indexOf(mask(MANUAL)) < html.indexOf(mask(newest)),
     'Rekaman 1 jam lalu harus di atas pra-rilis 2 jam lalu');
   // 5. Ringkasan: pra-rilis dilaporkan, Showroom ambang 0 dihitung terbit.
-  assert.match(html, /rekaman tersedia/, 'Ringkasan jumlah rekaman harus tampil');
+  assert.match(html, /replay tersedia/, 'Ringkasan jumlah replay harus tampil');
   assert.match(html, /\(\+9 segera hadir\)/, 'Ringkasan harus melaporkan 9 pra-rilis');
   assert.ok(html.includes(`/watch/${mask(SHOWROOM_NEW)}`) && html.includes(`/watch/${mask(SHOWROOM_OLD)}`),
     'Showroom dengan ambang 0 langsung tampil di grid');
@@ -265,7 +265,7 @@ try {
     'Filter member harus tetap menampilkan pra-rilis member itu');
   const missingHtml = await getHtml(live, '/?member=jkt48_hilang');
   assert.equal(countOf(missingHtml, CARD_UPCOMING), 0, 'Filter tanpa rekaman tidak boleh menampilkan pra-rilis');
-  assert.match(missingHtml, /Tidak ada rekaman yang cocok/, 'Filter tanpa hasil harus menampilkan empty state');
+  assert.match(missingHtml, /Replay tidak ditemukan/, 'Filter tanpa hasil harus menampilkan empty state');
 
   // Filter platform: IDN punya 9 pra-rilis; Showroom (ambang 0) tidak punya.
   const idnHtml = await getHtml(live, '/?platform=idn');
@@ -293,12 +293,12 @@ try {
     // pemisah komentar khas render React di antara node teks).
     assert.ok(/untuk /.test(dateHtml) && dateHtml.includes(keyword),
       `Ringkasan pencarian harus menggemakan kata kunci ${JSON.stringify(keyword)}`);
-    assert.ok(countOf(dateHtml, 'video-card') >= 1 || !/Tidak ada rekaman yang cocok/.test(dateHtml),
+    assert.ok(countOf(dateHtml, 'video-card') >= 1 || !/Replay tidak ditemukan/.test(dateHtml),
       `Pencarian tanggal ${JSON.stringify(keyword)} tidak boleh kosong total`);
   }
   // Kontrol negatif: tanggal yang pasti tidak ada di fixture tetap kosong.
   const emptyHtml = await getHtml(live, '/?q=17%20Januari%201990');
-  assert.match(emptyHtml, /Tidak ada rekaman yang cocok/, 'Tanggal fiktif harus tetap menampilkan empty state');
+  assert.match(emptyHtml, /Replay tidak ditemukan/, 'Tanggal fiktif harus tetap menampilkan empty state');
 
   // Halaman 2 tidak menggandakan kartu pra-rilis.
   const page2 = await getHtml(live, '/?page=2');

@@ -26,8 +26,8 @@ export async function generateMetadata({ params }: WatchPageProps): Promise<Meta
   return {
     title: `${video.title} - ${video.streamer_name}`,
     description: video.is_visible
-      ? `Nonton siaran ulang ${video.title} oleh ${video.streamer_name}. Direkam dari ${video.platform === 'idn' ? 'IDN Live' : 'Showroom'}.`
-      : `Siaran ulang ${video.title} oleh ${video.streamer_name} segera hadir.`,
+      ? `Tonton replay ${video.title} oleh ${video.streamer_name}. Sumber: ${video.platform === 'idn' ? 'IDN Live' : 'Showroom'}.`
+      : `Replay ${video.title} oleh ${video.streamer_name} segera hadir.`,
     // Pra-rilis tidak boleh diindex mesin pencari sampai benar-benar terbit.
     robots: video.is_visible ? undefined : { index: false, follow: false },
     openGraph: {
@@ -131,7 +131,7 @@ export default async function WatchPage({ params }: WatchPageProps) {
 
           {filteredRelated.length === 0 ? (
             <p style={{ color: 'var(--text-tertiary)', fontSize: '0.88rem' }}>
-              Belum ada rekaman lain.
+              Belum ada replay lain.
             </p>
           ) : (
             <div className="related-list">

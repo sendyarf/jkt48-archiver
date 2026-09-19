@@ -85,6 +85,19 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       `t.me/<REPLAY_BOT_USERNAME>?start=<youtube_video_id>`. File lokal hanya dihapus
       setelah YouTube DAN arsip Telegram sukses; gagal salah satu → `pending_upload`.
       Test: `tests/test_replay_bot.py` → total **202 test** hijau.
+- [x] **Upgrade UI/UX web (compact + istilah seragam)**: navbar 72→58px, hero
+      dipadatkan dan panel hiasan diganti **kartu ringkasan** (jumlah replay terbit
+      & member), grid kartu 300→215px (5 kolom di 1440px), kartu lebih pendek (meta
+      1 baris, badge lebih kecil), filter/member/footer/watch/sidebar dipadatkan,
+      tombol full-width di mobile. Istilah diseragamkan: **"rekaman"/"siaran ulang"
+      → "replay"** di kartu, filter, empty state, metadata SEO, halaman Tentang,
+      serta klaim privasi font diperbarui (self-hosted, ui-avatars dihapus).
+      Verifikasi: `portal-browser-check.mjs` hijau di 360/390/768/1024/1440px
+      (tidak ada overflow), kedua skrip verify lain hijau.
+- [x] **Pencarian tanggal menyesuaikan tanggal yang tampil di kartu**: kondisi SQL
+      kini mencocokkan `date(...)` apa adanya (server WIB) **dan** `date(..., '+7 hours')`
+      (server UTC) — sebelumnya replay yang tampil "20 Sep" tidak ketemu saat dicari
+      "20 September" di sekitar tengah malam WIB.
 - [x] **Label platform pesan Telegram diperbaiki**: caption arsip Telegram &
       notifikasi YouTube dulu **hardcode** `🔴 IDN LIVE REPLAY`, sehingga rekaman
       Showroom (mis. Heidi JKT48, 19 Sep 2026) dilaporkan sebagai IDN.

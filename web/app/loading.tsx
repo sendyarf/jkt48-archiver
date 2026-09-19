@@ -6,7 +6,7 @@ export default function CatalogLoading() {
   return (
     <div className="container page-section" aria-busy="true" aria-live="polite">
       <p className="result-summary" style={{ visibility: 'hidden' }}>
-        Memuat rekaman…
+        Memuat replay…
       </p>
       <div className="video-grid">
         {Array.from({ length: 8 }).map((_, i) => (

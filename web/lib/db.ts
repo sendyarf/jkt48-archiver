@@ -288,13 +288,17 @@ export function getAllVideos(options: {
     // ditulis bot sebagai jam dinding server ATAU UTC berpenanda, jadi kedua
     // tafsir dicoba (tanpa 'unixepoch' ATAU dengan 'unixepoch').
     const dateKeys = extractSearchDates(options.search);
-    const wallClock = `date(COALESCE(ls.started_at, ls.created_at))`;
-    const wallClockUtc = `date(COALESCE(ls.started_at, ls.created_at), 'unixepoch')`;
+    // Dua tafsir supaya cocok dengan TANGGAL YANG TAMPIL DI KARTU (lib/wib.ts):
+    //  - server UTC  → tanggal tampil = waktu tersimpan + 7 jam
+    //  - server WIB  → tanggal tampil = waktu tersimpan apa adanya
+    // Ini penting di sekitar tengah malam WIB (mis. 23:06 UTC = 20 Sep WIB).
+    const wallClock = `COALESCE(ls.started_at, ls.created_at)`;
+    const placeholders = dateKeys.map(() => '?').join(', ');
     const dateCond = dateKeys.length
-      ? ` OR strftime('%Y-%m', ${wallClock}) IN (${dateKeys.map(() => '?').join(', ')})
-         OR ${wallClock} IN (${dateKeys.map(() => '?').join(', ')})
-         OR strftime('%Y-%m', ${wallClockUtc}) IN (${dateKeys.map(() => '?').join(', ')})
-         OR ${wallClockUtc} IN (${dateKeys.map(() => '?').join(', ')})`
+      ? ` OR strftime('%Y-%m', ${wallClock}) IN (${placeholders})
+         OR date(${wallClock}) IN (${placeholders})
+         OR strftime('%Y-%m', ${wallClock}, '+7 hours') IN (${placeholders})
+         OR date(${wallClock}, '+7 hours') IN (${placeholders})`
       : '';
     baseQuery += ` AND (
       LOWER(ls.member_username) LIKE ?

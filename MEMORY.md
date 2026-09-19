@@ -103,6 +103,12 @@ mengerjakan proyek ini. Jangan melanggar tanpa alasan yang jelas dan disepakati.
   REPLAY". Pemanggil wajib meneruskan platform (`plat` di `bot/main.py`,
   `item["platform"]` di `bot/upload_pending.py`); tanpa itu rekaman Showroom
   dilabeli IDN (regresi 19 Sep 2026: Heidi JKT48).
+- **Istilah UI publik = "replay", bukan "rekaman"/"siaran ulang".** Kartu, filter,
+  empty state, metadata SEO, dan halaman Tentang memakai kata "replay" agar
+  seragam dengan nama situs (JKT48 Replay). Kata "arsip" tetap dipakai untuk
+  menyebut koleksi secara keseluruhan. Perubahan teks ini ikut memengaruhi assert
+  di `web/verify/home-upcoming-grid.mjs` (mis. "replay tersedia",
+  "Replay tidak ditemukan").
 - **Status HTTP rute dinamis Next 16.3.5 tidak bisa dipakai untuk menguji 404/redirect.**
   `notFound()` dan `redirect()` di rute `[id]` mengembalikan **200** (isi halaman
   404/login-nya benar dan tidak membocorkan data); hanya rute statis yang benar 404.
