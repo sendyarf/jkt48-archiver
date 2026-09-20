@@ -10,6 +10,7 @@ from bot.thumbnail_collage import (
     COLLAGE_COLS,
     COLLAGE_COUNT,
     COLLAGE_ROWS,
+    COLUMN_WIDTHS,
     THUMB_HEIGHT,
     THUMB_WIDTH,
     build_collage,
@@ -94,8 +95,12 @@ class TestThumbnailCollage(unittest.TestCase):
     def test_grid_dimensions_fill_720p(self):
         self.assertEqual((COLLAGE_COLS, COLLAGE_ROWS, COLLAGE_COUNT), (3, 2, 6))
         self.assertEqual((THUMB_WIDTH, THUMB_HEIGHT), (1280, 720))
-        self.assertEqual((CELL_WIDTH * COLLAGE_COLS, CELL_HEIGHT * COLLAGE_ROWS), (1278, 720))
-        self.assertEqual(CELL_WIDTH % 2, 0)
+        # Kolase harus PERSIS 1280x720 (syarat thumbnail YouTube).
+        self.assertEqual(COLUMN_WIDTHS, [426, 426, 428])
+        self.assertEqual(CELL_WIDTH, COLUMN_WIDTHS[0])
+        self.assertEqual(sum(COLUMN_WIDTHS), THUMB_WIDTH)
+        self.assertEqual(CELL_HEIGHT * COLLAGE_ROWS, THUMB_HEIGHT)
+        self.assertTrue(all(w % 2 == 0 for w in COLUMN_WIDTHS))
         self.assertEqual(CELL_HEIGHT % 2, 0)
 
     def test_sample_times_spread_with_edge_margin(self):
@@ -119,8 +124,10 @@ class TestThumbnailCollage(unittest.TestCase):
     def test_xstack_filter_cover_no_bars(self):
         filt = build_xstack_filter()
         self.assertIn("force_original_aspect_ratio=increase", filt)
-        self.assertIn(f"crop={CELL_WIDTH}:{CELL_HEIGHT}", filt)
+        self.assertIn("crop=426:360", filt)
+        self.assertIn("crop=428:360", filt)
         self.assertIn("xstack=inputs=6", filt)
+        # Posisi grid: kolom 0/426/852, baris 0/360.
         for x, y in [(0, 0), (426, 0), (852, 0), (0, 360), (426, 360), (852, 360)]:
             self.assertIn(f"{x}_{y}", filt)
 

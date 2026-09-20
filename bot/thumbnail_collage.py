@@ -29,8 +29,20 @@ THUMB_HEIGHT = 720
 COLLAGE_COLS = 3
 COLLAGE_ROWS = 2
 COLLAGE_COUNT = COLLAGE_COLS * COLLAGE_ROWS
-CELL_WIDTH = (THUMB_WIDTH // COLLAGE_COLS // 2) * 2
+# 1280 tidak habis dibagi 3 (426 sisa 2). Sisa dibagikan ke kolom kanan agar
+# kolase tetap PERSIS 1280x720 tanpa pilar hitam (syarat thumbnail YouTube).
+_CELL_BASE_W = (THUMB_WIDTH // COLLAGE_COLS // 2) * 2
+_CELL_EXTRA = THUMB_WIDTH - _CELL_BASE_W * COLLAGE_COLS
+CELL_WIDTH = _CELL_BASE_W
 CELL_HEIGHT = (THUMB_HEIGHT // COLLAGE_ROWS // 2) * 2
+
+
+def column_width(col: int) -> int:
+    """Lebar sel kolom ke-`col` (0..2). Kolom kanan menyerap sisa 2 px."""
+    return _CELL_BASE_W + (_CELL_EXTRA if col == COLLAGE_COLS - 1 else 0)
+
+
+COLUMN_WIDTHS = [column_width(c) for c in range(COLLAGE_COLS)]
 EDGE_MARGIN_RATIO = 0.05
 
 
@@ -84,18 +96,27 @@ def pick_sample_times(duration: float, count: int = COLLAGE_COUNT) -> list:
 
 
 def build_xstack_filter() -> str:
-    scale_crop = (
-        f"scale={CELL_WIDTH}:{CELL_HEIGHT}:"
-        f"force_original_aspect_ratio=increase,"
-        f"crop={CELL_WIDTH}:{CELL_HEIGHT},setsar=1"
-    )
-    parts = "".join(f"[{i}:v]{scale_crop}[v{i}];" for i in range(COLLAGE_COUNT))
+    """
+    Filter ffmpeg untuk 6 input -> 1 gambar PERSIS 1280x720.
+
+    Tiap input: scale+crop "cover" (isi penuh, tanpa pilar hitam) ke ukuran
+    sel-nya (kolom kanan 2 px lebih lebar), lalu xstack grid 3x2:
+        [0][1][2]
+        [3][4][5]
+    """
+    parts = []
+    for i in range(COLLAGE_COUNT):
+        w = column_width(i % COLLAGE_COLS)
+        parts.append(
+            f"[{i}:v]scale={w}:{CELL_HEIGHT}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{CELL_HEIGHT},setsar=1[v{i}];"
+        )
     layout = "|".join(
-        f"{(i % COLLAGE_COLS) * CELL_WIDTH}_{(i // COLLAGE_COLS) * CELL_HEIGHT}"
+        f"{sum(COLUMN_WIDTHS[:i % COLLAGE_COLS])}_{(i // COLLAGE_COLS) * CELL_HEIGHT}"
         for i in range(COLLAGE_COUNT)
     )
     inputs = "".join(f"[v{i}]" for i in range(COLLAGE_COUNT))
-    return f"{parts}{inputs}xstack=inputs={COLLAGE_COUNT}:layout={layout}"
+    return f"{''.join(parts)}{inputs}xstack=inputs={COLLAGE_COUNT}:layout={layout}"
 
 
 def build_collage(
