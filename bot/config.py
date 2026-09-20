@@ -234,6 +234,13 @@ class Config:
     # Directory on VPS to save downloads temporarily
     DOWNLOAD_DIR: str = os.getenv("DOWNLOAD_DIR", "/tmp/jkt48-lives")
 
+    # Thumbnail kolase 3x2 utk video BARU (true/false). Dibuat dari file lokal
+    # via ffmpeg lalu dipasang ke YouTube (~50 unit kuota). Gagal membuat /
+    # memasang thumbnail TIDAK menggagalkan upload. Video lama tak disentuh.
+    THUMBNAIL_COLLAGE_ENABLED: bool = (
+        os.getenv("THUMBNAIL_COLLAGE_ENABLED", "true").lower() == "true"
+    )
+
     # SQLite database file path
     DB_PATH: str = os.getenv("DB_PATH", "jkt48_live.db")
 

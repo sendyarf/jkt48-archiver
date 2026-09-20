@@ -103,6 +103,14 @@ mengerjakan proyek ini. Jangan melanggar tanpa alasan yang jelas dan disepakati.
   REPLAY". Pemanggil wajib meneruskan platform (`plat` di `bot/main.py`,
   `item["platform"]` di `bot/upload_pending.py`); tanpa itu rekaman Showroom
   dilabeli IDN (regresi 19 Sep 2026: Heidi JKT48).
+- **Thumbnail YouTube video BARU = kolase 3x2 via ffmpeg, bukan frame otomatis.**
+  `bot/thumbnail_collage.py::build_collage()` mengambil 6 frame tersebar merata
+  (margin 5% tiap ujung), tiap frame di-scale+crop "cover" ke 426x360 lalu xstack
+  jadi 1280x720; `YouTubeChannelPool.set_thumbnail()` memasangnya (~50 kuota).
+  Best-effort: gagal (ffmpeg hilang / API error) → warning saja, upload tetap
+  sukses. Saklar `THUMBNAIL_COLLAGE_ENABLED` (default true). Video LAMA tak
+  disentuh. JANGAN kembalikan logika `pick_sample_times` ke while-loop mundur
+  1 detik — itu infinite-loop untuk video < ~8 detik (insiden 21 Sep 2026).
 - **Istilah UI publik = "replay", bukan "rekaman"/"siaran ulang".** Kartu, filter,
   empty state, metadata SEO, dan halaman Tentang memakai kata "replay" agar
   seragam dengan nama situs (JKT48 Replay). Kata "arsip" tetap dipakai untuk

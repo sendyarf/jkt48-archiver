@@ -121,6 +121,18 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       `npm run verify:home-upcoming`; `auto-publish-check.mjs` diperbarui
       (skema fixture + ekspektasi countdown/pra-rilis) → `npm run verify:auto-publish`.
       Keduanya **PASS**.
+- [x] **Thumbnail kolase 3x2 untuk video BARU (video lama tak disentuh)**:
+      `bot/thumbnail_collage.py` (baru, ffmpeg saja — tanpa Pillow) mengambil 6
+      frame tersebar merata, tiap frame cover-crop ke 426x360 lalu digabung
+      xstack jadi 1280x720 sehingga tiap sel penuh tanpa pilar hitam (sumber live
+      vertikal 9:16 vs kartu web 16:9). `YouTubeChannelPool.set_thumbnail()` baru
+      memasangnya ke video hasil upload (~50 unit kuota, ke channel pengupload).
+      Dipanggil di `bot/main.py` tepat setelah upload sukses, SEBELUM arsip
+      Telegram & hapus file lokal; file kolase sementara dihapus setelahnya.
+      Best-effort + saklar `THUMBNAIL_COLLAGE_ENABLED` (default true, contoh di
+      `.env.example`): gagal → warning, upload tetap sukses. Perlu ffmpeg +
+      ffprobe di VPS. Test: `tests/test_youtube_title.py::TestThumbnailCollage`
+      (+9 kasus) → total **215 test** hijau.
 
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 

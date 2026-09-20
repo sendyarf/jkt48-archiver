@@ -45,6 +45,7 @@ from bot.merger import MergeManager
 from bot.telegram_sender import TelegramSender, build_youtube_notification
 from bot.replay_bot import ReplayBot
 from bot.youtube_uploader import YouTubeChannelPool, YouTubeQuotaExceeded
+from bot.thumbnail_collage import build_collage
 
 # Ukuran minimal file parsial agar layak didaftarkan sebagai segmen saat shutdown
 # (lihat JKT48LiveBot._salvage_partial_segments). ~5 MB ≈ puluhan detik video:
@@ -365,6 +366,27 @@ class JKT48LiveBot:
                         youtube_video_id=video_id,
                     )
                     logger.info("Successfully uploaded to YouTube (%s). Video ID: %s", channel_label, video_id)
+
+                    # Thumbnail kolase 3x2 (video BARU saja): dibuat dari file
+                    # lokal via ffmpeg lalu dipasang ke YouTube (~50 kuota).
+                    # Best-effort: gagal -> warning saja, upload tetap sukses.
+                    thumb_path = None
+                    try:
+                        if Config.THUMBNAIL_COLLAGE_ENABLED:
+                            thumb_path = build_collage(path)
+                            if thumb_path is not None:
+                                self.yt_pool.set_thumbnail(
+                                    video_id, thumb_path,
+                                    channel_label=channel_label,
+                                )
+                    except Exception as exc:
+                        logger.warning("Thumbnail kolase dilewati (%s): %s", live_id, exc)
+                    finally:
+                        if thumb_path is not None:
+                            try:
+                                thumb_path.unlink(missing_ok=True)
+                            except OSError:
+                                pass
 
                     # Arsipkan juga ke channel Telegram privat (database replay)
                     archive_ok = await self._archive_to_telegram(

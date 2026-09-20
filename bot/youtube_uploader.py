@@ -184,6 +184,56 @@ class YouTubeChannelPool:
 
         return None, None
 
+    def set_thumbnail(
+        self,
+        video_id: str,
+        thumbnail_path: str | Path,
+        channel_label: Optional[str] = None,
+    ) -> bool:
+        """
+        Pasang thumbnail custom ke video YouTube (~50 unit kuota).
+
+        Bila `channel_label` diisi, hanya channel itu yang dicoba (channel
+        tempat video diupload). Bila None, semua channel dicoba berurutan.
+        Gagal di semua channel -> False (upload TETAP dianggap sukses;
+        video memakai thumbnail otomatis YouTube).
+        """
+        path = Path(thumbnail_path)
+        if not video_id or not path.exists() or path.stat().st_size == 0:
+            logger.warning("set_thumbnail dilewati: video_id/thumbnail tidak valid.")
+            return False
+
+        channels = Config.load_youtube_channels()
+        if channel_label:
+            channels = [c for c in channels if c.label == channel_label] or channels
+
+        media = MediaFileUpload(str(path), mimetype="image/jpeg", resumable=False)
+        for ch in channels:
+            try:
+                service = self._get_service_for_channel(ch.token_file, ch.secret_file)
+                service.thumbnails().set(
+                    videoId=video_id, media_body=media
+                ).execute()
+                logger.info(
+                    "Thumbnail kolase terpasang ke video %s via channel '%s'.",
+                    video_id, ch.label,
+                )
+                return True
+            except HttpError as exc:
+                logger.warning(
+                    "set_thumbnail gagal via channel '%s' (%s); coba channel lain.",
+                    ch.label, exc,
+                )
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "set_thumbnail error via channel '%s' (%s); coba channel lain.",
+                    ch.label, exc,
+                )
+                continue
+        logger.warning("set_thumbnail gagal di semua channel untuk video %s.", video_id)
+        return False
+
     # Bulan Indonesia — judul YouTube dibuat identik dengan format judul website
     # (web/lib/wib.ts buildDisplayTitle): "LIVE IDN NAMA - 15 September 2026 | 16:37 WIB".
     _ID_MONTHS = {
