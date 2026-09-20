@@ -32,9 +32,6 @@
 .trial-notes code, .panel code { background: #1c2534; border: 1px solid var(--border-card); border-radius: 5px; padding: 1px 6px; font-size: .82em; color: #fda4af; }
 #trial-player { margin: 24px 0; }
 @media(max-width: 800px) {
-  .catalog-hero { grid-template-columns: minmax(0, 1fr); padding-top: 36px; gap: 30px; }
-  .hero-note { padding: 28px; }
-  .hero-note h2 { font-size: 1.6rem; }
   .admin-shell { grid-template-columns: 1fr; gap: 24px; }
 
   /* Navigasi admin menjadi panel 2 kolom yang rapi, bukan teks menumpuk. */
