@@ -105,12 +105,28 @@ mengerjakan proyek ini. Jangan melanggar tanpa alasan yang jelas dan disepakati.
   dilabeli IDN (regresi 19 Sep 2026: Heidi JKT48).
 - **Thumbnail YouTube video BARU = kolase 3x2 via ffmpeg, bukan frame otomatis.**
   `bot/thumbnail_collage.py::build_collage()` mengambil 6 frame tersebar merata
-  (margin 5% tiap ujung), tiap frame di-scale+crop "cover" ke 426x360 lalu xstack
-  jadi 1280x720; `YouTubeChannelPool.set_thumbnail()` memasangnya (~50 kuota).
+  (margin 5% tiap ujung), tiap frame di-scale+crop "cover" ke lebar kolomnya lalu
+  xstack jadi **PERSIS 1280x720** (syarat thumbnail YouTube). 1280 tidak habis
+  dibagi 3 → lebar kolom `COLUMN_WIDTHS = [426, 426, 428]` (kolom kanan menyerap
+  sisa 2 px); jangan kembalikan satu `CELL_WIDTH` untuk semua kolom (dulu 426x3 =
+  1278 → pilar hitam di kanan, insiden 21 Sep 2026);
+  `YouTubeChannelPool.set_thumbnail()` memasangnya (~50 kuota).
   Best-effort: gagal (ffmpeg hilang / API error) → warning saja, upload tetap
   sukses. Saklar `THUMBNAIL_COLLAGE_ENABLED` (default true). Video LAMA tak
   disentuh. JANGAN kembalikan logika `pick_sample_times` ke while-loop mundur
   1 detik — itu infinite-loop untuk video < ~8 detik (insiden 21 Sep 2026).
+- **Hero portal = "hero band" dua kolom, BUKAN backdrop blur full-bleed.**
+  Markup `web/components/PublicCatalog.tsx`: `.hero-band` > `.hero-intro` (eyebrow,
+  H1, copy, tombol "Jelajahi replay" — jadi `.secondary-button` saat spotlight ada)
+  + `<HeroSpotlight>` (`.hero-card`: poster 16:9, badge platform/durasi, kicker
+  BARU TERBIT / REPLAY TERBARU / SEGERA HADIR, meta member·tanggal, satu CTA
+  "Tonton replay"). Saat pengunjung filter/cari/buka halaman 2+, `.hero-band`
+  dapat kelas `is-solo` (satu kolom) dan kartu disembunyikan. Spotlight memakai
+  `result.videos[0]` halaman 1 tanpa filter → nol query tambahan, dan URL-nya
+  harus sama persis dengan `VideoCard` (`watch_id || youtube_video_id || id`).
+  Breakpoint: 900px (kartu turun ke bawah teks, `max-width: 640px`), 720px (tombol
+  hero + CTA kartu full-width). Jangan hidupkan lagi panel ringkasan arsip
+  (`.hero-note`) atau blur sinematik — pengguna menolaknya.
 - **Istilah UI publik = "replay", bukan "rekaman"/"siaran ulang".** Kartu, filter,
   empty state, metadata SEO, dan halaman Tentang memakai kata "replay" agar
   seragam dengan nama situs (JKT48 Replay). Kata "arsip" tetap dipakai untuk
@@ -196,3 +212,8 @@ mengerjakan proyek ini. Jangan melanggar tanpa alasan yang jelas dan disepakati.
     tidak pernah di-upload ke YouTube. Diperbaiki: query diubah ke
     `status IN ('segment_done', 'download_complete')`, ditambah auto-adoption untuk
     segmen tanpa grup (*orphaned segments*), dan timer recovery cerdas berbasis sisa waktu asli.
+12. **Kolase thumbnail keluar 1278x720 (pilar hitam di kanan)** — `CELL_WIDTH` tunggal
+    (426) dikali 3 kolom = 1278, jadi `xstack` menyisakan 2 px kosong; YouTube menolak
+    thumbnail yang tidak persis 1280x720. Diperbaiki dengan lebar per kolom
+    `[426, 426, 428]` (kolom kanan menyerap sisa) dan diverifikasi nyata lewat ffmpeg
+    (`tmp/check-collage.py`, sumber 1080x1920 → output 1280x720).
