@@ -30,10 +30,12 @@ try {
         logo48: !!document.querySelector('.brand-logo, .brand-mark'),
         navToggleVisible: (() => { const el = document.querySelector('.nav-toggle'); if (!el) return null; return getComputedStyle(el).display !== 'none'; })(),
         navMenuDisplay: (() => { const el = document.querySelector('.nav-menu'); if (!el) return null; return getComputedStyle(el).display; })(),
-        heroH1: (() => { const el = document.querySelector('.catalog-hero h1'); if (!el) return null; const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return { size: s.fontSize, overflows: r.width > innerWidth + 1 }; })(),
+        heroH1: (() => { const el = document.querySelector('.hero-intro h1'); if (!el) return null; const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return { size: s.fontSize, overflows: r.width > innerWidth + 1 }; })(),
+        heroIntro: (() => { const el = document.querySelector('.hero-intro'); if (!el) return null; const r = el.getBoundingClientRect(); return { rectWidth: Math.round(r.width), rectRight: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom) }; })(),
         sectionH2: (() => { const el = document.querySelector('.section-heading h2'); if (!el) return null; const r = el.getBoundingClientRect(); return { overflows: Math.round(r.right) > Math.round(innerWidth) + 1, rectRight: Math.round(r.right), rectWidth: Math.round(r.width) }; })(),
         catalogFilterBox: (() => { const el = document.querySelector('.catalog-filters'); if (!el) return null; const r = el.getBoundingClientRect(); return { overflows: Math.round(r.right) > Math.round(innerWidth) + 1, rectRight: Math.round(r.right), rectWidth: Math.round(r.width) }; })(),
-        heroNoteBox: (() => { const el = document.querySelector('.hero-note'); if (!el) return null; const r = el.getBoundingClientRect(); return { overflows: Math.round(r.right) > Math.round(innerWidth) + 1, rectRight: Math.round(r.right), rectWidth: Math.round(r.width) }; })(),
+        heroBand: (() => { const el = document.querySelector('.hero-band'); if (!el) return null; const r = el.getBoundingClientRect(); return { overflows: Math.round(r.right) > Math.round(innerWidth) + 1, rectRight: Math.round(r.right), rectWidth: Math.round(r.width) }; })(),
+        heroCard: (() => { const el = document.querySelector('.hero-card'); if (!el) return null; const r = el.getBoundingClientRect(); return { overflows: Math.round(r.right) > Math.round(innerWidth) + 1, rectRight: Math.round(r.right), rectWidth: Math.round(r.width) }; })(),
         searchInputBox: (() => { const el = document.querySelector('.catalog-search input'); if (!el) return null; const r = el.getBoundingClientRect(); return { overflows: Math.round(r.right) > Math.round(innerWidth) + 1, rectRight: Math.round(r.right), rectWidth: Math.round(r.width) }; })(),
         links: [...document.querySelectorAll('header a, footer a')].map(a => a.getAttribute('href')),
       })`);
@@ -53,7 +55,17 @@ try {
       if (state.heroH1) assert(!state.heroH1.overflows, `Hero H1 meluber di ${width}px`);
       if (state.sectionH2) assert(!state.sectionH2.overflows, `Section H2 meluber di ${width}px ${state.path}: ${JSON.stringify(state.sectionH2)}`);
       if (state.catalogFilterBox) assert(!state.catalogFilterBox.overflows, `Filter katalog meluber di ${width}px ${state.path}: ${JSON.stringify(state.catalogFilterBox)}`);
-      if (state.heroNoteBox) assert(!state.heroNoteBox.overflows, `Hero note meluber di ${width}px ${state.path}: ${JSON.stringify(state.heroNoteBox)}`);
+      if (state.heroBand) assert(!state.heroBand.overflows, `Hero band meluber di ${width}px ${state.path}: ${JSON.stringify(state.heroBand)}`);
+      if (state.heroCard) assert(!state.heroCard.overflows, `Kartu hero meluber di ${width}px ${state.path}: ${JSON.stringify(state.heroCard)}`);
+      // Tata letak hero: dua kolom (kartu di kanan teks) di layar lebar,
+      // satu kolom (kartu di bawah teks) di layar sempit.
+      if (state.heroCard && state.heroIntro) {
+        if (width >= 1024) {
+          assert(state.heroCard.rectRight > state.heroIntro.rectRight, `Hero harus 2 kolom di ${width}px: ${JSON.stringify(state)}`);
+        } else if (width < 768) {
+          assert(state.heroCard.rectWidth <= state.heroIntro.rectWidth + 1, `Kartu hero lebih lebar dari kolom teks di ${width}px`);
+        }
+      }
       if (state.searchInputBox) assert(!state.searchInputBox.overflows, `Input pencarian meluber di ${width}px ${state.path}: ${JSON.stringify(state.searchInputBox)}`);
       assert(!state.links.includes('/status') && !state.links.includes('/admin'));
       if (route === '/admin/status') assert.equal(state.path, '/login');

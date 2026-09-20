@@ -133,6 +133,31 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       `.env.example`): gagal → warning, upload tetap sukses. Perlu ffmpeg +
       ffprobe di VPS. Test: `tests/test_youtube_title.py::TestThumbnailCollage`
       (+9 kasus) → total **215 test** hijau.
+- [x] **Kolase thumbnail dijamin PERSIS 1280x720**: 1280 tidak habis dibagi 3, jadi
+      lebar sel kini per kolom `COLUMN_WIDTHS = [426, 426, 428]` (kolom kanan
+      menyerap sisa 2 px) — sebelumnya 426x3 = 1278 sehingga ada pilar hitam di
+      kanan (ditolak YouTube). `pick_sample_times()` ditulis ulang agar tidak
+      "infinite loop" pada video < ±8 s (jarak sampel dihitung dari durasi nyata,
+      bukan `count` tetap). Diverifikasi nyata dengan ffmpeg: `tmp/check-collage.py`
+      (gitignored) mengubah sumber 1080x1920 → output **1280x720**, plus uji
+      rotasi hue untuk membuktikan 6 sel berbeda. Test diperbarui
+      (`test_grid_dimensions_fill_720p`, `test_xstack_filter_cover_no_bars`).
+- [x] **Hero band + spotlight replay terbaru (menggantikan panel ringkasan arsip)**:
+      hero kini satu panel `hero-band` (glow maroon) berisi teks di kiri
+      (`hero-intro`: eyebrow, H1, copy, tombol "Jelajahi replay" jadi sekunder
+      saat ada spotlight, link "Lihat member") dan **kartu spotlight** di kanan
+      (`HeroSpotlight.tsx` → `.hero-card`): poster 16:9 (thumbnail kolase bot)
+      + badge platform + durasi + overlay play, kicker BARU TERBIT/REPLAY
+      TERBARU/SEGERA HADIR, judul, meta member·tanggal, satu CTA "Tonton replay".
+      Sumber = `result.videos[0]` halaman 1 tanpa filter (nol query tambahan);
+      saat pengunjung memfilter/mencari/buka halaman 2+, band otomatis jadi satu
+      kolom (`.hero-band.is-solo`). CSS mati dibuang (`.hero-cinema*`,
+      `.hero-note*`, `.hero-stats-inline*`, `.hero-spotlight*`), breakpoint baru
+      900px (kartu turun ke bawah teks, `max-width: 640px`) dan 720px (tombol
+      hero + CTA kartu full-width). `verify/portal-browser-check.mjs` kini juga
+      menguji `hero-band`/`hero-card` (tidak overflow + hero 2 kolom ≥1024px).
+      Verifikasi: `tsc`, `eslint`, `npm run build`, `verify:home-upcoming`,
+      `verify:auto-publish`, dan browser check **20/20 PASS** (360/390/768/1024/1440).
 
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 
