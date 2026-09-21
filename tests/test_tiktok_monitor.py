@@ -252,6 +252,11 @@ class TestRunOnce(TikTokMonitorTestCase):
     def test_missing_fixture_account_is_skipped(self):
         database.upsert_tiktok_account("tidak-ada")
         monitor = TikTokMonitor(telegram=FakeTelegram())
+        processed = asyncio.run(monitor.run_once())
+        # Akun tanpa fixture = jawaban kosong yang sah, bukan crash: siklus
+        # selesai tanpa memproses apa pun dan akun tetap dicatat sudah diperiksa.
+        self.assertEqual(processed, 0)
+        self.assertTrue(database.get_tiktok_account("tidak-ada")["last_checked_at"])
 
 
 class TestFailureAndRetry(TikTokMonitorTestCase):
@@ -389,6 +394,45 @@ class TestItemFromDbRow(TikTokMonitorTestCase):
         self.assertEqual(item.kind, "photo")
         self.assertEqual(item.images, ["a.jpg", "b.jpg"])
         self.assertEqual(item.page_url, "https://tiktok.invalid/p9")
+
+
+class TestAccountsWithoutMember(TikTokMonitorTestCase):
+    """Akun cadangan/tak berpasangan (`member_username` NULL) harus tetap aman.
+
+    Di produksi `jkt48.u16` dan `jkt48.aurellia_` sengaja tidak dipetakan ke
+    satu member, jadi siklus round-robin mustahil menghindarinya.
+    """
+
+    def test_unmatched_account_still_archives_from_scratch(self):
+        Config.TIKTOK_YT_UPLOAD_ENABLED = True
+        self._write_fixture("jkt48.u16", [self._video_fixture_item("u1")], [])
+        database.upsert_tiktok_account("jkt48.u16")  # member_username = NULL
+        row = database.get_tiktok_account("jkt48.u16")
+        self.assertIsNone(row["member_username"])
+
+        tg = FakeTelegram()
+        pool = FakeYouTubePool()
+        monitor = TikTokMonitor(telegram=tg, youtube_pool=pool)
+        asyncio.run(monitor.run_once())
+
+        post = database.get_tiktok_post("u1")
+        self.assertEqual(post["status"], "done")
+        self.assertEqual(len(tg.videos), 1)
+        self.assertTrue(tg.videos[0].endswith(".mp4"))
+        self.assertEqual(pool.uploads[0][1], "TIKTOK VIDEO jkt48.u16")
+        self.assertNotIn("None", pool.uploads[0][1])
+
+    def test_unmatched_account_reports_pending_then_retries(self):
+        self._write_fixture("jkt48.u16", [self._photo_fixture_item("u2", 3)], [])
+        database.upsert_tiktok_account("jkt48.u16")
+
+        failing = FakeTelegram(fail_times=1)
+        asyncio.run(TikTokMonitor(telegram=failing).run_once())
+        self.assertEqual(database.get_tiktok_post("u2")["status"], "pending_upload")
+
+        done = asyncio.run(TikTokMonitor(telegram=FakeTelegram()).retry_pending())
+        self.assertEqual(done, 1)
+        self.assertEqual(database.get_tiktok_post("u2")["status"], "done")
 
 
 if __name__ == "__main__":
