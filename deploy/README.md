@@ -80,6 +80,10 @@ cd jkt48-live
 python3 -m venv .venv          # nama .venv = yang dideteksi PM2
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# cek cepat: dependensi harus ada di interpreter ini (yt_dlp dipanggil
+# sebagai `python -m yt_dlp`, jadi wajib ada walau tidak di-impor kode)
+python -c "import curl_cffi, telethon, httpx, dotenv, googleapiclient, yt_dlp; print('deps OK')"
 ```
 
 Selesai. **Tidak perlu** mengubah `deploy/ecosystem.config.js`: berkas itu mencari

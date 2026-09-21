@@ -92,6 +92,13 @@ mengunci `pip` sistem, sehingga `pip install -r requirements.txt` **di luar venv
 ditolak dengan pesan itu. Solusinya adalah venv di atas — **bukan**
 `--break-system-packages`, yang bisa merusak paket Python yang dipakai apt.
 
+Pastikan dependensi sudah benar-benar ada di interpreter yang aktif (`yt_dlp`
+tidak di-impor kode, tetapi dijalankan sebagai `python -m yt_dlp`):
+
+```bash
+python -c "import curl_cffi, telethon, httpx, dotenv, googleapiclient, yt_dlp; print('deps OK')"
+```
+
 PM2 memilih interpreter bot dengan urutan: `BOT_PYTHON` (env) → `.venv/bin/python`
 → `venv/bin/python` → `python3` sistem.
 

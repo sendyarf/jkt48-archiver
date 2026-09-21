@@ -309,6 +309,18 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
     Ini penting untuk arsip TikTok: kalau `.venv` baru dibuat setelah bot
     berjalan, `curl_cffi` tidak akan terlihat walau `restart` sudah dilakukan.
 
+18. **Verifikasi dependensi: `requirements.txt` adalah sumber kebenaran.** Jangan
+    mengarang nama modul saat menyusun perintah verifikasi di dokumentasi/balasan
+    — audit dulu impor nyata dengan `ast` (baca berkas dengan `utf-8-sig`; ada
+    berkas turunan lama yang ber-BOM `tests/test_youtube_title.py`, kini sudah
+    dibersihkan). Perintah cek yang benar:
+    `python -c "import curl_cffi, telethon, httpx, dotenv, googleapiclient, yt_dlp"`
+    (`yt_dlp` tidak di-impor kode, tapi dipanggil `sys.executable -m yt_dlp`,
+    jadi tetap wajib ada). `requests` dipertahankan karena dependensi transitif
+    `google-auth-oauthlib`/`requests-oauthlib`; `tqdm` dan `asyncio-throttle`
+    tidak terpakai di kode mana pun, tetapi dibiarkan agar tidak memutus skrip
+    lain milik pengguna.
+
 ## Kesalahan masa lalu yang sudah diperbaiki
 
 1. **Merge di-upload sebelum live selesai** — timer merge tidak ter-reset saat

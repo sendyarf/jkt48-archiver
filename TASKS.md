@@ -299,6 +299,17 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       keduanya → `.venv` menang, venv Windows → `Scripts/python.exe`,
       `BOT_PYTHON` → menang atas semuanya; `apps[0]` (web) tidak berubah.
 
+- [x] **Audit dependensi + bersihkan BOM** — umpan balik dari VPS: perintah
+      verifikasi yang saya sarankan memuat `aiohttp` yang **tidak pernah** dipakai
+      kode (perintah itu salah, bukan dependensinya). Diaudit dengan `ast` +
+      `sys.stdlib_module_names`: pihak ketiga yang benar-benar terpakai =
+      `telethon`, `httpx`, `curl_cffi`, `dotenv`, `googleapiclient`,
+      `google_auth_oauthlib`, `colorlog` (+ `yt_dlp` via `sys.executable -m`;
+      `requests` hanya transitif `google-auth-oauthlib`). `requirements.txt`
+      ternyata sudah lengkap dan benar. Sekaligus `tests/test_youtube_title.py`
+      dibersihkan dari BOM UTF-8 yang membuat skrip audit (dan alat lain)
+      error — 16 test lamanya tetap lulus.
+
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 
 - [ ] **Arsip TikTok — verifikasi di VPS**: metode sudah terbukti di mesin
