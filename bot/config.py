@@ -276,6 +276,18 @@ class Config:
     # "fixture" (baca JSON lokal — dipakai uji tanpa jaringan).
     TIKTOK_PROVIDER: str = os.getenv("TIKTOK_PROVIDER", "auto").lower().strip()
 
+    # Profil impersonasi TLS untuk curl_cffi. Cloudflare di tikwm.com & halaman
+    # TikTok menjawab 403 pada request biasa, tetapi lolos dengan fingerprint
+    # browser ini (uji 21 Sep 2026). Kosongkan untuk memakai default "chrome131".
+    TIKTOK_IMPERSONATE: str = os.getenv("TIKTOK_IMPERSONATE", "chrome131").strip()
+
+    # Jeda tikwm saat rate-limit per detik (detik) dan saat kuota harian habis.
+    # Kuota gratis tikwm ±10.000 request/hari; pesannya memuat "day"/"10000".
+    TIKWM_RATE_COOLDOWN_SECONDS: int = int(os.getenv("TIKWM_RATE_COOLDOWN_SECONDS", "5"))
+    TIKWM_QUOTA_COOLDOWN_SECONDS: int = int(
+        os.getenv("TIKWM_QUOTA_COOLDOWN_SECONDS", "1800")
+    )
+
     # Direktori fixture untuk TIKTOK_PROVIDER=fixture (dan unit test).
     TIKTOK_FIXTURE_DIR: str = os.getenv("TIKTOK_FIXTURE_DIR", "tests/fixtures/tiktok")
 

@@ -229,20 +229,64 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       browser check **25/25 PASS** (5 lebar × 5 rute, kini termasuk `/tiktok`
       dengan cek jumlah kolom), `verify:home-upcoming` & `verify:auto-publish`
       PASS.
+- [x] **Arsip TikTok: story & listing (metode dari proyek `JKT48_TIKTOK`)**.
+      Temuan + perbaikan:
+      1. **Endpoint story yang benar = `/api/user/story` (TUNGGAL)** —
+         `/api/user/stories` menjawab 404, itulah sebabnya story tidak pernah
+         terambil. Paginasi memakai `hasMore` (camel) → `_next_cursor()` menerima
+         `hasMore` maupun `has_more`.
+      2. **`curl_cffi` + `impersonate=chrome131` = kunci tembus Cloudflare.**
+         Tanpa itu tikwm dan halaman embed TikTok sama-sama 403; dengan itu
+         keduanya 200 dari mesin yang sama (`httpx` tetap jadi fallback).
+         Lapisan HTTP baru: `browser_headers()`, `_sync_request()` via
+         `asyncio.to_thread`, `http_get_text_retry()` (retry 3× untuk 503).
+      3. **Penyedia baru `EmbedProvider`** dari metode proyek referensi:
+         `tiktok.com/embed/@user` → `videoList` 10 post terbaru (foto dikenali
+         dari **ketiadaan `playAddr`**), dan `tiktok.com/embed/v2/<id>` →
+         `itemInfos.createTime` + `imagePostInfo.displayImages`. Parser HTML
+         murni (`parse_embed_profile` / `parse_embed_post` / `extract_post_id`)
+         supaya bisa diuji tanpa jaringan. Urutan `auto` kini
+         **tikwm → embed → ytdlp**.
+      4. **Kesehatan penyedia per kapabilitas** (`is_healthy("posts")` /
+         `is_healthy("stories")`): 403 di `/user/posts` tidak lagi mematikan
+         jalur story, dan satu siklus bisa memakai listing dari embed + story
+         dari tikwm. `mark_capability_missing()` untuk penyedia tanpa story.
+      5. **Detail postingan baru** (`_enrich_new_items`) melengkapi tanggal,
+         durasi, dan daftar foto hanya untuk postingan yang baru ditemukan.
+      6. Deteksi foto tambahan (`looks_like_photo`: `duration == 0 && size == 0`),
+         kunci video alternatif (`video_url`/`download_url`/`wmplay`), dan
+         fallback media: URL CDN tikwm kedaluwarsa → URL segar dari embed, serta
+         jumlah foto 0 → daftar foto dari embed.
+      7. **Bug diperbaiki: daftar `ffconcat` harus absolut.** Path relatif
+         diselesaikan relatif terhadap lokasi berkas daftar (bukan CWD) sehingga
+         `DOWNLOAD_DIR` relatif membuat semua slide show gagal
+         ("No such file or directory"); `_ffconcat_escape()` kini
+         `resolve().as_posix()`.
+      8. **Bug diperbaiki: perbandingan metode stub.** `getattr(provider, nama)
+         is getattr(BaseProvider, nama)` selalu False (metode terikat), sehingga
+         penyedia tanpa story tetap dipanggil dan mengembalikan `[]` yang
+         menghentikan pencarian penyedia berikutnya. Kini dibandingkan
+         `__func__`.
+      Hasil uji nyata 21 Sep 2026: listing embed 10 post/akun (foto 9 & 13 gambar
+      terdeteksi); **scan story 51 akun dalam 62 detik, 0 gagal → 4 akun punya
+      story aktif** (`fionyjkt48`, `jkt48.erine_`, `jkt48.intan` 2, `jkt48.maira`);
+      unduh story nyata 1,33 MB/15 detik via yt-dlp; unduh postingan foto nyata
+      9 foto → 1 album dan **13 foto → 2 album (10+3)** + slide show 13 detik.
+      Verifikasi: **356 test Python lulus** (95 test TikTok), pyflakes bersih,
+      `tsc`/`eslint`/`build` OK, `verify:tiktok` PASS, browser check 25/25 PASS.
 
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 
-- [ ] **Arsip TikTok — validasi lapangan di VPS**: jalankan
-      `python3 -m bot.tiktok_monitor --dry-run` untuk 51 akun, lalu `--once`
-      untuk beberapa akun, dan catat penyedia mana yang benar-benar jalan
-      (tikwm vs yt-dlp) dari IP VPS. Bila tikwm tetap 403 dari VPS, pertimbangkan
-      signer X-Bogus/msToken atau pembacaan SSR `__UNIVERSAL_DATA_FOR_REHYDRATION__`
-      dengan cookie `ttwid`.
-- [ ] **Story TikTok**: bergantung pada penyedia — `tikwm` belum punya endpoint
-      story (404), `yt-dlp` tidak mendukung. Perlu jalur lain (`/api/story/item_list/`
-      dengan signature) atau menerima bahwa story tidak terarsip.
+- [ ] **Arsip TikTok — verifikasi di VPS**: metode sudah terbukti di mesin
+      pengembangan (embed listing + tikwm story, lihat catatan di bawah), tetapi
+      jalur produksi tetap perlu dijalankan sekali di VPS:
+      `TIKTOK_ENABLED=true python3 -m bot.tiktok_monitor --account jkt48.maira`
+      lalu pastikan listing, story, unduhan, dan upload berjalan.
 - [ ] Saklar publik per-postingan TikTok dari halaman admin (kolom `visible`
       sudah ada di DB, tetapi belum ada UI-nya).
+- [ ] Pantau kuota tikwm: story satu-satunya sumber story, jadi bila kuota harian
+      habis story berhenti sampai jeda `TIKWM_QUOTA_COOLDOWN_SECONDS`. Bila sering
+      terjadi, pertimbangkan menggilir lebih sedikit akun per siklus.
 - [ ] Fallback re-encode (`libx264 -preset veryfast`) untuk concat yang tetap gagal
       karena parameter codec/resolusi antar segmen berbeda di tengah live.
 - [ ] Memverifikasi perilaku saat `slug` berubah di tengah live (title baru)

@@ -461,16 +461,36 @@ pm2 restart jkt48-bot --update-env
   foto/album, jadi >10 foto = beberapa part)** *dan* dirangkai menjadi slide show
   1080x1920 untuk YouTube. User tetap bisa mengunduh **fotonya** lewat bot.
 - **Story**: disimpan sebagai video (story foto pun dirangkai jadi video).
+  Diambil lewat tikwm `/api/user/story` secara terpisah dari listing, sehingga
+  Cloudflare yang memblokir `/api/user/posts` tidak menghilangkan story.
 - Gagal di tengah jalan → status `pending_upload`, media tetap di disk dan
   dicoba ulang siklus berikutnya **tanpa mengunduh ulang**.
 
-### Penyedia data (kenapa `auto`)
+### Penyedia data (metode yang terbukti 21 Sep 2026)
 
-| Penyedia | Catatan lapangan (21 Sep 2026) |
+| Penyedia | Kemampuan & catatan lapangan |
 |---|---|
-| `tikwm` (API JSON publik) | Paling ringkas & mendukung foto, tapi dari IP datacenter sering dijawab tantangan Cloudflare (HTTP 403). Bot menandai penyedia "tidak sehat" 15 menit lalu pindah penyedia. |
-| `ytdlp` | Tanpa batas pihak ketiga. Listing profil butuh **secUid** (diisi otomatis dari postingan pertama akun). Story tidak didukung. |
+| `tikwm` (API JSON) | **Satu-satunya yang mendukung STORY** via `/api/user/story` (path TUNGGAL — `/user/stories` = 404). Juga memberi jumlah & URL foto. Cloudflare memblokir `/api/user/posts` (403) untuk sebagian IP, jadi listing tidak boleh bergantung padanya. |
+| `embed` (halaman embed TikTok) | **Paling andal untuk listing**: `tiktok.com/embed/@user` → HTTP 200 berisi `videoList` 10 postingan terbaru (video vs foto dideteksi dari ketiadaan `playAddr`); detail per postingan `tiktok.com/embed/v2/<id>` memberi `createTime`, durasi, dan `imagePostInfo.displayImages` (daftar foto carousel). Tanpa story. Sering 503 sementara → di-retry 3× dengan backoff. |
+| `ytdlp` | Tanpa pihak ketiga. Listing profil butuh **secUid** (diisi otomatis dari `channel_id` postingan pertama); story tidak didukung. |
 | `fixture` | Membaca JSON lokal (`tests/fixtures/tiktok/`) — untuk uji tanpa jaringan. |
+
+**Kunci tembus Cloudflare:** `curl_cffi` dengan `impersonate=chrome131` (meniru
+TLS/HTTP2 fingerprint Chrome). Tanpa itu, tikwm **dan** halaman embed menjawab
+403 dari IP datacenter, sedangkan dengan itu keduanya 200.
+
+Kesehatan penyedia dicatat **per kapabilitas** (`posts` / `stories`): 403 di
+`/user/posts` tidak menghalangi story, dan sebaliknya. Hasilnya satu siklus bisa
+memakai listing dari `embed` **dan** story dari `tikwm` sekaligus.
+
+### Hasil uji nyata (21 Sep 2026)
+
+- Listing `@indahjkt48` via embed: 10 post (8 video, 2 foto) — foto berisi 9 dan 13 gambar.
+- Scan story seluruh **51 akun** (62 detik, 0 gagal): 4 akun punya story aktif
+  (`fionyjkt48`, `jkt48.erine_`, `jkt48.intan` 2 story, `jkt48.maira`).
+- Unduh story nyata: video 1,33 MB / 15 detik via yt-dlp ✅
+- Unduh postingan foto nyata: 9 foto → 1 album; **13 foto → 2 album (10+3)** ✅
+  plus slide show 13 detik untuk YouTube.
 
 ### Uji manual di VPS
 

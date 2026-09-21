@@ -6,6 +6,7 @@ Menguji pembagian foto per part album Telegram (batas 10), unduhan foto
 penyiapan media satu postingan foto/video.
 """
 import asyncio
+import os
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +17,7 @@ from bot.config import Config
 from bot.tiktok_client import TikTokItem
 from bot.tiktok_media import (
     MediaError,
+    _ffconcat_escape,
     build_slideshow,
     cleanup_media,
     copy_fixture_video,
@@ -143,6 +145,37 @@ class TestSlideshow(unittest.TestCase):
             images = [_make_image(base / "a.jpg")]
             asyncio.run(build_slideshow(images, base / "slide.mp4", seconds_per_photo=1))
             self.assertEqual(list(base.glob("*_concat.txt")), [])
+
+    def test_slideshow_works_with_relative_paths(self):
+        """
+        Regresi 21 Sep 2026: DOWNLOAD_DIR relatif membuat ffmpeg gagal
+        "No such file or directory" karena demuxer `concat` menyelesaikan path
+        relatif terhadap LOKASI BERKAS DAFTAR, bukan CWD. Path harus absolut.
+        """
+        cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                # Direktori kerja dipindah ke dalam temp agar path relatif benar.
+                os.chdir(tmp)
+                os.makedirs("media", exist_ok=True)
+                images = [
+                    _make_image(Path("media") / "a.jpg", "red"),
+                    _make_image(Path("media") / "b.jpg", "green"),
+                ]
+                self.assertFalse(images[0].is_absolute())
+                out = asyncio.run(
+                    build_slideshow(images, Path("media") / "slide.mp4", seconds_per_photo=1)
+                )
+                self.assertTrue(out.exists())
+                self.assertGreater(out.stat().st_size, 0)
+            finally:
+                os.chdir(cwd)
+
+    def test_concat_list_uses_absolute_posix_paths(self):
+        path = Path("media/foto 1.jpg")
+        escaped = _ffconcat_escape(path)
+        self.assertNotIn("\\", escaped, "path Windows harus jadi posix agar ffmpeg membacanya")
+        self.assertTrue(Path(escaped).is_absolute())
 
 
 class TestPreparePostMedia(unittest.TestCase):

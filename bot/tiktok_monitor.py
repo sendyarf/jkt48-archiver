@@ -37,6 +37,7 @@ from bot.config import Config
 from bot.telegram_sender import TelegramSender, build_tiktok_notification
 from bot.thumbnail_collage import build_collage
 from bot.tiktok_client import (
+    BaseProvider,
     ProviderBlocked,
     ProviderError,
     TikTokItem,
@@ -147,6 +148,7 @@ class TikTokMonitor:
             "Akun %s: %d postingan baru (diproses %d, sisa %d menyusul).",
             account["unique_id"], len(new_items), len(process_items), len(new_items) - len(process_items),
         )
+        await self._enrich_new_items(new_items, account)
         for item in process_items:
             database.insert_tiktok_post(item.to_db_row())
             if self._dry_run:
@@ -160,43 +162,144 @@ class TikTokMonitor:
 
     async def _fetch_items(self, account: dict) -> list[TikTokItem]:
         """
-        Ambil postingan (+ story) akun dari penyedia sehat pertama.
+        Ambil postingan + story akun.
 
-        Penyedia yang gagal (blokir/timeout) ditandai tidak sehat lalu penyedia
-        berikutnya dicoba; bila semuanya gagal, daftar kosong dikembalikan supaya
-        pemanggil tidak perlu tahu detailnya.
+        Postingan dan story dicari dari penyedia yang sehat SECARA TERPISAH,
+        karena Cloudflare memblokir per-path: 21 Sep 2026 tikwm menjawab 403 untuk
+        `/user/posts` tetapi 200 untuk `/user/story`, sedangkan halaman embed
+        TikTok hanya punya postingan. Dengan pemisahan ini listing tetap jalan
+        (embed) DAN story tetap terambil (tikwm) pada siklus yang sama.
+        """
+        collected: list[TikTokItem] = []
+        seen: set[str] = set()
+
+        posts, provider = await self._collect(
+            account, "fetch_user_posts", "posts", limit=max(1, Config.TIKTOK_MAX_POSTS_PER_CHECK)
+        )
+        if posts and provider is not None:
+            await self._remember_sec_uid(account, posts, provider)
+        for item in posts:
+            if item.id not in seen:
+                seen.add(item.id)
+                collected.append(item)
+
+        if Config.TIKTOK_STORIES_ENABLED:
+            stories, _ = await self._collect(account, "fetch_user_stories", "stories")
+            for item in stories:
+                if item.id not in seen:
+                    seen.add(item.id)
+                    collected.append(item)
+
+        return collected
+
+    async def _collect(
+        self,
+        account: dict,
+        method_name: str,
+        capability: str,
+        **kwargs,
+    ) -> tuple[list[TikTokItem], Optional[BaseProvider]]:
+        """
+        Coba tiap penyedia sehat sampai ada yang mengembalikan item.
+
+        Penyedia yang tidak mengimplementasikan kapabilitas (masih memakai stub
+        `BaseProvider` → mis. halaman embed tanpa story) langsung dilewati, dan
+        kegagalan hanya menandai kapabilitas itu sebagai tidak sehat.
+
+        Returns:
+            (daftar item, penyedia yang berhasil) — ([], None) bila semua gagal.
         """
         last_error: Optional[Exception] = None
+        base_method = getattr(BaseProvider, method_name, None)
         for provider in self._providers:
-            if not provider.is_healthy():
+            if not provider.is_healthy(capability):
+                continue
+            bound = getattr(provider, method_name, None)
+            if bound is None:
+                continue
+            # Bandingkan FUNGSI aslinya (`__func__`): metode terikat tidak pernah
+            # `is` fungsi kelas, jadi perbandingan langsung selalu False dan
+            # penyedia tanpa kapabilitas akan ikut dipanggil — mengembalikan []
+            # yang menghentikan pencarian sebelum penyedia berikutnya dicoba.
+            func = getattr(bound, "__func__", bound)
+            if base_method is not None and func is base_method:
+                provider.mark_capability_missing(capability)
                 continue
             try:
-                posts = await provider.fetch_user_posts(
-                    account, max(1, Config.TIKTOK_MAX_POSTS_PER_CHECK)
-                )
-                stories = (
-                    await provider.fetch_user_stories(account)
-                    if Config.TIKTOK_STORIES_ENABLED else []
-                )
-                if posts or stories:
-                    await self._remember_sec_uid(account, posts or stories, provider)
-                    return [*posts, *stories]
-                return []
+                items = await bound(account, **kwargs)
             except ProviderBlocked as exc:
-                provider.mark_unhealthy(str(exc))
+                provider.mark_unhealthy(str(exc), capability=capability)
                 last_error = exc
+                continue
             except ProviderError as exc:
-                logger.warning("Penyedia '%s' gagal: %s", provider.name, exc)
+                # HTTP 503/500 dari embed = overload sementara → jeda singkat,
+                # BUKAN tandai penyedia tidak sehat 15 menit (retry sudah ada di
+                # dalam penyedia; kegagalan di sini berarti upstream benar-benar
+                # sedang bermasalah).
+                logger.warning("Penyedia '%s' gagal (%s): %s", provider.name, capability, exc)
                 last_error = exc
+                continue
             except Exception as exc:  # noqa: BLE001 - jangan matikan loop utama
-                logger.exception("Penyedia '%s' error tak terduga: %s", provider.name, exc)
+                logger.exception("Penyedia '%s' error tak terduga (%s): %s",
+                                 provider.name, capability, exc)
                 last_error = exc
+                continue
+            if items:
+                return items, provider
+            # Berhasil tapi kosong (mis. akun tidak punya story) → itu jawaban sah.
+            return [], provider
         if last_error is not None:
             logger.warning(
-                "Semua penyedia TikTok gagal untuk %s (%s).",
-                account["unique_id"], last_error,
+                "Semua penyedia gagal mengambil %s untuk %s (%s).",
+                capability, account.get("unique_id"), last_error,
             )
-        return []
+        return [], None
+
+
+    async def _enrich_new_items(self, items: list[TikTokItem], account: dict) -> None:
+        """
+        Lengkapi detail postingan BARU (maksimum satu request per postingan).
+
+        Halaman listing embed tidak memuat `createTime` dan jumlah foto, jadi
+        untuk postingan baru saja detailnya diambil dari halaman embed per-post
+        (`/embed/v2/<id>`) — atau dari tikwm bila penyedia itu yang dipakai.
+        Postingan lama tidak disentuh supaya tidak ada request berulang.
+
+        Fungsi ini hanya memutakhirkan objek `TikTokItem` di memori; kegagalan
+        apa pun diabaikan (media tetap bisa diunduh, tanggal saja yang kosong).
+        """
+        targets = [
+            item for item in items
+            if not item.created_at or (item.kind == "photo" and not item.images)
+        ]
+        for item in targets:
+            for provider in self._providers:
+                if not provider.is_healthy():
+                    continue
+                fetch_detail = getattr(provider, "fetch_item_detail", None)
+                if fetch_detail is None:
+                    continue
+                try:
+                    detail = await fetch_detail(item.page_url, item.unique_id)
+                except ProviderError as exc:
+                    logger.debug("Detail %s via %s gagal: %s", item.id, provider.name, exc)
+                    continue
+                except ProviderBlocked as exc:
+                    provider.mark_unhealthy(str(exc))
+                    continue
+                if detail is None:
+                    continue
+                # Hanya isi bagian yang masih kosong; listing tetap sumber utama.
+                item.created_at = item.created_at or detail.created_at
+                if not item.images and detail.images:
+                    item.images = detail.images
+                    item.kind = "photo"
+                item.duration_seconds = item.duration_seconds or detail.duration_seconds
+                item.video_url = item.video_url or detail.video_url
+                item.cover_url = item.cover_url or detail.cover_url
+                break
+            if item.created_at and (item.kind != "photo" or item.images):
+                logger.debug("Detail %s/%s lengkap.", item.unique_id, item.id)
 
     async def _remember_sec_uid(self, account: dict, items: list[TikTokItem], provider) -> None:
         """

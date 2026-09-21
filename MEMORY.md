@@ -212,13 +212,19 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
    uploading_youtube → done`, dengan `pending_upload` (bisa di-retry) atau
    `failed` (mis. media hilang di TikTok). Telegram WAJIB lebih dulu daripada
    YouTube: channel arsip adalah sumber unduhan publik.
-6. **Penyedia data `auto` = tikwm → yt-dlp.** Fakta uji 21 Sep 2026: tikwm
-   gratis ±1 request/detik **dan** sering dijawab tantangan Cloudflare (HTTP 403)
-   dari IP datacenter; yt-dlp bisa mengambil video per-URL tetapi listing profil
-   butuh **secUid** (`tikwm:user` → `tiktokuser:<secUid>`) yang diisi otomatis
-   dari `channel_id` postingan pertama, dan yt-dlp **tidak** mendukung story.
-   Kegagalan penyedia = tandai "tidak sehat" 15 menit (`_UNHEALTHY_SECONDS`) lalu
-   pindah penyedia; tidak boleh melempar exception ke loop utama.
+6. **Penyedia data `auto` = tikwm → embed → yt-dlp.** Fakta uji 21 Sep 2026:
+   - **`curl_cffi` wajib** (`impersonate=chrome131`); tanpa itu tikwm & halaman
+     embed TikTok sama-sama 403 dari IP datacenter.
+   - tikwm gratis ±1 request/detik & kuota harian ±10.000; `/user/posts` bisa
+     403 sementara `/user/story` 200 → kesehatan dicatat PER KAPABILITAS.
+   - **Story hanya dari tikwm** (`/api/user/story`, path TUNGGAL); halaman embed
+     tidak punya story, dan yt-dlp juga tidak.
+   - Halaman **embed** = sumber listing paling andal (10 post terbaru; foto =
+     tanpa `playAddr`), dan `/embed/v2/<id>` memberi tanggal, durasi, dan daftar
+     foto carousel (sekalian jadi URL segar bila CDN tikwm kedaluwarsa).
+   - yt-dlp tetap dipakai sebagai cadangan; listing profilnya butuh secUid.
+   Kegagalan penyedia = tandai "tidak sehat" 15 menit per kapabilitas lalu pindah
+   penyedia; tidak boleh melempar exception ke loop utama.
 7. **Deep-link bot publik:** arsip TikTok = `tt_<post_id>` (replay tetap YouTube
    ID). Tombol download mengekspos payload lewat atribut
    `data-download-payload` supaya bisa diverifikasi tanpa membuka modal.
@@ -245,6 +251,39 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
     `redefinition of unused` + `undefined name`) dan pastikan
     `tests/test_tiktok_client.py::TestProviderContract` tetap hijau — test itu
     membandingkan tiap kelas turunan dengan stub `BaseProvider`.
+12. **Story TikTok = `/api/user/story` (TUNGGAL).** `/api/user/stories` menjawab
+    **404** dan itu kesalahan awal yang membuat story tidak pernah terambil.
+    Respons memakai `hasMore` (camel) untuk paginasi → `_next_cursor()` menerima
+    `hasMore` maupun `has_more`. Story diambil sebagai permintaan TERPISAH dari
+    listing, dan kesehatan penyedia dicatat **per kapabilitas**
+    (`is_healthy("posts")` / `is_healthy("stories")`) karena Cloudflare memblokir
+    per-path: 21 Sep 2026 tikwm 403 di `/user/posts` tetapi 200 di `/user/story`.
+    Jangan pernah kembali ke satu flag `is_healthy()` global untuk semua
+    kapabilitas — story akan hilang tiap kali listing diblokir.
+13. **`curl_cffi` + `impersonate=chrome131` WAJIB untuk arsip TikTok.** Tanpa
+    itu, tikwm.com **dan** halaman embed TikTok menjawab 403 Cloudflare dari IP
+    datacenter; dengan itu keduanya 200 (dibuktikan dari mesin yang sama).
+    `bot/tiktok_client.py` memakai lapisan `_sync_request` (curl_cffi) yang
+    dipanggil lewat `asyncio.to_thread`, dengan httpx hanya sebagai fallback bila
+    curl_cffi tidak terpasang. curl_cffi terdaftar di `requirements.txt`.
+14. **Metode dari proyek `JKT48_TIKTOK` yang diadopsi** (dan alasannya):
+    - **halaman embed profil** `tiktok.com/embed/@user` → `videoList` (10 post
+      terbaru) sebagai sumber LISTING paling andal; halaman profil biasa
+      `tiktok.com/@user` hanya stub sehingga yt-dlp gagal ("Unable to extract
+      secondary user ID"). Postingan FOTO dikenali dari **ketiadaan `playAddr`**.
+    - **halaman embed per-post** `tiktok.com/embed/v2/<id>` → `itemInfos`
+      (createTime, video.urls, videoMeta.duration) + `imagePostInfo.displayImages`
+      (daftar foto carousel). Dipakai untuk (a) melengkapi tanggal/jumlah foto
+      postingan baru, (b) URL video segar saat URL CDN tikwm kedaluwarsa (403).
+      Retry 3× backoff karena halaman ini sering membalas **503** sementara.
+    - **deteksi foto** `duration == 0 && size == 0` sebagai pelengkap (bukti
+      terkuat tetap keberadaan `images`) → `looks_like_photo()`.
+15. **Daftar `ffconcat` WAJIB memakai path ABSOLUT.** Demuxer `concat` ffmpeg
+    menyelesaikan path relatif terhadap **lokasi berkas daftar**, bukan CWD;
+    `DOWNLOAD_DIR` relatif (mis. `tmp/...`) membuat semua slide show gagal
+    dengan "No such file or directory" (insiden nyata 21 Sep 2026).
+    `_ffconcat_escape()` memakai `resolve().as_posix()`; jangan kembalikan
+    `as_posix()` tanpa `resolve()`.
 
 ## Kesalahan masa lalu yang sudah diperbaiki
 

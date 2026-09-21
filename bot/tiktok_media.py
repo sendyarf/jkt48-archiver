@@ -30,7 +30,7 @@ from typing import Iterable, Optional, Union
 import httpx
 
 from bot.config import Config
-from bot.tiktok_client import TikTokItem, ytdlp_command
+from bot.tiktok_client import TikTokItem, fetch_embed_post_media, ytdlp_command
 from bot.video_splitter import get_video_metadata
 
 logger = logging.getLogger(__name__)
@@ -204,6 +204,29 @@ async def download_video(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Unduhan CDN gagal untuk %s: %s", item.id, exc)
 
+    # 3) URL segar dari halaman embed TikTok.
+    #    URL CDN (tikwm/listing) bertanda tangan dan cepat kedaluwarsa → 403.
+    #    Halaman /embed/v2/<id> selalu membalas URL yang masih berlaku.
+    try:
+        fresh = await fetch_embed_post_media(item.unique_id, item.id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("embed media %s gagal: %s", item.id, exc)
+        fresh = {}
+    fresh_url = (fresh or {}).get("video_url") or ""
+    if fresh_url and fresh_url != cdn_url:
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout_seconds, headers=_MEDIA_HEADERS, follow_redirects=True
+            ) as client:
+                response = await client.get(fresh_url)
+                response.raise_for_status()
+                target.write_bytes(response.content)
+            if target.exists() and target.stat().st_size > 0:
+                logger.info("Video TikTok terunduh via URL embed: %s", target.name)
+                return target
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Unduhan via embed gagal untuk %s: %s", item.id, exc)
+
     raise MediaError(f"Video TikTok {item.id} tidak bisa diunduh")
 
 
@@ -227,8 +250,13 @@ def copy_fixture_video(item: TikTokItem, dest_dir: Optional[Union[str, Path]] = 
 
 
 def _ffconcat_escape(path: Path) -> str:
-    """Path untuk berkas daftar `ffconcat` (garis miring depan + kutip di-escape)."""
-    return path.as_posix().replace("'", "'\\''")
+    """
+    Path untuk berkas daftar `ffconcat`.
+
+    Bentuk absolut + garis miring depan (as_posix) supaya bisa dibaca ffmpeg di
+    Windows maupun Linux; tanda kutip tunggal di nama berkas di-escape.
+    """
+    return path.resolve().as_posix().replace("'", "'\\''")
 
 
 async def build_slideshow(
@@ -257,6 +285,11 @@ async def build_slideshow(
     files = [Path(p) for p in images if str(p).strip()]
     if not files:
         raise MediaError("Slide show butuh minimal satu foto")
+    # WAJIB absolut: demuxer `concat` ffmpeg menyelesaikan path relatif terhadap
+    # lokasi berkas daftar (bukan CWD), sehingga DOWNLOAD_DIR relatif (mis.
+    # "tmp/...") membuat ffmpeg gagal "No such file or directory" (insiden
+    # 21 Sep 2026 saat menguji unduhan postingan foto).
+    files = [path.resolve() for path in files]
 
     seconds = float(
         seconds_per_photo
@@ -364,6 +397,22 @@ async def prepare_post_media(
     work = post_dir(item)
     if item.kind == "photo" and item.image_count > 0:
         images = await download_images(item.images, work)
+        if not images:
+            # Daftar foto bisa kosong bila listing embed menandai postingan foto
+            # tanpa URL gambar. Ambil daftar segar dari halaman embed per-post.
+            try:
+                fresh = await fetch_embed_post_media(item.unique_id, item.id)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("embed foto %s gagal: %s", item.id, exc)
+                fresh = {}
+            fallback_urls = (fresh or {}).get("images") or []
+            if fallback_urls:
+                logger.info(
+                    "Daftar %d foto %s diambil dari halaman embed.",
+                    len(fallback_urls), item.id,
+                )
+                item.images = list(fallback_urls)
+                images = await download_images(item.images, work)
         if not images:
             raise MediaError(f"Tidak ada foto yang berhasil diunduh untuk {item.id}")
         parts = split_image_paths(images)

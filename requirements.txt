@@ -7,6 +7,10 @@ telethon==1.36.0
 httpx==0.27.2
 requests==2.32.3
 
+# Arsip TikTok: meniru TLS/HTTP2 fingerprint Chrome agar lolos Cloudflare pada
+# tikwm.com & halaman embed TikTok (tanpa ini keduanya dijawab 403).
+curl_cffi==0.14.0
+
 # HLS downloader (handles quality selection, reconnect, auth headers)
 # ffmpeg is still required on the system for muxing: sudo apt install ffmpeg
 yt-dlp==2025.1.15

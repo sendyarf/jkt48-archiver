@@ -14,6 +14,7 @@ from pathlib import Path
 
 from bot import database
 from bot.config import Config
+from bot.tiktok_client import BaseProvider, ProviderBlocked, RateLimiter, TikTokItem
 from bot.tiktok_monitor import TikTokMonitor, item_from_db_row
 
 
@@ -295,6 +296,84 @@ class TestFailureAndRetry(TikTokMonitorTestCase):
         row = database.get_tiktok_post("v1")
         self.assertEqual(row["status"], "done")
         self.assertFalse(Path(row["media_path"]).exists())
+
+
+class TestSplitCapabilities(TikTokMonitorTestCase):
+    """
+    Kasus nyata 21 Sep 2026: Cloudflare memblokir `/user/posts` (403) sementara
+    `/user/story` tetap 200. Bot WAJIB tetap mengambil story pada siklus yang sama
+    — bukan melewatkannya karena judging satu flag global.
+    """
+
+    class BlockedPostsProvider(BaseProvider):
+        name = "tikwm-uji"
+
+        def __init__(self):
+            super().__init__(RateLimiter(0))
+            self.story_calls = 0
+
+        async def fetch_user_posts(self, account, limit):
+            raise ProviderBlocked("tikwm /user/posts: HTTP 403")
+
+        async def fetch_user_stories(self, account):
+            self.story_calls += 1
+            return [
+                TikTokItem(
+                    id="story-1", unique_id="indahjkt48", kind="video",
+                    title="story latihan", video_url="x", is_story=True,
+                )
+            ]
+
+    def test_stories_still_collected_when_posts_blocked(self):
+        self._write_fixture("indahjkt48", [], [])
+        database.upsert_tiktok_account("indahjkt48", "Indah JKT48")
+        provider = self.BlockedPostsProvider()
+        monitor = TikTokMonitor(telegram=FakeTelegram())
+        monitor._providers = [provider]   # type: ignore[assignment]
+
+        items = asyncio.run(monitor._fetch_items({"unique_id": "indahjkt48"}))
+
+        self.assertEqual([i.id for i in items], ["story-1"])
+        self.assertEqual(provider.story_calls, 1, "story harus tetap diambil")
+        self.assertFalse(provider.is_healthy("posts"))
+        self.assertTrue(provider.is_healthy("stories"))
+
+    def test_posts_and_stories_can_come_from_different_providers(self):
+        """Listing dari penyedia A (embed) + story dari penyedia B (tikwm)."""
+
+        class PostsOnlyProvider(BaseProvider):
+            name = "embed-uji"
+
+            async def fetch_user_posts(self, account, limit):
+                return [TikTokItem(id="post-1", unique_id="indahjkt48", kind="video")]
+
+        class StoriesOnlyProvider(BaseProvider):
+            name = "tikwm-uji"
+
+            async def fetch_user_stories(self, account):
+                return [TikTokItem(id="story-1", unique_id="indahjkt48", is_story=True)]
+
+        monitor = TikTokMonitor(telegram=FakeTelegram())
+        monitor._providers = [PostsOnlyProvider(RateLimiter(0)),
+                              StoriesOnlyProvider(RateLimiter(0))]  # type: ignore[assignment]
+
+        items = asyncio.run(monitor._fetch_items({"unique_id": "indahjkt48"}))
+        self.assertEqual(sorted(i.id for i in items), ["post-1", "story-1"])
+
+    def test_duplicate_ids_are_deduplicated(self):
+        class BothProvider(BaseProvider):
+            name = "ganda"
+
+            async def fetch_user_posts(self, account, limit):
+                return [TikTokItem(id="sama", unique_id="indahjkt48")]
+
+            async def fetch_user_stories(self, account):
+                return [TikTokItem(id="sama", unique_id="indahjkt48", is_story=True)]
+
+        monitor = TikTokMonitor(telegram=FakeTelegram())
+        monitor._providers = [BothProvider(RateLimiter(0))]  # type: ignore[assignment]
+        items = asyncio.run(monitor._fetch_items({"unique_id": "indahjkt48"}))
+        self.assertEqual(len(items), 1)
 
 
 class TestItemFromDbRow(TikTokMonitorTestCase):
