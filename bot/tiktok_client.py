@@ -42,7 +42,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 import httpx
 
@@ -248,6 +248,31 @@ class BaseProvider:
 
     def mark_unhealthy(self, reason: str) -> None:
         self._unhealthy_until = time.monotonic() + _UNHEALTHY_SECONDS
+        logger.warning(
+            "Penyedia TikTok '%s' ditandai tidak sehat %d menit: %s",
+            self.name, _UNHEALTHY_SECONDS // 60, reason,
+        )
+
+    # ── API publik ─────────────────────────────────────────────────────────
+    async def fetch_user_posts(
+        self, account: dict, limit: int
+    ) -> list[TikTokItem]:
+        """Postingan terbaru sebuah akun (urut terbaru dulu)."""
+        raise NotImplementedError
+
+    async def fetch_user_stories(self, account: dict) -> list[TikTokItem]:
+        """Story aktif sebuah akun. Default: tidak didukung → []."""
+        return []
+
+    async def fetch_user_info(self, unique_id: str) -> dict:
+        """Profil akun (nickname / secUid). Default: tidak didukung → {}."""
+        return {}
+
+    async def close(self) -> None:
+        """Lepaskan resource (koneksi HTTP)."""
+        return None
+
+
 class TikwmProvider(BaseProvider):
     """
     Penyedia berbasis API JSON tikwm.com.
@@ -378,25 +403,8 @@ class TikwmProvider(BaseProvider):
             "sec_uid": user.get("sec_uid") or user.get("secUid") or "",
         }
 
-        logger.warning(
-            "Penyedia TikTok '%s' ditandai tidak sehat %d menit: %s",
-            self.name, _UNHEALTHY_SECONDS // 60, reason,
-        )
 
-    # ── API publik ────────────────────────────────────────────────────────
-    async def fetch_user_posts(
-        self, account: dict, limit: int
-    ) -> list[TikTokItem]:
-        """Postingan terbaru sebuah akun (urut terbaru dulu)."""
-        raise NotImplementedError
 
-    async def fetch_user_stories(self, account: dict) -> list[TikTokItem]:
-        """Story aktif sebuah akun. Default: tidak didukung → []."""
-        return []
-
-    async def close(self) -> None:
-        """Lepaskan resource (koneksi HTTP)."""
-        return None
 def _extract_items(payload: Any) -> list[dict]:
     """
     Ambil daftar item dari respons tikwm apa pun bentuknya.
@@ -555,6 +563,21 @@ class YtDlpProvider(BaseProvider):
         if detail is None:
             return ""
         return str((detail.raw or {}).get("channel_id") or "")
+
+    async def fetch_user_info(self, unique_id: str) -> dict:
+        """
+        Profil akun lewat yt-dlp (hanya secUid yang bisa dipastikan).
+
+        yt-dlp tidak punya endpoint profil, jadi secUid diambil dari detail
+        postingan terbaru (`channel_id`) — lihat `resolve_sec_uid()`. Nama
+        tampilan dibiarkan kosong; nama member tetap datang dari `member_hls`.
+        Setelah secUid tersimpan, listing profil memakai `tiktokuser:<secUid>`
+        yang jauh lebih stabil.
+        """
+        sec_uid = await self.resolve_sec_uid({"unique_id": unique_id})
+        if not sec_uid:
+            return {}
+        return {"unique_id": unique_id, "nickname": "", "sec_uid": sec_uid}
 
 
 class FixtureProvider(BaseProvider):

@@ -17,6 +17,7 @@ from bot.tiktok_client import (
     FixtureProvider,
     RateLimiter,
     TikTokItem,
+    TikwmProvider,
     YtDlpProvider,
     _extract_items,
     build_providers,
@@ -268,6 +269,71 @@ class TestTikTokItemToRow(unittest.TestCase):
         self.assertEqual(row["image_count"], 2)
         self.assertEqual(row["images"], ["a.jpg", "b.jpg"])
         self.assertIn("indahjkt48/video/1", row["source_url"])
+
+
+class TestProviderContract(unittest.TestCase):
+    """
+    Kontrak penyedia: kelas turunan WAJIB menimpa metode base.
+
+    Insiden 21 Sep 2026: blok stub `BaseProvider` (fetch_user_posts /
+    fetch_user_stories / close) ikut tersisip ke dalam `TikwmProvider`, sehingga
+    stub menimpa implementasi asli dan `mark_unhealthy` kehilangan badannya.
+    Unit test penyedia fixture tidak menangkapnya karena tidak memakai tikwm,
+    jadi kontrak ini diuji langsung.
+    """
+
+    def test_providers_override_base_methods(self):
+        for cls in (TikwmProvider, YtDlpProvider, FixtureProvider):
+            self.assertIsNot(
+                cls.fetch_user_posts, BaseProvider.fetch_user_posts,
+                f"{cls.name}: fetch_user_posts masih stub base (implementasi ketimpa)",
+            )
+        for cls in (TikwmProvider, FixtureProvider):
+            self.assertIsNot(
+                cls.fetch_user_stories, BaseProvider.fetch_user_stories,
+                f"{cls.name}: fetch_user_stories masih stub base",
+            )
+        self.assertIsNot(
+            TikwmProvider.fetch_user_info, BaseProvider.fetch_user_info,
+            "TikwmProvider harus punya fetch_user_info sendiri",
+        )
+
+    def test_mark_unhealthy_logs_reason_and_flags_provider(self):
+        provider = BaseProvider(RateLimiter(0))
+        with self.assertLogs("bot.tiktok_client", level="WARNING") as captured:
+            provider.mark_unhealthy("uji blokir Cloudflare")
+        self.assertFalse(provider.is_healthy())
+        self.assertTrue(any("uji blokir Cloudflare" in line for line in captured.output))
+
+    def test_tikwm_fetch_user_info_normalizes_payload(self):
+        provider = TikwmProvider(RateLimiter(0))
+
+        async def fake_get(path, params):
+            return {"user": {"uniqueId": "indahjkt48", "nickname": "Indah", "secUid": SEC_UID}}
+
+        provider._get = fake_get  # type: ignore[assignment]
+        info = asyncio.run(provider.fetch_user_info("indahjkt48"))
+        self.assertEqual(info["sec_uid"], SEC_UID)
+        self.assertEqual(info["nickname"], "Indah")
+
+    def test_ytdlp_fetch_user_info_returns_secuid(self):
+        provider = YtDlpProvider(RateLimiter(0))
+
+        async def fake_resolve(account, sample_page_url=""):
+            return SEC_UID
+
+        provider.resolve_sec_uid = fake_resolve  # type: ignore[assignment]
+        info = asyncio.run(provider.fetch_user_info("indahjkt48"))
+        self.assertEqual(info["sec_uid"], SEC_UID)
+
+    def test_ytdlp_fetch_user_info_empty_when_unknown(self):
+        provider = YtDlpProvider(RateLimiter(0))
+
+        async def fake_resolve(account, sample_page_url=""):
+            return ""
+
+        provider.resolve_sec_uid = fake_resolve  # type: ignore[assignment]
+        self.assertEqual(asyncio.run(provider.fetch_user_info("x")), {})
 
 
 if __name__ == "__main__":

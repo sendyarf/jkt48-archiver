@@ -222,9 +222,9 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       req/detik **dan** dijawab Cloudflare 403 dari IP datacenter; yt-dlp bisa
       video per-URL tetapi listing profil butuh secUid (diisi otomatis dari
       `channel_id` postingan pertama) dan tidak mendukung story — karena itu
-      `TIKTOK_PROVIDER=auto` + fallback otomatis. Verifikasi: **321 test Python
-      lulus** (237 lama + **84 test TikTok baru**: client/media/database/captions/
-      monitor),
+      `TIKTOK_PROVIDER=auto` + fallback otomatis. Verifikasi: **326 test Python
+      lulus** (237 lama + **89 test TikTok baru**: client/media/database/captions/
+      monitor, termasuk uji kontrak penyedia yang menangkap blok kode nyasar),
       `tsc` 0, `eslint` 0 error, `npm run build` OK, **`verify:tiktok` PASS**,
       browser check **25/25 PASS** (5 lebar × 5 rute, kini termasuk `/tiktok`
       dengan cek jumlah kolom), `verify:home-upcoming` & `verify:auto-publish`
@@ -254,5 +254,8 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
 
 - Baca `SEOUL.md` dan `MEMORY.md` sebelum menyentuh kode.
 - Selalu jalankan `python -m py_compile bot\*.py` setelah mengubah Python.
+- Kalau bisa, jalankan juga `python -m pyflakes bot\tiktok_*.py` — pyflakes
+  menangkap "metode ketimpa stub" dan `NameError` laten yang tidak terlihat
+  oleh unit test berbasis fixture (insiden 21 Sep 2026 di `tiktok_client.py`).
 - Jalankan seluruh test: `python -m unittest discover -s tests -t .`
 - Saat selesai, update bagian status di atas.

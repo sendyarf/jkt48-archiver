@@ -234,6 +234,17 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
     menjadi 1 kolom. `web/verify/portal-browser-check.mjs` menguji JUMLAH kolom
     per lebar, sedangkan `web/verify/tiktok-page.mjs` menguji isinya (akun aktif
     saja, arsip siap saja, urut terbaru, payload `tt_`, label foto/story).
+11. **Insiden 21 Sep 2026 — metode penyedia tertimpa stub.** Saat menyunting
+    `bot/tiktok_client.py`, blok stub `BaseProvider` (`fetch_user_posts` /
+    `fetch_user_stories` / `close`) dan badan `mark_unhealthy` ikut tersisip ke
+    dalam `TikwmProvider`; Python memakai definisi TERAKHIR sehingga implementasi
+    asli tertimpa stub (`NotImplementedError`) dan `mark_unhealthy` kehilangan
+    log-nya. Semua unit test LOLOS karena hanya memakai `FixtureProvider`.
+    Pelajaran: setelah menyunting berkas besar dengan beberapa penyisipan,
+    jalankan `python -m pyflakes bot\tiktok_*.py` (menangkap
+    `redefinition of unused` + `undefined name`) dan pastikan
+    `tests/test_tiktok_client.py::TestProviderContract` tetap hijau — test itu
+    membandingkan tiap kelas turunan dengan stub `BaseProvider`.
 
 ## Kesalahan masa lalu yang sudah diperbaiki
 

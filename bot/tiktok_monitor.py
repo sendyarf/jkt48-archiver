@@ -21,12 +21,15 @@ Jalankan mandiri (untuk uji di VPS tanpa menunggu loop utama)::
     python3 -m bot.tiktok_monitor --once            # satu siklus untuk 1 akun
     python3 -m bot.tiktok_monitor --account lulu_jkt48
     python3 -m bot.tiktok_monitor --dry-run         # hanya deteksi, tanpa unduh
+
+Skrip ini selalu berjalan SATU siklus lalu keluar (`--once` hanya penegas);
+loop berulang ditangani `bot/main.py` selama `TIKTOK_ENABLED=true`.
 """
 import argparse
 import asyncio
 import json
 import logging
-import signal
+from pathlib import Path
 from typing import Optional
 
 from bot import database
@@ -452,6 +455,10 @@ def main() -> None:
     parser.add_argument("--account", default="", help="hanya periksa akun ini (unique_id)")
     parser.add_argument("--dry-run", action="store_true", help="hanya deteksi, tanpa unduh/upload")
     parser.add_argument("--no-retry", action="store_true", help="lewati retry postingan tertunda")
+    parser.add_argument(
+        "--once", action="store_true",
+        help="jalankan SATU siklus lalu keluar (memang perilaku default skrip ini)",
+    )
     args = parser.parse_args()
 
     _setup_logging()
