@@ -44,6 +44,7 @@ from bot.idn_lookup import IDNLookup
 from bot.merger import MergeManager
 from bot.telegram_sender import TelegramSender, build_youtube_notification
 from bot.replay_bot import ReplayBot
+from bot.tiktok_monitor import TikTokMonitor
 from bot.youtube_uploader import YouTubeChannelPool, YouTubeQuotaExceeded
 from bot.thumbnail_collage import build_collage
 
@@ -115,6 +116,11 @@ class JKT48LiveBot:
         self.recording_tasks: set[asyncio.Task] = set()
         self.admin_bot: Optional[AdminBot] = None
         self.replay_bot: Optional[ReplayBot] = None
+        # Arsip TikTok (OPSIONAL): hanya dibuat bila TIKTOK_ENABLED=true,
+        # jadi perilaku bot tidak berubah sedikit pun saat fitur dimatikan.
+        self.tiktok: Optional[TikTokMonitor] = None
+        if Config.TIKTOK_ENABLED:
+            self.tiktok = TikTokMonitor(telegram=self.tg, youtube_pool=self.yt_pool)
         self._stopped_members_logged: set[str] = set()
         self.running = False
 
@@ -904,11 +910,36 @@ class JKT48LiveBot:
                 Config.MERGE_IDLE_FINALIZE_SECONDS,
             )
 
+        # Status arsip TikTok dilaporkan saat start supaya salah-setel langsung
+        # terlihat (mis. TIKTOK_ENABLED=true tapi akun belum di-seed).
+        if self.tiktok is not None:
+            accounts = database.get_tiktok_accounts()
+            logger.info(
+                "Arsip TikTok AKTIF → %d akun aktif | siklus %ds (1 akun/siklus) | "
+                "provider=%s | story=%s | YouTube=%s",
+                len(accounts),
+                Config.TIKTOK_CHECK_INTERVAL_SECONDS,
+                Config.TIKTOK_PROVIDER,
+                "aktif" if Config.TIKTOK_STORIES_ENABLED else "nonaktif",
+                "aktif" if Config.TIKTOK_YT_UPLOAD_ENABLED else "nonaktif",
+            )
+            if not accounts:
+                logger.warning(
+                    "TIKTOK_ENABLED=true tapi tidak ada akun aktif di tabel "
+                    "tiktok_accounts — jalankan `python3 -m bot.seed_tiktok` dulu."
+                )
+
         # Showroom dipantau pada interval terpisah: 58 room tiap 5 detik akan
         # menghasilkan ~11,6 request/detik ke API Showroom (risiko rate-limit).
         showroom_every = max(
             1,
             round(Config.SHOWROOM_CHECK_INTERVAL_SECONDS / max(1, Config.HLS_CHECK_INTERVAL_SECONDS)),
+        )
+        # TikTok punya interval sendiri (default 300s) karena tiap siklus hanya
+        # memeriksa SATU akun (round-robin) demi menjaga batas request.
+        tiktok_every = max(
+            1,
+            round(Config.TIKTOK_CHECK_INTERVAL_SECONDS / max(1, Config.HLS_CHECK_INTERVAL_SECONDS)),
         )
         loop_counter = 0
 
@@ -968,6 +999,22 @@ class JKT48LiveBot:
                 # 5. Periodic retry of pending uploads (every ~30 minutes or 120 ticks)
                 if loop_counter % 120 == 0:
                     await self.retry_pending_uploads()
+                    if self.tiktok is not None:
+                        try:
+                            await self.tiktok.retry_pending()
+                        except Exception as exc:
+                            logger.warning("Retry arsip TikTok gagal (diabaikan): %s", exc)
+
+                # 6. Arsip TikTok (OPSIONAL): satu akun per siklus (round-robin),
+                #    dibungkus try/except sendiri supaya masalah TikTok tidak
+                #    pernah mengganggu perekaman IDN/Showroom.
+                if self.tiktok is not None and (
+                    loop_counter == 1 or loop_counter % tiktok_every == 0
+                ):
+                    try:
+                        await self.tiktok.run_once()
+                    except Exception as exc:
+                        logger.warning("Siklus arsip TikTok gagal (diabaikan): %s", exc)
 
             except asyncio.CancelledError:
                 break
@@ -1005,6 +1052,8 @@ class JKT48LiveBot:
         await self.hls_discovery.close()
         await self.hls_monitor.close()
         await self.showroom.close()
+        if self.tiktok is not None:
+            await self.tiktok.close()
         await self.tg.disconnect()
         logger.info("Bot shutdown complete.")
 

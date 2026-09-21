@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-import { Menu, Users, Video, X } from 'lucide-react';
+import { Menu, Music2, Users, Video, X } from 'lucide-react';
 
 function NavbarInner() {
   const pathname = usePathname();
@@ -50,6 +50,9 @@ function NavbarInner() {
           </Link>
           <Link href="/members" className={`nav-link ${pathname === '/members' ? 'active' : ''}`} aria-current={pathname === '/members' ? 'page' : undefined}>
             <Users size={16} aria-hidden="true" /> Member
+          </Link>
+          <Link href="/tiktok" className={`nav-link ${pathname === '/tiktok' ? 'active' : ''}`} aria-current={pathname === '/tiktok' ? 'page' : undefined}>
+            <Music2 size={16} aria-hidden="true" /> TikTok
           </Link>
         </nav>
         {open && (

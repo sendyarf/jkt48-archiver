@@ -1,0 +1,60 @@
+{
+  "note": "Fixture akun TikTok untuk uji & verifikasi TANPA jaringan. Nilai ID/tanggal diambil dari data nyata (21 Sep 2026); URL media sengaja memakai domain contoh karena uji media memakai berkas lokal (lihat README.md).",
+  "account": {
+    "unique_id": "indahjkt48",
+    "nickname": "Indah JKT48",
+    "sec_uid": "MS4wLjABAAAAS5xamZUblFiVkrQEoRVxM4rtJdriySi52oouUHkMLpvVtL5jnTTJB8gjAeRIKJ1-J"
+  },
+  "videos": [
+    {
+      "video_id": "7685965837307596052",
+      "title": "twinnie",
+      "create_time": 1789576980,
+      "duration": 12,
+      "play": "https://media.invalid/tiktok/video-7685965837307596052.mp4",
+      "cover": "https://media.invalid/tiktok/cover-7685965837307596052.jpg",
+      "author": {"unique_id": "indahjkt48", "nickname": "Indah JKT48"}
+    },
+    {
+      "video_id": "7681262713913347348",
+      "title": "latihan dance sebelum show",
+      "create_time": 1789560000,
+      "duration": 45,
+      "play": "https://media.invalid/tiktok/video-7681262713913347348.mp4",
+      "cover": "https://media.invalid/tiktok/cover-7681262713913347348.jpg",
+      "author": {"unique_id": "indahjkt48", "nickname": "Indah JKT48"}
+    },
+    {
+      "video_id": "7679000000000000001",
+      "title": "foto-foto hari ini (12 foto)",
+      "create_time": 1789540000,
+      "images": [
+        "https://media.invalid/tiktok/photo-01.jpg",
+        "https://media.invalid/tiktok/photo-02.jpg",
+        "https://media.invalid/tiktok/photo-03.jpg",
+        "https://media.invalid/tiktok/photo-04.jpg",
+        "https://media.invalid/tiktok/photo-05.jpg",
+        "https://media.invalid/tiktok/photo-06.jpg",
+        "https://media.invalid/tiktok/photo-07.jpg",
+        "https://media.invalid/tiktok/photo-08.jpg",
+        "https://media.invalid/tiktok/photo-09.jpg",
+        "https://media.invalid/tiktok/photo-10.jpg",
+        "https://media.invalid/tiktok/photo-11.jpg",
+        "https://media.invalid/tiktok/photo-12.jpg"
+      ],
+      "cover": "https://media.invalid/tiktok/cover-photo-slide.jpg",
+      "author": {"unique_id": "indahjkt48", "nickname": "Indah JKT48"}
+    }
+  ],
+  "stories": [
+    {
+      "video_id": "7685000000000000009",
+      "title": "story latihan",
+      "create_time": 1789570000,
+      "duration": 9,
+      "play": "https://media.invalid/tiktok/story-7685000000000000009.mp4",
+      "cover": "https://media.invalid/tiktok/cover-story.jpg",
+      "author": {"unique_id": "indahjkt48", "nickname": "Indah JKT48"}
+    }
+  ]
+}

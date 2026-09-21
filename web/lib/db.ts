@@ -52,6 +52,40 @@ export function getDb(): DatabaseSync {
         thumbnail_url     TEXT,
         created_at        TEXT DEFAULT (datetime('now'))
       );
+      -- Arsip TikTok (dibuat bot; dibuat di sini juga agar halaman /tiktok
+      -- tidak 500 saat web dijalankan terhadap database yang belum di-seed).
+      CREATE TABLE IF NOT EXISTS tiktok_accounts (
+        unique_id       TEXT PRIMARY KEY,
+        display_name    TEXT NOT NULL DEFAULT '',
+        member_username TEXT,
+        sec_uid         TEXT,
+        enabled         INTEGER NOT NULL DEFAULT 1,
+        last_checked_at TEXT,
+        last_post_at    TEXT,
+        added_at        TEXT DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS tiktok_posts (
+        id                  TEXT PRIMARY KEY,
+        unique_id           TEXT NOT NULL,
+        kind                TEXT NOT NULL DEFAULT 'video',
+        is_story            INTEGER NOT NULL DEFAULT 0,
+        title               TEXT,
+        created_at          TEXT,
+        duration_seconds    INTEGER DEFAULT 0,
+        image_count         INTEGER DEFAULT 0,
+        cover_url           TEXT,
+        source_url          TEXT,
+        media_path          TEXT,
+        media_size_bytes    INTEGER DEFAULT 0,
+        images_json         TEXT,
+        local_images_json   TEXT,
+        telegram_message_ids TEXT,
+        youtube_video_id    TEXT,
+        visible             INTEGER NOT NULL DEFAULT 1,
+        status              TEXT NOT NULL DEFAULT 'detected',
+        error_message       TEXT,
+        added_at            TEXT DEFAULT (datetime('now'))
+      );
     `);
 
     // Kolom milik skema bot yang dipakai aturan publik & label platform.

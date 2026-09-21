@@ -3,6 +3,7 @@ database.py - SQLite persistence layer for JKT48 Live Bot.
 Tracks all live sessions so we never double-download/send.
 """
 import sqlite3
+import json
 import logging
 from contextlib import contextmanager
 from typing import Optional, Generator
@@ -70,6 +71,60 @@ CREATE TABLE IF NOT EXISTS youtube_channels (
 );
 """
 
+# ─── Arsip TikTok ───────────────────────────────────────────────────────────
+# Satu baris per akun TikTok yang dipantau (seed dari tiktok_accounts.json).
+CREATE_TIKTOK_ACCOUNTS_SQL = """
+CREATE TABLE IF NOT EXISTS tiktok_accounts (
+    unique_id       TEXT PRIMARY KEY,
+    display_name    TEXT NOT NULL DEFAULT '',
+    member_username TEXT,
+    sec_uid         TEXT,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    last_checked_at TEXT,
+    last_post_at    TEXT,
+    added_at        TEXT DEFAULT (datetime('now'))
+);
+"""
+
+# Satu baris per postingan/story TikTok yang sudah/sedang diarsipkan.
+# `kind`: 'video' | 'photo' (foto = slide show bila di-upload ke YouTube).
+# `is_story`: 1 untuk story (hilang setelah 24 jam di TikTok).
+# `telegram_message_ids`: semua message_id media di channel arsip privat,
+#   comma-separated & urut part — dipakai replay bot untuk copyMessage.
+CREATE_TIKTOK_POSTS_SQL = """
+CREATE TABLE IF NOT EXISTS tiktok_posts (
+    id                  TEXT PRIMARY KEY,
+    unique_id           TEXT NOT NULL,
+    kind                TEXT NOT NULL DEFAULT 'video',
+    is_story            INTEGER NOT NULL DEFAULT 0,
+    title               TEXT,
+    created_at          TEXT,
+    duration_seconds    INTEGER DEFAULT 0,
+    image_count         INTEGER DEFAULT 0,
+    cover_url           TEXT,
+    source_url          TEXT,
+    media_path          TEXT,
+    media_size_bytes    INTEGER DEFAULT 0,
+    images_json         TEXT,
+    local_images_json   TEXT,
+    telegram_message_ids TEXT,
+    youtube_video_id    TEXT,
+    visible             INTEGER NOT NULL DEFAULT 1,
+    status              TEXT NOT NULL DEFAULT 'detected',
+    error_message       TEXT,
+    added_at            TEXT DEFAULT (datetime('now'))
+);
+"""
+
+# Possible values for `tiktok_posts.status`:
+# 'detected'           → ditemukan, menunggu unduhan
+# 'downloading'        → media sedang diunduh
+# 'uploading_telegram' → media dikirim ke channel arsip Telegram
+# 'uploading_youtube'  → slide show/video diunggah ke YouTube
+# 'done'               → arsip selesai (Telegram + YouTube)
+# 'pending_upload'     → media ada di disk, menunggu di-retry
+# 'failed'             → gagal permanen (mis. media TikTok sudah dihapus)
+
 # Possible values for `status` column:
 # 'detected'           → live stream detected, not yet downloading
 # 'downloading'        → yt-dlp/ffmpeg is currently recording
@@ -103,6 +158,8 @@ def init_db() -> None:
         conn.execute(CREATE_MERGE_GROUPS_SQL)
         conn.execute(CREATE_MEMBER_HLS_SQL)
         conn.execute(CREATE_YOUTUBE_CHANNELS_SQL)
+        conn.execute(CREATE_TIKTOK_ACCOUNTS_SQL)
+        conn.execute(CREATE_TIKTOK_POSTS_SQL)
 
         # Migrate live_sessions columns if missing
         cols = [r[1] for r in conn.execute("PRAGMA table_info(live_sessions)")]
@@ -1004,4 +1061,259 @@ def mark_session_pending_upload(live_id: str, error_message: str = "") -> None:
                WHERE live_id = ?""",
             (error_message, live_id),
         )
+
+
+# ─── Arsip TikTok ───────────────────────────────────────────────────────────
+#
+# Pola pemakaian:
+#   seed_tiktok    -> upsert_tiktok_account()   untuk tiap akun di JSON
+#   tiktok_monitor -> get_tiktok_accounts()     (round-robin pemantauan)
+#                     insert_tiktok_post()      (postingan baru)
+#                     update_tiktok_post(...)   (progress unduh/upload)
+#   website        -> READ-ONLY lewat web/lib/db.ts (tabel yang sama)
+
+# Kolom yang boleh ditulis `update_tiktok_post` (whitelist → nama kolom aman).
+_TIKTOK_POST_WRITABLE = (
+    "kind", "is_story", "title", "created_at", "duration_seconds",
+    "image_count", "cover_url", "source_url", "media_path", "media_size_bytes",
+    "images_json", "local_images_json", "telegram_message_ids",
+    "youtube_video_id", "visible", "status", "error_message",
+)
+
+
+def _tiktok_uid(value: Optional[str]) -> str:
+    """
+    Bentuk kanonik username TikTok: tanpa '@' dan huruf kecil.
+
+    TikTok memperlakukan username tanpa membedakan huruf besar/kecil, jadi
+    "@IndahJKT48" dan "indahjkt48" harus menunjuk baris yang sama — kalau tidak,
+    pemantauan bisa menyimpan dua akun untuk satu member.
+    """
+    return (value or "").strip().lstrip("@").lower()
+
+
+
+def upsert_tiktok_account(
+    unique_id: str,
+    display_name: str = "",
+    member_username: Optional[str] = None,
+    enabled: bool = True,
+) -> None:
+    """
+    Tambah/perbarui akun TikTok yang dipantau.
+
+    Nama (`display_name` / `member_username`) dan flag `enabled` TIDAK ditimpa
+    bila sudah ada isinya — supaya hasil koreksi manual (atau stop sementara)
+    tidak hilang saat seed diulang.
+    """
+    uid = _tiktok_uid(unique_id)
+    if not uid:
+        return
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO tiktok_accounts (unique_id, display_name, member_username, enabled)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(unique_id) DO UPDATE SET
+                   display_name = CASE
+                       WHEN tiktok_accounts.display_name = '' THEN excluded.display_name
+                       ELSE tiktok_accounts.display_name END,
+                   member_username = COALESCE(tiktok_accounts.member_username,
+                                              excluded.member_username)""",
+            (uid, (display_name or "").strip(), (member_username or None), 1 if enabled else 0),
+        )
+
+
+def get_tiktok_accounts(include_disabled: bool = False) -> list[dict]:
+    """Akun TikTok terurut nama; `include_disabled=False` = hanya yang aktif."""
+    where = "" if include_disabled else "WHERE enabled = 1"
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM tiktok_accounts {where} ORDER BY unique_id COLLATE NOCASE ASC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_tiktok_account(unique_id: str) -> Optional[dict]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM tiktok_accounts WHERE unique_id = ?",
+            (_tiktok_uid(unique_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_tiktok_account_enabled(unique_id: str, enabled: bool) -> bool:
+    """Saklar pemantauan satu akun. Return True bila barisnya ada."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE tiktok_accounts SET enabled = ? WHERE unique_id = ?",
+            (1 if enabled else 0, _tiktok_uid(unique_id)),
+        )
+    return cur.rowcount > 0
+
+
+def set_tiktok_account_meta(
+    unique_id: str,
+    sec_uid: Optional[str] = None,
+    display_name: Optional[str] = None,
+    member_username: Optional[str] = None,
+) -> None:
+    """Simpan metadata hasil deteksi (hanya nilai yang diberikan)."""
+    sets: list[str] = []
+    params: list = []
+    for column, value in (
+        ("sec_uid", sec_uid),
+        ("display_name", display_name),
+        ("member_username", member_username),
+    ):
+        if value is None:
+            continue
+        sets.append(f"{column} = ?")
+        params.append(value)
+    if not sets:
+        return
+    params.append(_tiktok_uid(unique_id))
+    with _get_conn() as conn:
+        conn.execute(f"UPDATE tiktok_accounts SET {', '.join(sets)} WHERE unique_id = ?", params)
+
+
+def mark_tiktok_account_checked(unique_id: str, last_post_at: Optional[str] = None) -> None:
+    """Catat waktu pemeriksaan terakhir (UTC, konsisten dengan kolom SQLite lain)."""
+    uid = _tiktok_uid(unique_id)
+    with _get_conn() as conn:
+        if last_post_at:
+            conn.execute(
+                """UPDATE tiktok_accounts
+                   SET last_checked_at = datetime('now'),
+                       last_post_at = MAX(COALESCE(last_post_at, ''), ?)
+                   WHERE unique_id = ?""",
+                (last_post_at, uid),
+            )
+        else:
+            conn.execute(
+                "UPDATE tiktok_accounts SET last_checked_at = datetime('now') WHERE unique_id = ?",
+                (uid,),
+            )
+
+def tiktok_post_exists(post_id: str) -> bool:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM tiktok_posts WHERE id = ?", (str(post_id),)
+        ).fetchone()
+    return row is not None
+
+
+def insert_tiktok_post(post: dict) -> None:
+    """
+    Simpan postingan/story TikTok baru. Baris yang sudah ada DILEWATI
+    (INSERT OR IGNORE) supaya pemantauan berulang tidak menimpa progress.
+    """
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO tiktok_posts
+               (id, unique_id, kind, is_story, title, created_at, duration_seconds,
+                image_count, cover_url, source_url, images_json, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                str(post.get("id")),
+                post.get("unique_id") or "",
+                post.get("kind") or "video",
+                1 if post.get("is_story") else 0,
+                post.get("title") or "",
+                post.get("created_at") or "",
+                int(post.get("duration_seconds") or 0),
+                int(post.get("image_count") or 0),
+                post.get("cover_url") or "",
+                post.get("source_url") or "",
+                json.dumps(post.get("images") or [], ensure_ascii=False),
+                post.get("status") or "detected",
+            ),
+        )
+
+
+def update_tiktok_post(post_id: str, **kwargs) -> None:
+    """Perbarui kolom tertentu milik satu postingan TikTok (nama kolom divalidasi)."""
+    sets: list[str] = []
+    params: list = []
+    for key, value in kwargs.items():
+        if key not in _TIKTOK_POST_WRITABLE:
+            raise ValueError(f"Kolom tiktok_posts tidak dikenal: {key}")
+        sets.append(f"{key} = ?")
+        params.append(value)
+    if not sets:
+        return
+    params.append(str(post_id))
+    with _get_conn() as conn:
+        conn.execute(f"UPDATE tiktok_posts SET {', '.join(sets)} WHERE id = ?", params)
+
+
+def get_tiktok_post(post_id: str) -> Optional[dict]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM tiktok_posts WHERE id = ?", (str(post_id),)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_tiktok_posts(
+    unique_id: Optional[str] = None,
+    limit: int = 30,
+    offset: int = 0,
+    include_hidden: bool = False,
+) -> list[dict]:
+    """Postingan TikTok terbaru (opsional per akun), default hanya yang publik."""
+    conditions: list[str] = []
+    params: list = []
+    if unique_id:
+        conditions.append("unique_id = ?")
+        params.append(_tiktok_uid(unique_id))
+    if not include_hidden:
+        conditions.append("visible = 1")
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    # limit <= 0 → LIMIT -1 (tanpa batas) di SQLite.
+    row_limit = limit if limit and limit > 0 else -1
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT * FROM tiktok_posts {where}
+                ORDER BY COALESCE(NULLIF(created_at, ''), added_at) DESC, id DESC
+                LIMIT ? OFFSET ?""",
+            [*params, row_limit, max(0, offset)],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_tiktok_pending_posts() -> list[dict]:
+    """Postingan yang medianya ada di disk tapi uploadnya belum lengkap."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM tiktok_posts
+               WHERE status IN ('pending_upload', 'detected', 'downloading')
+                 AND media_path IS NOT NULL AND media_path != ''
+               ORDER BY added_at ASC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def tiktok_posts_for_replay(post_id: str) -> Optional[dict]:
+    """
+    Ambil satu postingan yang SIAP dikirim ulang oleh replay bot
+    (punya `telegram_message_ids` di channel arsip).
+    """
+    post = get_tiktok_post(post_id)
+    if not post:
+        return None
+    if not (post.get("telegram_message_ids") or "").strip():
+        return None
+    return post
+
+
+def count_tiktok_posts_by_account() -> dict[str, int]:
+    """{unique_id: jumlah postingan publik} untuk sidebar kiri halaman /tiktok."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT unique_id, COUNT(*) as total FROM tiktok_posts
+               WHERE visible = 1 GROUP BY unique_id"""
+        ).fetchall()
+    return {r["unique_id"]: r["total"] for r in rows}
+
 

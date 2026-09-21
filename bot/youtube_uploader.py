@@ -298,3 +298,85 @@ class YouTubeChannelPool:
             f"Recorded from {source}.\n"
             f"{tags}"
         )
+
+    @staticmethod
+    def build_tiktok_title(
+        member_name: str,
+        posted_at: Optional[str] = None,
+        kind: str = "video",
+        is_story: bool = False,
+    ) -> str:
+        """
+        Judul YouTube untuk arsip TikTok.
+
+        Format: 'TIKTOK VIDEO NAMA - 21 September 2026 | 17:44 WIB'
+                'TIKTOK FOTO NAMA - 21 September 2026 | 17:44 WIB'
+                'TIKTOK STORY NAMA - 21 September 2026 | 17:44 WIB'
+
+        Waktu memakai zona tampilan (DISPLAY_TIMEZONE_*) seperti judul replay,
+        nama member di-HURUF KAPITAL, dan hasilnya dipotong ke batas 100 karakter
+        YouTube.
+        """
+        if is_story:
+            label = "TIKTOK STORY"
+        elif (kind or "video").lower() == "photo":
+            label = "TIKTOK FOTO"
+        else:
+            label = "TIKTOK VIDEO"
+        name = (member_name or "").strip().upper() or "JKT48"
+
+        converted = timeutil.to_display(
+            posted_at,
+            Config.DISPLAY_TIMEZONE_OFFSET_HOURS,
+            Config.LEGACY_NAIVE_TIME_OFFSET_HOURS,
+        )
+        if converted is not None:
+            date_part = (
+                f"{converted.day} "
+                f"{YouTubeChannelPool._ID_MONTHS[converted.month]} {converted.year}"
+            )
+            title = (
+                f"{label} {name} - {date_part} | "
+                f"{converted.strftime('%H:%M')} {Config.DISPLAY_TIMEZONE_LABEL}"
+            )
+        else:
+            title = f"{label} {name}"
+        return title[:100]
+
+    @staticmethod
+    def build_tiktok_description(
+        member_name: str,
+        unique_id: str,
+        posted_at: str = "",
+        kind: str = "video",
+        is_story: bool = False,
+        image_count: int = 0,
+        source_url: str = "",
+        caption_text: str = "",
+    ) -> str:
+        """Deskripsi YouTube untuk arsip TikTok (video, foto→slide show, story)."""
+        if is_story:
+            media_note = "TikTok Story (arsip video)"
+        elif (kind or "video").lower() == "photo":
+            media_note = f"Postingan foto TikTok ({image_count} foto, dibuat slide show)"
+        else:
+            media_note = "Video TikTok"
+
+        tags = "#JKT48 #TikTokStory" if is_story else "#JKT48 #TikTok"
+        lines = [
+            "JKT48 TikTok Archive",
+            f"Member: {member_name} (@{unique_id})",
+        ]
+        if posted_at:
+            lines.append(f"Posted at: {posted_at}")
+        lines.append(f"Source: {media_note}")
+        if caption_text:
+            lines.append("")
+            lines.append(caption_text)
+        if source_url:
+            lines.append("")
+            lines.append(source_url)
+        lines.append("")
+        lines.append(tags)
+        return "\n".join(lines)
+

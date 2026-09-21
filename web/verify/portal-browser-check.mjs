@@ -15,7 +15,7 @@ try {
   for (const width of widths) {
     const height = width < 768 ? 844 : 900;
     await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 768 });
-    for (const route of ['/', '/members', '/about', '/admin/status']) {
+    for (const route of ['/', '/members', '/about', '/tiktok', '/admin/status']) {
       await send('Page.navigate', { url: 'http://localhost:3101' + route });
       const expectedPath = route === '/admin/status' ? '/login' : route;
       for (let i = 0; i < 100; i++) { await delay(250); if (await evaluate(`document.readyState === 'complete' && location.pathname === ${JSON.stringify(expectedPath)} && !!document.querySelector('h1')`)) break; }
@@ -46,6 +46,7 @@ try {
         catalogFilterBox: (() => { const el = document.querySelector('.catalog-filters'); if (!el) return null; const r = el.getBoundingClientRect(); return { overflows: Math.round(r.right) > Math.round(innerWidth) + 1, rectRight: Math.round(r.right), rectWidth: Math.round(r.width) }; })(),
         searchInputBox: (() => { const el = document.querySelector('.catalog-search input'); if (!el) return null; const r = el.getBoundingClientRect(); return { overflows: Math.round(r.right) > Math.round(innerWidth) + 1, rectRight: Math.round(r.right), rectWidth: Math.round(r.width) }; })(),
         links: [...document.querySelectorAll('header a, footer a')].map(a => a.getAttribute('href')),
+        tiktokShell: (() => { const el = document.querySelector('.tiktok-shell'); if (!el) return null; const r = el.getBoundingClientRect(); const cols = getComputedStyle(el).gridTemplateColumns; return { overflows: Math.round(r.right) > Math.round(innerWidth) + 1, rectRight: Math.round(r.right), rectWidth: Math.round(r.width), columns: cols === 'none' ? 1 : cols.split(' ').filter(Boolean).length, accounts: !!document.querySelector('.tiktok-accounts'), stage: !!document.querySelector('.tiktok-stage'), posts: !!document.querySelector('.tiktok-posts'), panelsOverflow: [...document.querySelectorAll('.tiktok-panel, .tiktok-stage')].some(p => Math.round(p.getBoundingClientRect().right) > Math.round(innerWidth) + 1) }; })(),
       })`);
       assert(state.title, 'Missing page content');
       assert(state.scrollWidth <= state.width + 1, JSON.stringify(state));
@@ -54,9 +55,23 @@ try {
       // Anti-regresi nada bahasa: halaman publik memakai sapaan "kamu" dan
       // istilah "replay". Kata formal "Anda" dan istilah lama "siaran ulang"
       // tidak boleh balik lagi ke UI publik.
-      if (route === '/' || route === '/members' || route === '/about') {
+      if (route === '/' || route === '/members' || route === '/about' || route === '/tiktok') {
         assert.doesNotMatch(state.text, /\bAnda\b/, `Kata "Anda" terlalu formal di ${state.path}`);
         assert.doesNotMatch(state.text, /siaran ulang/i, `Istilah "siaran ulang" tidak dipakai di ${state.path}`);
+      }
+      // Halaman /tiktok: tata letak 3 kolom (kiri akun · tengah pemutar ·
+      // kanan daftar arsip) di desktop, 2 kolom ≤1100px, 1 kolom ≤820px —
+      // kolomnya pun tidak boleh meluber keluar viewport.
+      if (route === '/tiktok') {
+        assert(state.tiktokShell, 'Halaman /tiktok harus memuat .tiktok-shell');
+        assert(state.tiktokShell.accounts && state.tiktokShell.stage && state.tiktokShell.posts,
+          `Sidebar kiri/tengah/kanan wajib ada: ${JSON.stringify(state.tiktokShell)}`);
+        assert(!state.tiktokShell.overflows, `Tata letak TikTok meluber di ${width}px`);
+        assert(!state.tiktokShell.panelsOverflow, `Panel TikTok keluar viewport di ${width}px`);
+        const expectedColumns = width >= 1101 ? 3 : width >= 821 ? 2 : 1;
+        assert.equal(state.tiktokShell.columns, expectedColumns,
+          `Tata letak TikTok harus ${expectedColumns} kolom di ${width}px: ${JSON.stringify(state.tiktokShell)}`);
+        assert.match(state.title, /Arsip TikTok member JKT48/);
       }
       if (state.brand) { assert.match(state.brand, /JKT48\s*REPLAY/); assert(!state.logo48, 'Logo 48 lama masih tampil'); }
       if (state.navToggleVisible !== null) {

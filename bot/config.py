@@ -249,6 +249,68 @@ class Config:
         os.getenv("AUTO_DELETE_AFTER_UPLOAD", "true").lower() == "true"
     )
 
+    # ─── Arsip TikTok (OPSIONAL, default NONAKTIF) ──────────────────────
+    # Selama False, bot berjalan PERSIS seperti sebelumnya (jalur TikTok tidak
+    # pernah dijalankan). Aktifkan setelah akun di-seed:
+    #   python3 -m bot.seed_tiktok
+    TIKTOK_ENABLED: bool = (
+        os.getenv("TIKTOK_ENABLED", "false").lower() == "true"
+    )
+
+    # Sumber daftar akun TikTok (dibaca saat seed, bukan setiap poll).
+    TIKTOK_ACCOUNTS_FILE: str = os.getenv("TIKTOK_ACCOUNTS_FILE", "tiktok_accounts.json")
+
+    # Interval satu siklus pemantauan TikTok (detik). Satu siklus memeriksa
+    # SATU akun saja (round-robin) supaya tidak menabrak batas request.
+    TIKTOK_CHECK_INTERVAL_SECONDS: int = int(
+        os.getenv("TIKTOK_CHECK_INTERVAL_SECONDS", "300")
+    )
+
+    # Jeda minimum antar request ke sumber data (detik).
+    # tikwm.com gratis dibatasi ±1 request/detik; 1.1 detik = aman.
+    TIKTOK_REQUEST_INTERVAL_SECONDS: float = float(
+        os.getenv("TIKTOK_REQUEST_INTERVAL_SECONDS", "1.1")
+    )
+
+    # Penyedia data: "auto" (tikwm lalu yt-dlp), "tikwm", "ytdlp", atau
+    # "fixture" (baca JSON lokal — dipakai uji tanpa jaringan).
+    TIKTOK_PROVIDER: str = os.getenv("TIKTOK_PROVIDER", "auto").lower().strip()
+
+    # Direktori fixture untuk TIKTOK_PROVIDER=fixture (dan unit test).
+    TIKTOK_FIXTURE_DIR: str = os.getenv("TIKTOK_FIXTURE_DIR", "tests/fixtures/tiktok")
+
+    # Ambil story juga (default aktif). Story hilang setelah ±24 jam, jadi
+    # story yang ditemukan langsung disimpan.
+    TIKTOK_STORIES_ENABLED: bool = (
+        os.getenv("TIKTOK_STORIES_ENABLED", "true").lower() == "true"
+    )
+
+    # Upload ke YouTube (slide show untuk postingan foto). Bila false, arsip
+    # hanya masuk channel Telegram (YouTube dilewati).
+    TIKTOK_YT_UPLOAD_ENABLED: bool = (
+        os.getenv("TIKTOK_YT_UPLOAD_ENABLED", "true").lower() == "true"
+    )
+
+    # Jumlah foto maksimum per album Telegram. Postingan foto > nilai ini
+    # dikirim sebagai beberapa part (default 10, batas album Telegram).
+    TIKTOK_PHOTOS_PER_PART: int = int(os.getenv("TIKTOK_PHOTOS_PER_PART", "10"))
+
+    # Berapa lama tiap foto tampil di slide show YouTube (detik).
+    TIKTOK_SLIDESHOW_SECONDS_PER_PHOTO: float = float(
+        os.getenv("TIKTOK_SLIDESHOW_SECONDS_PER_PHOTO", "3")
+    )
+
+    # Batas jumlah postingan baru yang diproses per siklus (anti-banjir saat
+    # akun baru pertama kali dipantau).
+    TIKTOK_MAX_POSTS_PER_CHECK: int = int(
+        os.getenv("TIKTOK_MAX_POSTS_PER_CHECK", "10")
+    )
+
+    # Jangan proses story lebih tua dari N jam (story kedaluwarsa di TikTok).
+    TIKTOK_STORY_MAX_AGE_HOURS: int = int(
+        os.getenv("TIKTOK_STORY_MAX_AGE_HOURS", "24")
+    )
+
     @classmethod
     def load_youtube_channels(cls) -> list[ChannelConfig]:
         """

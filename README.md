@@ -19,6 +19,7 @@ Bot Python otomatis untuk memantau, merekam, dan mendistribusikan siaran langsun
 - **Status Viewer**: Pantau status bot real-time (recording aktif, antrian upload, HLS coverage) via CLI.
 - **Kelola Channel via Telegram/CLI**: Tambah–stop–resume–hapus channel/member tanpa edit DB manual (`/stop jkt48-official`, `python3 -m bot.member_cli list`), lengkap dengan daftar member + HLS dan penghentian rekaman yang sedang berjalan.
 - **Cleanup Tool**: Bersihkan sesi stale dan file lama dari disk & database via satu perintah.
+- **Arsip TikTok (Postingan · Foto · Story)**: Memantau akun TikTok member tanpa login, mengarsipkan video **dan** postingan foto (foto dikirim ke channel Telegram sebagai album — maksimal 10 foto per part — sekaligus dirangkai menjadi slide show untuk YouTube), plus story yang tersimpan sebagai video. Halaman publik `/tiktok` menampilkan tata letak 3 kolom: daftar akun (kiri), pemutar (tengah), daftar arsip (kanan). Nyalakan dengan `TIKTOK_ENABLED=true` + `python3 -m bot.seed_tiktok`.
 
 ---
 
@@ -429,6 +430,68 @@ Showroom — berisiko rate-limit. Karena itu Showroom memakai interval sendiri.
 
 ---
 
+## 🎵 Arsip TikTok (Postingan · Foto · Story)
+
+Fitur ini **NONAKTIF secara default** (`TIKTOK_ENABLED=false`), jadi bot berjalan
+persis seperti sebelumnya sampai dinyalakan.
+
+### Menyalakan
+
+```bash
+# 1. Seed daftar akun (51 akun sudah disiapkan di tiktok_accounts.json)
+python3 -m bot.seed_tiktok --dry-run   # lihat rencana + pencocokan member
+python3 -m bot.seed_tiktok
+
+# 2. .env
+TIKTOK_ENABLED=true
+TIKTOK_PROVIDER=auto                   # tikwm dulu, lalu yt-dlp
+TIKTOK_CHECK_INTERVAL_SECONDS=300      # 1 akun per siklus (round-robin)
+TIKTOK_REQUEST_INTERVAL_SECONDS=1.1    # batas gratis tikwm ±1 req/detik
+
+# 3. Restart
+pm2 restart jkt48-bot --update-env
+```
+
+### Yang terjadi tiap siklus
+
+- Satu akun per siklus (round-robin) → postingan terbaru + story aktif.
+- **Video**: diunduh yt-dlp → dikirim ke channel arsip Telegram → diunggah ke
+  YouTube (unlisted) + notifikasi ke channel publik.
+- **Foto**: semua foto diunduh; dikirim ke Telegram sebagai **album (maks 10
+  foto/album, jadi >10 foto = beberapa part)** *dan* dirangkai menjadi slide show
+  1080x1920 untuk YouTube. User tetap bisa mengunduh **fotonya** lewat bot.
+- **Story**: disimpan sebagai video (story foto pun dirangkai jadi video).
+- Gagal di tengah jalan → status `pending_upload`, media tetap di disk dan
+  dicoba ulang siklus berikutnya **tanpa mengunduh ulang**.
+
+### Penyedia data (kenapa `auto`)
+
+| Penyedia | Catatan lapangan (21 Sep 2026) |
+|---|---|
+| `tikwm` (API JSON publik) | Paling ringkas & mendukung foto, tapi dari IP datacenter sering dijawab tantangan Cloudflare (HTTP 403). Bot menandai penyedia "tidak sehat" 15 menit lalu pindah penyedia. |
+| `ytdlp` | Tanpa batas pihak ketiga. Listing profil butuh **secUid** (diisi otomatis dari postingan pertama akun). Story tidak didukung. |
+| `fixture` | Membaca JSON lokal (`tests/fixtures/tiktok/`) — untuk uji tanpa jaringan. |
+
+### Uji manual di VPS
+
+```bash
+python3 -m bot.tiktok_monitor --once              # satu siklus (1 akun)
+python3 -m bot.tiktok_monitor --account lulu_jkt48
+python3 -m bot.tiktok_monitor --dry-run           # hanya deteksi, tanpa unduh
+```
+
+### Halaman web `/tiktok`
+
+- Desktop 3 kolom: daftar akun (kiri) · pemutar (tengah) · daftar arsip (kanan);
+  di layar kecil menumpuk menjadi 1 kolom.
+- Hanya arsip **siap tayang** yang muncul (punya video YouTube atau media di
+  channel arsip Telegram).
+- Tombol download memakai deep-link bot `tt_<post_id>`; bot mengirim **video**
+  atau **foto (album)** sesuai jenis arsipnya.
+- Verifikasi: `cd web && npm run verify:tiktok`.
+
+---
+
 ## 🌱 Seed HLS Database (Penting — Jalankan Sekali)
 
 URL HLS channel AWS IVS tiap member bersifat **permanen** (tidak berubah antar sesi live). Jalankan seed sekali agar bot tidak perlu query IDN API untuk member yang sudah diketahui:
@@ -575,6 +638,8 @@ python3 -m bot.status --cleanup --hours 48
 | `merge_groups` | Grup rekaman yang perlu di-merge (reconnect window) |
 | `member_hls` | URL HLS permanen tiap member + flag `hls_confirmed` & `enabled` (stop/aktif) |
 | `youtube_channels` | Daftar channel YouTube, token, & counter upload harian |
+| `tiktok_accounts` | Akun TikTok yang dipantau (username, nama member, `sec_uid`, `enabled`) |
+| `tiktok_posts` | Arsip TikTok: video/foto/story, jumlah foto, `telegram_message_ids` (album), `youtube_video_id`, `visible` |
 
 ### Status Sesi (`live_sessions.status`)
 

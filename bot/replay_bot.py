@@ -34,15 +34,27 @@ POLL_TIMEOUT = 25
 
 WELCOME_TEXT = (
     "👋 <b>JKT48 Replay Bot</b>\n\n"
-    "Bot ini mengirim arsip siaran ulang (replay) member JKT48.\n\n"
-    "Cara pakai: buka halaman tontonan di situs, lalu tekan tombol "
-    "<b>Download via Bot Telegram</b>. Kamu akan diarahkan ke sini dengan "
-    "tautan khusus dan videonya otomatis dikirim.\n\n"
+    "Bot ini mengirim arsip replay live JKT48 — sekarang termasuk arsip "
+    "TikTok (video, foto, dan story) member.\n\n"
+    "Cara pakai: buka halaman tontonan atau halaman <b>TikTok</b> di situs, "
+    "lalu tekan tombol <b>Download via Bot Telegram</b>. Kamu akan diarahkan "
+    "ke sini dengan tautan khusus dan medianya otomatis dikirim. Untuk "
+    "postingan foto, kamu menerima <b>fotonya</b> (bukan hanya videonya).\n\n"
     "Bot ini tidak menerima perintah manual."
 )
 NOT_FOUND_TEXT = (
     "😕 Replay tidak ditemukan atau belum tersedia untuk diunduh.\n"
     "Coba lagi dari tombol download di halaman tontonan."
+)
+TIKTOK_NOT_FOUND_TEXT = (
+    "😕 Arsip TikTok ini belum tersedia untuk diunduh.\n"
+    "Biasanya karena arsipnya masih diproses (unduh + upload). Coba lagi "
+    "sebentar, lalu tekan tombol download di halaman TikTok."
+)
+TIKTOK_PHOTO_INFO_TEXT = (
+    "🖼️ <b>Postingan foto TikTok</b>\n\n"
+    "Sebanyak <b>{count} foto</b> akan dikirim dalam <b>{parts} album</b> "
+    "(maksimum 10 foto per album). Tunggu sampai semua album selesai masuk ya."
 )
 NOTIFY_TEXT = (
     "🔔 <b>Siap!</b>\n\n"
@@ -276,6 +288,12 @@ class ReplayBot:
             await self.send_message(chat_id, NOTIFY_TEXT, parse_mode="HTML")
             return
 
+        # Payload "tt_<post_id>" = arsip TikTok (video/foto/story). Foto dikirim
+        # sebagai album sehingga user menerima FOTONYA, bukan hanya video slide.
+        if payload.startswith("tt_"):
+            await self._send_tiktok(chat_id, payload[3:])
+            return
+
         session = database.get_archived_session_by_youtube_id(payload)
         if not session:
             logger.info("Payload tidak dikenal / belum diarsipkan: %r", payload)
@@ -311,6 +329,58 @@ class ReplayBot:
             chat_id,
             sent,
             len(msg_ids),
+        )
+
+    async def _send_tiktok(self, chat_id: int, post_id: str) -> None:
+        """
+        Kirim arsip TikTok (video/foto/story) dari channel arsip ke user.
+
+        Foto dikirim apa adanya (copyMessage per pesan album) sehingga user
+        menerima FOTONYA — sesuai kebutuhan fitur "download dalam bentuk foto".
+        """
+        post = database.tiktok_posts_for_replay(post_id)
+        if not post:
+            logger.info("Arsip TikTok tidak dikenal / belum siap: %r", post_id)
+            await self.send_message(chat_id, TIKTOK_NOT_FOUND_TEXT)
+            return
+
+        msg_ids = _parse_message_ids(post.get("telegram_message_ids"))
+        if not msg_ids:
+            await self.send_message(chat_id, TIKTOK_NOT_FOUND_TEXT)
+            return
+
+        kind = (post.get("kind") or "video").strip() or "video"
+        is_story = bool(post.get("is_story"))
+        image_count = int(post.get("image_count") or 0)
+
+        # Info singkat lebih dulu: menjelaskan bahwa foto dikirim sebagai album
+        # (multi-part) supaya user tidak mengira ada media yang hilang.
+        if kind == "photo":
+            total_parts = max(1, (len(msg_ids) + 9) // 10)
+            await self.send_message(
+                chat_id,
+                TIKTOK_PHOTO_INFO_TEXT.format(
+                    count=image_count or len(msg_ids),
+                    parts=total_parts,
+                ),
+                parse_mode="HTML",
+            )
+
+        sent = 0
+        for mid in msg_ids:
+            try:
+                res = await self.copy_message(chat_id, self._archive_channel, mid)
+                if res:
+                    sent += 1
+            except Exception as exc:
+                logger.exception("copyMessage TikTok gagal (msg %s): %s", mid, exc)
+
+        if sent == 0:
+            await self.send_message(chat_id, ERROR_TEXT)
+            return
+        logger.info(
+            "Arsip TikTok %s (%s%s) terkirim ke chat %s (%d/%d pesan)",
+            post_id, kind, " story" if is_story else "", chat_id, sent, len(msg_ids),
         )
 
 

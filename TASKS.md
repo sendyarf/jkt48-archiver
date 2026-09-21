@@ -201,9 +201,48 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       (maks 5 detik) supaya tidak flake. Verifikasi: `tsc`, `eslint`, `npm run build`,
       browser check **20/20 PASS** (2×), `verify:home-upcoming`, `verify:auto-publish`
       PASS.
+- [x] **Arsip TikTok: bot + halaman publik `/tiktok`** (fitur baru, default
+      NONAKTIF). Bot memantau 51 akun TikTok member (`tiktok_accounts.json`,
+      di-seed lewat `bot/seed_tiktok.py` — 44 akun otomatis ketemu member-nya di
+      `member_hls`). Modul baru: `bot/tiktok_client.py` (penyedia `tikwm` →
+      `yt-dlp` → `fixture` + RateLimiter 1 req/detik + penanda penyedia "tidak
+      sehat" 15 menit), `bot/tiktok_media.py` (unduh video/foto, slide show
+      ffmpeg 1080x1920, pemecahan foto per 10 album), `bot/tiktok_monitor.py`
+      (round-robin 1 akun/siklus, unduh → kirim channel arsip Telegram → unggah
+      YouTube → notifikasi, plus `--once/--account/--dry-run`), tabel
+      `tiktok_accounts` + `tiktok_posts` di `bot/database.py`, caption
+      `build_tiktok_caption/notification`, judul/deskripsi YouTube
+      `TIKTOK VIDEO/FOTO/STORY …`, dan deep-link bot publik `tt_<post_id>`
+      (foto dikirim sebagai album sehingga user menerima FOTONYA). Web:
+      `web/lib/tiktok.ts` + `web/app/tiktok/page.tsx` +
+      `web/components/TikTokArchive.tsx` (tata letak 3 kolom: akun · pemutar ·
+      daftar arsip; ≤1100px 2 kolom, ≤820px 1 kolom), API `/api/tiktok/posts`,
+      tombol download payload TikTok, tautan navbar, dan tabel TikTok ikut dibuat
+      di `web/lib/db.ts`. Fakta lapangan (uji 21 Sep 2026): tikwm gratis ±1
+      req/detik **dan** dijawab Cloudflare 403 dari IP datacenter; yt-dlp bisa
+      video per-URL tetapi listing profil butuh secUid (diisi otomatis dari
+      `channel_id` postingan pertama) dan tidak mendukung story — karena itu
+      `TIKTOK_PROVIDER=auto` + fallback otomatis. Verifikasi: **321 test Python
+      lulus** (237 lama + **84 test TikTok baru**: client/media/database/captions/
+      monitor),
+      `tsc` 0, `eslint` 0 error, `npm run build` OK, **`verify:tiktok` PASS**,
+      browser check **25/25 PASS** (5 lebar × 5 rute, kini termasuk `/tiktok`
+      dengan cek jumlah kolom), `verify:home-upcoming` & `verify:auto-publish`
+      PASS.
 
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 
+- [ ] **Arsip TikTok — validasi lapangan di VPS**: jalankan
+      `python3 -m bot.tiktok_monitor --dry-run` untuk 51 akun, lalu `--once`
+      untuk beberapa akun, dan catat penyedia mana yang benar-benar jalan
+      (tikwm vs yt-dlp) dari IP VPS. Bila tikwm tetap 403 dari VPS, pertimbangkan
+      signer X-Bogus/msToken atau pembacaan SSR `__UNIVERSAL_DATA_FOR_REHYDRATION__`
+      dengan cookie `ttwid`.
+- [ ] **Story TikTok**: bergantung pada penyedia — `tikwm` belum punya endpoint
+      story (404), `yt-dlp` tidak mendukung. Perlu jalur lain (`/api/story/item_list/`
+      dengan signature) atau menerima bahwa story tidak terarsip.
+- [ ] Saklar publik per-postingan TikTok dari halaman admin (kolom `visible`
+      sudah ada di DB, tetapi belum ada UI-nya).
 - [ ] Fallback re-encode (`libx264 -preset veryfast`) untuk concat yang tetap gagal
       karena parameter codec/resolusi antar segmen berbeda di tengah live.
 - [ ] Memverifikasi perilaku saat `slug` berubah di tengah live (title baru)

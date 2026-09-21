@@ -6,6 +6,16 @@ import { Check, Copy, Download, X } from 'lucide-react';
 interface Props {
   youtubeVideoId: string;
   title: string;
+  /**
+   * Payload deep-link bot Telegram. Default = YouTube video ID (jalur replay).
+   * Arsip TikTok memakai `tt_<post_id>` (lihat web/lib/tiktok.ts).
+   */
+  payload?: string;
+  /**
+   * Jenis media, hanya memengaruhi teks modal:
+   * 'photo' → jelaskan bahwa user menerima FOTONYA (beberapa album).
+   */
+  media?: 'video' | 'photo';
 }
 
 /**
@@ -15,16 +25,23 @@ interface Props {
  *
  * Username bot dibaca dari env server NEXT_PUBLIC_REPLAY_BOT_USERNAME.
  */
-export default function TelegramDownloadButton({ youtubeVideoId, title }: Props) {
+export default function TelegramDownloadButton({
+  youtubeVideoId,
+  title,
+  payload,
+  media = 'video',
+}: Props) {
   const [open, setOpen] = useState(false);
   const [launched, setLaunched] = useState(false);
   const [copied, setCopied] = useState(false);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
 
   const botUsername = (process.env.NEXT_PUBLIC_REPLAY_BOT_USERNAME || '').replace(/^@/, '');
+  const startPayload = payload || youtubeVideoId;
   const deepLink = botUsername
-    ? `https://t.me/${botUsername}?start=${encodeURIComponent(youtubeVideoId)}`
+    ? `https://t.me/${botUsername}?start=${encodeURIComponent(startPayload)}`
     : '';
+  const isPhoto = media === 'photo';
 
   useEffect(() => {
     if (!open) return;
@@ -49,7 +66,12 @@ export default function TelegramDownloadButton({ youtubeVideoId, title }: Props)
 
   return (
     <>
-      <button type="button" className="secondary-button" onClick={() => setOpen(true)}>
+      <button
+        type="button"
+        className="secondary-button"
+        data-download-payload={startPayload}
+        onClick={() => setOpen(true)}
+      >
         <Download size={16} aria-hidden="true" />
         Download
       </button>
@@ -77,9 +99,19 @@ export default function TelegramDownloadButton({ youtubeVideoId, title }: Props)
             </div>
 
             <p className="modal-body">
-              Video <strong style={{ color: '#fff' }}>{title}</strong> bakal dikirim ke kamu
-              lewat bot Telegram kami. Tekan tombol di bawah, lalu tap{' '}
-              <strong>Start</strong> di Telegram — videonya langsung masuk.
+              {isPhoto ? (
+                <>
+                  Semua foto dari <strong style={{ color: '#fff' }}>{title}</strong> bakal
+                  dikirim ke kamu lewat bot Telegram kami — dipisah per album (maksimal 10
+                  foto). Tekan tombol di bawah, lalu tap <strong>Start</strong> di Telegram.
+                </>
+              ) : (
+                <>
+                  Video <strong style={{ color: '#fff' }}>{title}</strong> bakal dikirim ke
+                  kamu lewat bot Telegram kami. Tekan tombol di bawah, lalu tap{' '}
+                  <strong>Start</strong> di Telegram — videonya langsung masuk.
+                </>
+              )}
             </p>
 
             {deepLink ? (
@@ -109,7 +141,9 @@ export default function TelegramDownloadButton({ youtubeVideoId, title }: Props)
             )}
 
             <p className="modal-hint">
-              Videonya dikirim sebagai file — bisa langsung diputar atau disimpan dari Telegram.
+              {isPhoto
+                ? 'Semua foto dikirim sebagai album — bisa langsung disimpan dari Telegram.'
+                : 'Videonya dikirim sebagai file — bisa langsung diputar atau disimpan dari Telegram.'}
             </p>
           </div>
         </div>

@@ -182,6 +182,59 @@ mengerjakan proyek ini. Jangan melanggar tanpa alasan yang jelas dan disepakati.
 6. **Kelola channel lewat `bot/member_manager.py`** (dipakai `member_cli.py` dan
    `admin_bot.py`). Jangan menduplikasi logika add/stop di tempat lain.
 
+## Arsip TikTok (fitur 21 Sep 2026)
+
+Saklar utama: **`TIKTOK_ENABLED` (default `false`)**. Selama false, bot berjalan
+persis seperti sebelumnya — jangan pernah membuat jalur TikTok aktif tanpa flag
+ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
+
+1. **Tabel & bentuk data.** `tiktok_accounts` (`unique_id` kanonik =
+   huruf kecil tanpa `@`, `sec_uid`, `enabled`, `member_username`) dan
+   `tiktok_posts` (`kind` = `video`/`photo`, `is_story`, `image_count`,
+   `images_json`, `telegram_message_ids` untuk SEMUA pesan media di channel
+   arsip, `youtube_video_id`, `visible`, `status`). Bot yang menulis; web hanya
+   membaca (`web/lib/tiktok.ts`), dan `web/lib/db.ts` juga membuat tabelnya agar
+   halaman tidak 500 pada database baru.
+2. **Aturan tampil di `/tiktok`:** `visible = 1` **DAN** (punya
+   `youtube_video_id` ATAU `telegram_message_ids`). Arsip yang masih diproses
+   tidak boleh muncul (mencegah kartu/pemutar kosong). Akun `enabled = 0` tidak
+   muncul di sidebar.
+3. **Foto > 10 = beberapa part.** Album Telegram maksimum 10 media, jadi
+   `TIKTOK_PHOTOS_PER_PART` dipotong ke 10 oleh `split_image_paths()`. Foto
+   dikirim APA ADANYA ke channel arsip (agar user bisa mengunduh **fotonya**);
+   `slide.mp4` (1080x1920, H.264) hanya untuk YouTube + thumbnail kolase.
+   Demuxer `concat` ffmpeg **mengabaikan `duration` entri terakhir**, karena itu
+   foto terakhir ditulis dua kali di daftar concat — jangan dihapus.
+4. **Retry tidak mengunduh ulang.** Saat status `pending_upload`,
+   `tiktok_media.media_from_disk()` dipakai lebih dulu; media baru dihapus setelah
+   semua upload sukses (`AUTO_DELETE_AFTER_UPLOAD`).
+5. **Urutan status:** `detected → downloading → uploading_telegram →
+   uploading_youtube → done`, dengan `pending_upload` (bisa di-retry) atau
+   `failed` (mis. media hilang di TikTok). Telegram WAJIB lebih dulu daripada
+   YouTube: channel arsip adalah sumber unduhan publik.
+6. **Penyedia data `auto` = tikwm → yt-dlp.** Fakta uji 21 Sep 2026: tikwm
+   gratis ±1 request/detik **dan** sering dijawab tantangan Cloudflare (HTTP 403)
+   dari IP datacenter; yt-dlp bisa mengambil video per-URL tetapi listing profil
+   butuh **secUid** (`tikwm:user` → `tiktokuser:<secUid>`) yang diisi otomatis
+   dari `channel_id` postingan pertama, dan yt-dlp **tidak** mendukung story.
+   Kegagalan penyedia = tandai "tidak sehat" 15 menit (`_UNHEALTHY_SECONDS`) lalu
+   pindah penyedia; tidak boleh melempar exception ke loop utama.
+7. **Deep-link bot publik:** arsip TikTok = `tt_<post_id>` (replay tetap YouTube
+   ID). Tombol download mengekspos payload lewat atribut
+   `data-download-payload` supaya bisa diverifikasi tanpa membuka modal.
+8. **Jangan menguji payload lewat `start=` di HTML** — deep-link dibentuk di
+   dalam modal (state klien) sehingga tidak ada di hasil SSR. Uji lewat
+   `data-download-payload` (HTML) atau `download_payload` (API).
+9. **Thumbnail web diutamakan dari YouTube**
+   (`https://img.youtube.com/vi/<id>/hqdefault.jpg`) karena URL cover TikTok CDN
+   bertanda tangan dan kedaluwarsa; `cover_url` hanya fallback (dan
+   `next.config.ts` perlu `**.tiktokcdn.com` di `images.remotePatterns`).
+10. **Layout `/tiktok` = 3 kolom** (kiri daftar akun · tengah pemutar · kanan
+    daftar arsip) lewat `.tiktok-shell`; ≤1100px menjadi 2 kolom dan ≤820px
+    menjadi 1 kolom. `web/verify/portal-browser-check.mjs` menguji JUMLAH kolom
+    per lebar, sedangkan `web/verify/tiktok-page.mjs` menguji isinya (akun aktif
+    saja, arsip siap saja, urut terbaru, payload `tt_`, label foto/story).
+
 ## Kesalahan masa lalu yang sudah diperbaiki
 
 1. **Merge di-upload sebelum live selesai** — timer merge tidak ter-reset saat

@@ -275,10 +275,142 @@ class TelegramSender:
                 except Exception:
                     pass
 
+    async def send_tiktok_archive(
+        self,
+        media,
+        *,
+        post: dict,
+        account: dict,
+        channel_id: Optional[int] = None,
+    ) -> list[int]:
+        """
+        Kirim media TikTok (video / foto / story) ke channel arsip.
+
+        - VIDEO  : dikirim sebagai video; bila melebihi batas ukuran Telegram,
+                   dipecah memakai `split_video_if_needed` seperti replay.
+        - FOTO   : dikirim sebagai album (maksimum 10 foto/album) sehingga
+                   postingan dengan > 10 foto menjadi beberapa part.
+        - STORY  : selalu video (TikTok hanya menyediakan video untuk story).
+
+        Returns:
+            Daftar message_id URUT PART (kosong bila tidak ada yang terkirim).
+        """
+        target = channel_id or Config.TELEGRAM_ARCHIVE_CHANNEL_ID or Config.TELEGRAM_CHANNEL_ID
+        kind = (post.get("kind") or "video").strip() or "video"
+        is_story = bool(post.get("is_story"))
+        unique_id = (post.get("unique_id") or account.get("unique_id") or "").strip()
+        member_name = (account.get("display_name") or account.get("member_username")
+                       or unique_id)
+        title = post.get("title") or ""
+        created_at = post.get("created_at") or ""
+        source_url = post.get("source_url") or ""
+
+        sent_ids: list[int] = []
+
+        # ── FOTO: album per part ────────────────────────────────────────────
+        parts = list(getattr(media, "image_parts", []) or [])
+        if parts:
+            total = len(parts)
+            for index, files in enumerate(parts, start=1):
+                size_bytes = sum(Path(f).stat().st_size for f in files if Path(f).exists())
+                caption = build_tiktok_caption(
+                    member_name=member_name,
+                    unique_id=unique_id,
+                    created_at=created_at,
+                    title=title,
+                    kind=kind,
+                    is_story=is_story,
+                    part_number=index,
+                    total_parts=total,
+                    file_size_bytes=size_bytes,
+                    source_url=source_url,
+                )
+                ids = await self._send_media_album(files, caption, target)
+                sent_ids.extend(ids)
+            return sent_ids
+
+        # ── VIDEO: satu file (dipecah bila terlalu besar) ────────────────────
+        video_path = getattr(media, "archive_video_path", None)
+        if not video_path or not Path(video_path).exists():
+            logger.warning("Tidak ada media untuk dikirim ke Telegram (post %s)", post.get("id"))
+            return []
+
+        video_parts = await split_video_if_needed(Path(video_path))
+        total = len(video_parts)
+        for part in video_parts:
+            caption = build_tiktok_caption(
+                member_name=member_name,
+                unique_id=unique_id,
+                created_at=created_at,
+                title=title,
+                kind=kind,
+                is_story=is_story,
+                part_number=part.part_number,
+                total_parts=total,
+                file_size_bytes=part.size_bytes,
+                source_url=source_url,
+            )
+            message_id = await self.send_video_file(
+                file_path=part.file_path,
+                caption=caption,
+                duration=part.duration_seconds,
+                width=part.width,
+                height=part.height,
+                channel_id=target,
+            )
+            if message_id:
+                sent_ids.append(message_id)
+        cleanup_video_parts(video_parts)
+        return sent_ids
+
+    async def _send_media_album(
+        self,
+        files: list,
+        caption: str,
+        target: int,
+    ) -> list[int]:
+        """
+        Kirim satu album Telegram (maksimum 10 media) + caption.
+
+        Telethon mengembalikan LIST pesan untuk album (satu pesan per media);
+        fungsi ini menormalkannya menjadi daftar message_id. Satu kegagalan
+        album tidak melempar exception ke pemanggil (log + []).
+        """
+        paths = [str(Path(f)) for f in files if Path(f).exists()]
+        if not paths:
+            return []
+        await self.connect()
+        for attempt in range(3):
+            try:
+                result = await self._client.send_file(
+                    target,
+                    paths,
+                    caption=caption,
+                    parse_mode="html",
+                )
+                messages = result if isinstance(result, list) else [result]
+                ids = [m.id for m in messages if m is not None]
+                logger.info(
+                    "Album TikTok (%d media) terkirim ke %d. Message IDs: %s",
+                    len(paths), target, ids,
+                )
+                return ids
+            except FloodWaitError as exc:
+                logger.warning("Telegram FloodWait %ds saat mengirim album. Menunggu...", exc.seconds)
+                await asyncio.sleep(exc.seconds + 5)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Gagal mengirim album TikTok (percobaan %d/3): %s", attempt + 1, exc)
+                if attempt == 2:
+                    return []
+                await asyncio.sleep(5)
+        return []
+
+
     async def disconnect(self) -> None:
         if self._connected:
             await self._client.disconnect()
             self._connected = False
+
 
     async def __aenter__(self):
         await self.connect()
@@ -378,6 +510,40 @@ def build_telegram_video_caption(
     return "\n".join(lines)
 
 
+def build_tiktok_notification(
+    member_name: str,
+    unique_id: str,
+    posted_at: str = "",
+    video_id: str = "",
+    title: str = "",
+    kind: str = "video",
+    is_story: bool = False,
+) -> str:
+    """
+    Notifikasi publik ke channel Telegram saat arsip TikTok naik ke YouTube.
+
+    Sama seperti jalur replay: Telegram hanya memuat tautan YouTube Unlisted,
+    bukan berkas videonya.
+    """
+    yt_url = f"https://youtu.be/{video_id}" if video_id else ""
+    header = _TIKTOK_HEADERS.get((kind, bool(is_story)), "🎵 <b>TIKTOK</b>")
+    posted = _format_live_time(posted_at)
+
+    lines = [
+        header,
+        "",
+        f"👤 <b>{member_name or unique_id}</b> ({_dot_at(unique_id)})",
+    ]
+    if title:
+        lines.append(f"📌 {title[:600]}")
+    if posted:
+        lines.append(f"📅 {posted}")
+    if yt_url:
+        lines.append("")
+        lines.append(f"▶️ <b>Watch:</b> <a href=\"{yt_url}\">YouTube Unlisted</a>")
+    return "\n".join(lines)
+
+
 def build_youtube_notification(
     member_name: str,
     member_username: str,
@@ -408,3 +574,66 @@ def build_youtube_notification(
     lines.append(f"▶️ <b>Watch:</b> <a href=\"{yt_url}\">YouTube Unlisted</a>")
 
     return "\n".join(lines)
+
+
+# ─── Arsip TikTok ───────────────────────────────────────────────────────────
+#
+# Caption & pengiriman media TikTok (video, foto/slide, story) ke channel arsip.
+# Postingan FOTO dikirim sebagai album Telegram (maksimum 10 foto per album),
+# sehingga postingan dengan > 10 foto otomatis menjadi beberapa part.
+
+_TIKTOK_HEADERS = {
+    ("photo", False): "🖼️ <b>TIKTOK FOTO</b>",
+    ("photo", True): "🖼️ <b>TIKTOK STORY (FOTO)</b>",
+    ("video", False): "🎵 <b>TIKTOK VIDEO</b>",
+    ("video", True): "📱 <b>TIKTOK STORY</b>",
+}
+
+
+def build_tiktok_caption(
+    member_name: str,
+    unique_id: str,
+    created_at: str = "",
+    title: str = "",
+    kind: str = "video",
+    is_story: bool = False,
+    part_number: int = 1,
+    total_parts: int = 1,
+    file_size_bytes: int = 0,
+    source_url: str = "",
+) -> str:
+    """
+    Caption media TikTok untuk channel arsip.
+
+    Header mengikuti jenis media: 'TIKTOK VIDEO' / 'TIKTOK FOTO' /
+    'TIKTOK STORY'. Foto dengan > 10 gambar dipecah sehingga headernya memuat
+    penanda part seperti caption replay multi-part.
+    """
+    header = _TIKTOK_HEADERS.get((kind, bool(is_story)), "🎵 <b>TIKTOK</b>")
+    if total_parts > 1:
+        header += f" <b>[Part {part_number}/{total_parts}]</b>"
+
+    created = _format_live_time(created_at)
+    lines = [
+        header,
+        "",
+        f"👤 <b>{member_name or unique_id}</b> ({_dot_at(unique_id)})",
+    ]
+    if title:
+        # Deskripsi TikTok bisa sangat panjang → potong agar caption tetap rapi.
+        lines.append(f"📌 {title[:600]}")
+    if created:
+        lines.append(f"📅 {created}")
+    if total_parts > 1:
+        lines.append(
+            f"📁 Part {part_number} dari {total_parts}"
+            + (f" ({_format_size(file_size_bytes)})" if file_size_bytes else "")
+        )
+    elif file_size_bytes > 0:
+        lines.append(f"📁 Ukuran: {_format_size(file_size_bytes)}")
+    if source_url:
+        lines.append("")
+        lines.append(f"🔗 <a href=\"{source_url}\">Lihat di TikTok</a>")
+
+    return "\n".join(lines)
+
