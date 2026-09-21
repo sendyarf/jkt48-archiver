@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 # Marker akun cadangan untuk member yang belum punya akun pribadi.
 BACKUP_ACCOUNT_SUFFIX = "u16"
 
+# Batas panjang untuk pencocokan berbasis nama inti. Pencocokan persis aman
+# sejak 3 huruf ('lyn'), sedangkan pencocokan awalan ('kathrin' → 'kathrina')
+# baru dipakai sejak 5 huruf supaya tidak salah pasang.
+MIN_CORE_LENGTH = 3
+MIN_PREFIX_LENGTH = 5
+
 
 def slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (value or "").lower())
@@ -52,6 +58,37 @@ def name_variants(value: str) -> set:
     if slug.endswith("jkt48"):
         variants.add(slug[:-5])
     return {v for v in variants if v}
+
+
+def core_name(value: str) -> str:
+    """
+    Nama inti sebuah username: tanpa penanda `jkt48`, angka, dan inisial
+    satu huruf. Dipakai sebagai lapis kedua pencocokan karena username TikTok
+    sering memakai bentuk berbeda dari username IDN.
+
+    'jkt48.lyn.s'      → 'lyn'        (cocok dengan member `jkt48_lyn`)
+    'jkt48.ella.a'     → 'ella'
+    'jkt48.raisha.s'   → 'raisha'
+    'kathrinjkt48'     → 'kathrin'    (cocok awalan `jkt48_kathrina`)
+    'jkt48.aurellia_'  → 'aurellia'
+    'jkt48.u16'        → ''           (akun cadangan, tidak pernah dicocokkan)
+    """
+    parts = [p for p in re.split(r"[^a-z0-9]+", (value or "").lower()) if p]
+    cleaned: list[str] = []
+    for part in parts:
+        if part == "jkt48":
+            continue
+        part = part.replace("jkt48", "")
+        part = re.sub(r"\d+", "", part)
+        if len(part) <= 1:  # inisial (`.s`, `.a`) atau sisa angka (`u16` → 'u')
+            continue
+        cleaned.append(part)
+    return "".join(cleaned)
+
+
+def is_backup_account(unique_id: str) -> bool:
+    """Akun cadangan u16 dipakai bersama beberapa member → jangan dipetakan."""
+    return slugify(unique_id).endswith(BACKUP_ACCOUNT_SUFFIX)
 
 
 def load_accounts(path: str) -> list[dict]:
@@ -77,13 +114,75 @@ def build_member_index() -> dict:
     return index
 
 
-def match_member(unique_id: str, index: dict) -> Optional[dict]:
-    """Cari member yang paling cocok untuk sebuah username TikTok."""
+def build_member_core_index() -> dict:
+    """
+    Peta nama inti → daftar member, untuk pencocokan lapis kedua.
+
+    Berupa daftar (bukan satu member) supaya nama inti yang dipakai lebih dari
+    satu member bisa dideteksi dan DILEWATI alih-alih salah pasang.
+    """
+    index: dict = {}
+    for member in database.get_all_member_hls(include_disabled=True):
+        for value in (member.get("username") or "", member.get("display_name") or ""):
+            core = core_name(value)
+            if len(core) < MIN_CORE_LENGTH:
+                continue
+            bucket = index.setdefault(core, [])
+            if all(m.get("username") != member.get("username") for m in bucket):
+                bucket.append(member)
+    return index
+
+
+def _match_by_core(unique_id: str, core_index: dict) -> Optional[dict]:
+    """
+    Lapis kedua: cocokkan nama inti akun dengan nama inti member.
+
+    Urutan: inti sama persis → salah satu inti menjadi awalan inti lainnya
+    (`kathrin` ⊂ `kathrina`). Awalan hanya dipakai bila inti persis TIDAK ADA
+    sama sekali — kalau inti persisnya ada tetapi ambigu, hasilnya `None`
+    supaya tidak menebak (mis. `raisha` ambigu tidak boleh jatuh ke member
+    `raishakedua`). Hasil juga hanya diterima bila tunggal.
+    """
+    core = core_name(unique_id)
+    if len(core) < MIN_CORE_LENGTH:
+        return None
+
+    exact = core_index.get(core) or []
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
+        return None
+
+    if len(core) < MIN_PREFIX_LENGTH:
+        return None
+    candidates: list[dict] = []
+    for member_core, members in core_index.items():
+        shorter, longer = sorted((member_core, core), key=len)
+        if len(shorter) < MIN_PREFIX_LENGTH or not longer.startswith(shorter):
+            continue
+        for member in members:
+            if all(m.get("username") != member.get("username") for m in candidates):
+                candidates.append(member)
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def match_member(unique_id: str, index: dict, core_index: Optional[dict] = None) -> Optional[dict]:
+    """
+    Cari member yang paling cocok untuk sebuah username TikTok.
+
+    Lapis 1 memakai varian nama persis (`name_variants`); bila gagal, lapis 2
+    memakai nama inti (`core_name`). Akun cadangan `u16` tidak pernah dipetakan
+    ke satu member karena dipakai bersama.
+    """
     for candidate in sorted(name_variants(unique_id), key=len, reverse=True):
         member = index.get(candidate)
         if member:
             return member
-    return None
+    if core_index is None or is_backup_account(unique_id):
+        return None
+    return _match_by_core(unique_id, core_index)
 
 
 def seed(accounts: list[dict], dry_run: bool = False) -> tuple[list[str], list[str]]:
@@ -94,8 +193,10 @@ def seed(accounts: list[dict], dry_run: bool = False) -> tuple[list[str], list[s
         (daftar USERNAME yang belum cocok ke member, daftar username cadangan)
     """
     index = build_member_index()
+    core_index = build_member_core_index()
     unmatched: list[str] = []
     backups: list[str] = []
+    core_matched = 0
 
     for entry in accounts:
         unique_id = (entry.get("unique_id") or entry.get("username") or "").strip().lstrip("@")
@@ -103,9 +204,14 @@ def seed(accounts: list[dict], dry_run: bool = False) -> tuple[list[str], list[s
             continue
         enabled = entry.get("enabled", True)
         member = match_member(unique_id, index)
+        matched_by_core = False
+        if member is None and not is_backup_account(unique_id):
+            member = _match_by_core(unique_id, core_index)
+            matched_by_core = member is not None
+            core_matched += 1 if matched_by_core else 0
         if member is None:
             unmatched.append(unique_id)
-            if slugify(unique_id).endswith(BACKUP_ACCOUNT_SUFFIX):
+            if is_backup_account(unique_id):
                 backups.append(unique_id)
         display_name = (
             entry.get("display_name")
@@ -116,11 +222,12 @@ def seed(accounts: list[dict], dry_run: bool = False) -> tuple[list[str], list[s
 
         action = "DRY-RUN" if dry_run else "seed"
         logger.info(
-            "[%s] %-22s → %s%s",
+            "[%s] %-22s → %s%s%s",
             action,
             unique_id,
             display_name or "(nama belum diketahui)",
             f" [{member_username}]" if member_username else "",
+            " (via nama inti)" if matched_by_core else "",
         )
         if not dry_run:
             database.upsert_tiktok_account(
@@ -129,6 +236,10 @@ def seed(accounts: list[dict], dry_run: bool = False) -> tuple[list[str], list[s
                 member_username=member_username or None,
                 enabled=bool(enabled),
             )
+    if core_matched:
+        logger.info(
+            "Pencocokan lapis kedua (nama inti) berhasil untuk %d akun.", core_matched
+        )
     return unmatched, backups
 
 

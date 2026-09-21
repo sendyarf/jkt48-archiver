@@ -508,6 +508,32 @@ pm2 save
 pm2 describe jkt48-archiver-bot | grep -E 'script path|exec cwd'
 ```
 
+### Pemetaan akun TikTok → member (di `seed_tiktok`)
+
+Username TikTok sering tidak sama dengan username IDN, jadi seed mencocokkan
+dalam **dua lapis**:
+
+1. **Varian nama persis** (`indahjkt48` → `jkt48_indah`, `lulu_jkt48` → `jkt48_lulu`).
+2. **Nama inti** — dipakai bila lapis 1 gagal: buang penanda `jkt48`, angka, dan
+   inisial satu huruf, lalu cocokkan inti akun dengan inti member
+   (`jkt48.lyn.s` → `lyn` → `jkt48_lyn`, `jkt48.ella.a` → `jkt48_ella`,
+   `jkt48.raisha.s` → `jkt48_raisha`), termasuk pencocokan awalan
+   `kathrin` → `jkt48_kathrina`.
+
+Pengaman lapis 2: inti harus ≥3 huruf, awalan harus ≥5 huruf, dan hasil hanya
+diambil bila **tunggal** — inti yang ambigu (mis. dua member dengan inti
+`raisha`) dilewati supaya tidak salah pasang. Akun cadangan `jkt48.u16` (dipakai
+beberapa member underage sekaligus) **tidak pernah** dipetakan ke satu member.
+
+Akun yang tetap tak berpasangan tidak dihentikan; `member_username`-nya `NULL`
+sampai member-nya ada di `member_hls`, dan seed berikutnya akan mengisinya
+otomatis (kolom itu hanya diisi bila masih kosong, jadi koreksi manual aman).
+
+Hasil seed di VPS (21 Sep 2026): **49 dari 51 akun** terpetakan — 45 lapis 1 +
+4 lapis 2 (`kathrinjkt48`, `jkt48.ella.a`, `jkt48.lyn.s`, `jkt48.raisha.s`).
+Sisanya `jkt48.aurellia_` (member-nya belum ada di `member_hls`) dan `jkt48.u16`
+(akun cadangan bersama — normal).
+
 ### Yang terjadi tiap siklus
 
 - Satu akun per siklus (round-robin) → postingan terbaru + story aktif.

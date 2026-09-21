@@ -203,7 +203,7 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       PASS.
 - [x] **Arsip TikTok: bot + halaman publik `/tiktok`** (fitur baru, default
       NONAKTIF). Bot memantau 51 akun TikTok member (`tiktok_accounts.json`,
-      di-seed lewat `bot/seed_tiktok.py` — 44 akun otomatis ketemu member-nya di
+      di-seed lewat `bot/seed_tiktok.py` — 45 akun otomatis ketemu member-nya di
       `member_hls`). Modul baru: `bot/tiktok_client.py` (penyedia `tikwm` →
       `yt-dlp` → `fixture` + RateLimiter 1 req/detik + penanda penyedia "tidak
       sehat" 15 menit), `bot/tiktok_media.py` (unduh video/foto, slide show
@@ -298,6 +298,30 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       direktori bersih) — tanpa venv → `python3`, `venv/` → `venv/bin/python`,
       keduanya → `.venv` menang, venv Windows → `Scripts/python.exe`,
       `BOT_PYTHON` → menang atas semuanya; `apps[0]` (web) tidak berubah.
+
+- [x] **Pencocokan akun TikTok → member diperbaiki (lapis kedua: nama inti)** —
+      dipicu seed nyata di VPS: 6 akun tak berpasangan
+      (`jkt48.aurellia_`, `kathrinjkt48`, `jkt48.ella.a`, `jkt48.lyn.s`,
+      `jkt48.raisha.s`, `jkt48.u16`), padahal member-nya ADA di `member_hls`
+      dengan nama berbeda (`jkt48_kathrina`, `jkt48_ella`, `jkt48_raisha`,
+      `jkt48_lyn`) — username TikTok memakai titik + inisial dan bentuk lain.
+      1. `core_name()` baru: buang penanda `jkt48`, angka, dan inisial satu huruf
+         (`jkt48.lyn.s` → `lyn`, `kathrinjkt48` → `kathrin`, `jkt48.u16` → ``).
+      2. `build_member_core_index()` + `_match_by_core()`: inti persis, lalu
+         awalan (`kathrin` ⊂ `kathrina`). Pengaman: inti ≥3 huruf, awalan ≥5
+         huruf, hasil harus TUNGGAL; inti persis yang ambigu langsung berhenti
+         (tidak jatuh ke aturan awalan) — ditemukan sendiri oleh test
+         `test_ambiguous_core_is_skipped` saat awalan sempat cocok ke member
+         `Raisha Kedua`.
+      3. `is_backup_account()`: akun cadangan `u16` tidak pernah dipetakan;
+         dilaporkan terpisah saat seed.
+      4. Seed kini menandai barisnya `(via nama inti)` dan meringkas jumlahnya,
+         supaya pemetaan otomatis mudah diaudit dari log.
+      Hasil: VPS 45 → **49 dari 51** terpetakan (sisa `jkt48.aurellia_` dan
+      `jkt48.u16` yang memang akun cadangan). Verifikasi: `tests/test_seed_tiktok.py`
+      baru (**18 test**, termasuk idempotensi, `--dry-run` tidak menulis, dan
+      pengisian `member_username` yang masih NULL saat seed diulang);
+      **374 test Python lulus**; dry-run nyata memakai 51 akun asli.
 
 - [x] **Audit dependensi + bersihkan BOM** — umpan balik dari VPS: perintah
       verifikasi yang saya sarankan memuat `aiohttp` yang **tidak pernah** dipakai

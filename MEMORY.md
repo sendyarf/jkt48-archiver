@@ -321,6 +321,25 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
     tidak terpakai di kode mana pun, tetapi dibiarkan agar tidak memutus skrip
     lain milik pengguna.
 
+19. **Pencocokan akun TikTok → member itu dua lapis, dan itu memang perlu.**
+    Username TikTok sering bukan bentuk username IDN (`jkt48.lyn.s` vs
+    `jkt48_lyn`), jadi `bot/seed_tiktok.py` memakai `name_variants()` (persis)
+    lalu `core_name()` (inti: buang `jkt48`/angka/inisial). Pengaman yang
+    **jangan dilonggarkan**: inti ≥3 huruf, awalan ≥5 huruf, hasil wajib
+    tunggal, dan **inti persis yang ambigu langsung berhenti** — pernah terbukti
+    awalan `raisha` nyaris dipasangkan ke member `Raisha Kedua` (alias salah
+    pasang). Akun cadangan `jkt48.u16` tidak pernah dipetakan ke satu member.
+    `upsert_tiktok_account` hanya mengisi `member_username` bila masih NULL,
+    jadi koreksi manual tidak akan tertimpa seed ulang.
+20. **Jangan percaya hasil verifikasi bila ada `DB_PATH` di lingkungan.**
+    Sesi uji pernah meninggalkan `DB_PATH=tmp\tiktok-live.db` (DB kosong) di
+    shell, sehingga `python -m bot.seed_tiktok --dry-run` melaporkan "51 akun
+    belum punya padanan" seolah-olah logika pencocokan rusak — padahal DB-nya
+    memang kosong. Sebelum mengukur, `Remove-Item Env:\DB_PATH` lalu pastikan
+    jumlah baris `member_hls` benar. Ingat juga kode keluar "1" dari pipeline
+    PowerShell (`Select-String`) bukan berarti skripnya gagal: uji dengan
+    `$LASTEXITCODE` langsung setelah perintah Python.
+
 ## Kesalahan masa lalu yang sudah diperbaiki
 
 1. **Merge di-upload sebelum live selesai** — timer merge tidak ter-reset saat
