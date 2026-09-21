@@ -17,6 +17,6 @@ export async function POST(request: Request) {
     const { youtube_video_id, published } = await request.json();
     if (typeof youtube_video_id !== 'string' || !/^[a-zA-Z0-9_-]{11}$/.test(youtube_video_id) || typeof published !== 'boolean') return json({ success: false, message: 'Data tidak valid.' }, 400);
     const ok = setPublication(youtube_video_id, published);
-    return json({ success: ok, message: ok ? 'Publikasi diperbarui.' : 'Rekaman tidak ditemukan.' }, ok ? 200 : 404);
+    return json({ success: ok, message: ok ? 'Publikasi diperbarui.' : 'Replay tidak ditemukan.' }, ok ? 200 : 404);
   } catch { return json({ success: false, message: 'Publikasi gagal diperbarui.' }, 400); }
 }

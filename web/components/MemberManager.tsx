@@ -56,6 +56,6 @@ export default function MemberManager() {
     <label className="search-field">Cari member<input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Nama atau username" /></label>
     <div className="panel table-scroll"><table className="admin-table"><caption className="sr-only">Pengaturan pemantauan member</caption><thead><tr><th>Member</th><th>Replay terunggah</th><th>Pemantauan</th></tr></thead><tbody>
       {members.filter(m => `${m.username} ${m.display_name}`.toLowerCase().includes(query.toLowerCase())).map(m => <tr key={m.username}><td><strong>{m.display_name}</strong><br /><span className="help-text">@{m.username}</span></td><td>{m.video_count}</td><td><button className="secondary-button" aria-pressed={m.enabled} aria-label={`Pemantauan ${m.display_name}`} disabled={busy} onClick={() => mutate({ action: 'toggle', username: m.username, enabled: !m.enabled })}>{m.enabled ? 'Aktif · Nonaktifkan' : 'Nonaktif · Aktifkan'}</button></td></tr>)}
-    </tbody></table>{loading ? <p className="notice">Memuat member…</p> : members.filter(m => `${m.username} ${m.display_name}`.toLowerCase().includes(query.toLowerCase())).length === 0 && <p className="notice">Tidak ada member ditemukan.</p>}</div>
+    </tbody></table>{loading ? <p className="notice">Memuat member…</p> : members.filter(m => `${m.username} ${m.display_name}`.toLowerCase().includes(query.toLowerCase())).length === 0 && <p className="notice">Membernya belum ada.</p>}</div>
   </section>;
 }

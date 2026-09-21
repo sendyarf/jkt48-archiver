@@ -15,9 +15,9 @@ import type { VideoItem } from '@/lib/db';
  * Judul memakai judul replay apa adanya (`buildDisplayTitle` → "LIVE IDN
  * <MEMBER> - <tanggal> | <jam> WIB") sehingga banner selalu membawa informasi
  * nyata (member + tanggal + jam), bukan semboyan pemasaran. Kicker mengabarkan
- * status: BARU TERBIT / REPLAY TERBARU / SEGERA HADIR.
+ * status: BARU RILIS / REPLAY TERBARU / SEGERA HADIR.
  *
- * Satu aksi utama ("Tonton sekarang") + satu aksi sekunder ("Jelajahi arsip"),
+ * Satu aksi utama ("Tonton sekarang") + satu aksi sekunder ("Lihat semua replay"),
  * memakai kelas tombol yang sudah ada supaya tidak ada istilah/gaya baru.
  */
 export default function HeroSpotlight({ video, watchUrl }: { video: VideoItem; watchUrl: string }) {
@@ -25,7 +25,7 @@ export default function HeroSpotlight({ video, watchUrl }: { video: VideoItem; w
   const fallback = video.youtube_video_id ? `https://img.youtube.com/vi/${video.youtube_video_id}/hqdefault.jpg` : video.thumbnail_url;
   const [src, setSrc] = useState(maxres || fallback);
   const pending = video.is_visible === false;
-  const kicker = pending ? 'SEGERA HADIR' : video.is_new ? 'BARU TERBIT' : 'REPLAY TERBARU';
+  const kicker = pending ? 'SEGERA HADIR' : video.is_new ? 'BARU RILIS' : 'REPLAY TERBARU';
   // Member, platform, tanggal, dan jam sudah menempel di judul, jadi baris meta
   // hanya memuat info yang belum ada di judul: label platform + durasi.
   const meta = [video.platform === 'idn' ? 'IDN Live' : 'Showroom', video.duration_formatted].filter(Boolean);
@@ -59,10 +59,10 @@ export default function HeroSpotlight({ video, watchUrl }: { video: VideoItem; w
         {meta.length ? <p className="hero-feature-meta">{meta.join(' · ')}</p> : null}
         <div className="hero-actions">
           <Link href={watchUrl} className="primary-button">
-            <PlayCircle size={18} aria-hidden="true" /> {pending ? 'Lihat hitung mundur' : 'Tonton sekarang'}
+            <PlayCircle size={18} aria-hidden="true" /> {pending ? 'Lihat jadwal tayang' : 'Tonton sekarang'}
           </Link>
           <a className="secondary-button" href="#catalog">
-            <Layers size={18} aria-hidden="true" /> Jelajahi arsip
+            <Layers size={18} aria-hidden="true" /> Lihat semua replay
           </a>
         </div>
       </div>

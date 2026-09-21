@@ -31,7 +31,7 @@ function NavbarInner() {
   return (
     <header className="navbar">
       <div className="container nav-container">
-        <Link href="/" className="brand" aria-label="JKT48 Replay — Beranda">
+        <Link href="/" className="brand" aria-label="JKT48 Replay — halaman utama">
           <span className="brand-title">JKT48 <strong>REPLAY</strong></span>
         </Link>
         <button
@@ -46,7 +46,7 @@ function NavbarInner() {
         </button>
         <nav id="navigasi-utama" className={`nav-menu${open ? ' open' : ''}`} aria-label="Navigasi utama">
           <Link href="/" className={`nav-link ${pathname === '/' ? 'active' : ''}`} aria-current={pathname === '/' ? 'page' : undefined}>
-            <Video size={16} aria-hidden="true" /> Jelajahi
+            <Video size={16} aria-hidden="true" /> Replay
           </Link>
           <Link href="/members" className={`nav-link ${pathname === '/members' ? 'active' : ''}`} aria-current={pathname === '/members' ? 'page' : undefined}>
             <Users size={16} aria-hidden="true" /> Member

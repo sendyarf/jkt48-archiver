@@ -177,6 +177,30 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       `.hero-feature-img` (gambar benar-benar termuat), serta h1 = judul replay asli.
       Verifikasi: `tsc`, `eslint`, `npm run build`, browser check **20/20 PASS**
       (360/390/768/1024/1440), `verify:home-upcoming`, `verify:auto-publish` PASS.
+- [x] **Penyegaran bahasa UI: dari kaku-formal ke santai khas fandom**: seluruh teks
+      yang dilihat pengunjung ditulis ulang — sapaan "kamu" (kata "Anda" dihapus,
+      termasuk dari halaman Tentang & form login), istilah "tayang"/"rilis"
+      menggantikan "terbit"/"unggah", dan istilah Inggris natural (replay/live/
+      download) dicampur seperlunya. Contoh: navbar & footer "Jelajahi" → "Replay";
+      ringkasan "N replay tersedia" → "N replay siap ditonton"; empty state "Replay
+      tidak ditemukan. Coba kata kunci lain, atau reset filter." → "Belum ada replay
+      yang cocok. Coba kata kunci lain atau ubah filternya."; tombol filter
+      "Terapkan" → "Cari"; hero "BARU TERBIT"/"Jelajahi arsip"/"Lihat hitung mundur"
+      → "BARU RILIS"/"Lihat semua replay"/"Lihat jadwal tayang"; countdown "Replay
+      sudah tersedia. Pemutar akan terbuka otomatis…" → "Replay-nya sudah tayang.
+      Pemutar kebuka otomatis…"; modal Telegram ditulis ulang; halaman Tentang
+      ("Arsip untuk komunitas" → "Arsip yang dibuat fans, untuk fans") dan watch
+      ("Lainnya dari X" → "Replay lain dari X", og:description "Arsip siaran ulang"
+      → "Replay live JKT48 — IDN & Showroom"). Admin diseragamkan juga: "rekaman"
+      → "replay", "Ujicoba pemutar" → "Uji pemutar", pesan-pesan notice lebih
+      manusiawi. Metadata SEO ikut disegarkan (title + description).
+      `verify/home-upcoming-grid.mjs` (assert "replay siap ditonton", "Belum ada
+      replay yang cocok") dan `verify/portal-browser-check.mjs` (regex ringkasan baru
+      + penjaga anti-regresi `/\bAnda\b/` & `/siaran ulang/i` di `/`, `/members`,
+      `/about`) diperbarui; uji hero kini menunggu `.hero-feature-img` termuat
+      (maks 5 detik) supaya tidak flake. Verifikasi: `tsc`, `eslint`, `npm run build`,
+      browser check **20/20 PASS** (2×), `verify:home-upcoming`, `verify:auto-publish`
+      PASS.
 
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 

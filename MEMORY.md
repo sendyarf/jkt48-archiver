@@ -121,10 +121,10 @@ mengerjakan proyek ini. Jangan melanggar tanpa alasan yang jelas dan disepakati.
   → `.hero-feature`. Thumbnail replay terbaru mengisi SELURUH panel sebagai latar
   (`.hero-feature-img`, `next/image` fill, TAJAM tanpa blur) + scrim gelap
   (`.hero-feature-scrim`); isi ditumpuk di atasnya (`.hero-feature-body`): kicker
-  `JKT48 REPLAY · <BARU TERBIT|REPLAY TERBARU|SEGERA HADIR>`, H1 = judul replay apa
+  `JKT48 REPLAY · <BARU RILIS|REPLAY TERBARU|SEGERA HADIR>`, H1 = judul replay apa
   adanya (`buildDisplayTitle` → "LIVE IDN <MEMBER> - <tanggal> | <jam> WIB"), meta
   platform·durasi, lalu dua tombol — "Tonton sekarang" (`.primary-button`) dan
-  "Jelajahi arsip" (`.secondary-button` → `#catalog`). Hero hanya tampil di halaman
+  "Lihat semua replay" (`.secondary-button` → `#catalog`). Hero hanya tampil di halaman
   depan tanpa filter; sumber = `result.videos[0]` halaman 1 tanpa filter → nol query
   tambahan, dan URL-nya harus sama persis dengan `VideoCard`
   (`watch_id || youtube_video_id || id`). Judul hero sekaligus `h1` halaman; saat
@@ -134,12 +134,24 @@ mengerjakan proyek ini. Jangan melanggar tanpa alasan yang jelas dan disepakati.
   panel ringkasan arsip (`.hero-note`), atau kalimat semboyan di hero
   ("Momen favorit. Bisa ditonton lagi.") — pengguna minta hero mengikuti gaya hero
   film dan hanya memuat informasi nyata dari replay.
-- **Istilah UI publik = "replay", bukan "rekaman"/"siaran ulang".** Kartu, filter,
-  empty state, metadata SEO, dan halaman Tentang memakai kata "replay" agar
-  seragam dengan nama situs (JKT48 Replay). Kata "arsip" tetap dipakai untuk
-  menyebut koleksi secara keseluruhan. Perubahan teks ini ikut memengaruhi assert
-  di `web/verify/home-upcoming-grid.mjs` (mis. "replay tersedia",
-  "Replay tidak ditemukan").
+- **Bahasa UI = santai khas fandom, sapaan "kamu", istilah publik "replay".**
+  Kartu, filter, empty state, metadata SEO, dan halaman Tentang memakai kata "replay"
+  agar seragam dengan nama situs (JKT48 Replay); "rekaman"/"siaran ulang" TIDAK
+  dipakai di UI publik (admin juga sudah diseragamkan ke "replay"). Kata "arsip"
+  tetap untuk koleksi secara keseluruhan. Panggil pengunjung dengan "kamu" — kata
+  "Anda" dilarang di UI publik — dan istilah Inggris yang natural
+  (replay/live/update/download) boleh dicampur. Penanda status: "tayang"/"rilis",
+  bukan "terbit"/"unggah". Kalimat contoh yang dipakai sekarang: "N replay siap
+  ditonton", "Belum ada replay yang cocok", "Terbaru dulu", tombol filter "Cari".
+  Assert yang mengikuti teks ini: `web/verify/home-upcoming-grid.mjs`
+  (`replay siap ditonton`, `Belum ada replay yang cocok`) dan
+  `web/verify/portal-browser-check.mjs` (regex `(\d+)\s+replay siap ditonton`, plus
+  penjaga anti-regresi `/\bAnda\b/` dan `/siaran ulang/i` di `/`, `/members`,
+  `/about`). Setiap kali teks UI diubah, cari dulu string lama di `web/verify/*`.
+- **Latar hero diambil dari YouTube, jadi uji browser menunggu gambar termuat.**
+  `web/verify/portal-browser-check.mjs` menunggu `.hero-feature-img` `complete`
+  maks 5 detik sebelum assert; tanpa itu uji ini sempat gagal acak
+  ("Latar hero gagal dimuat") saat jaringan lambat.
 - **Status HTTP rute dinamis Next 16.3.5 tidak bisa dipakai untuk menguji 404/redirect.**
   `notFound()` dan `redirect()` di rute `[id]` mengembalikan **200** (isi halaman
   404/login-nya benar dan tidak membocorkan data); hanya rute statis yang benar 404.

@@ -20,6 +20,14 @@ try {
       const expectedPath = route === '/admin/status' ? '/login' : route;
       for (let i = 0; i < 100; i++) { await delay(250); if (await evaluate(`document.readyState === 'complete' && location.pathname === ${JSON.stringify(expectedPath)} && !!document.querySelector('h1')`)) break; }
       await delay(600);
+      // Latar hero diambil dari YouTube (maxresdefault) sehingga bisa lambat.
+      // Beri waktu tunggu terbatas: uji tetap gagal bila gambar memang tidak
+      // pernah termuat, tapi tidak lagi gagal hanya karena jaringan lambat.
+      for (let i = 0; i < 20; i++) {
+        const heroImgReady = await evaluate(`(() => { const el = document.querySelector('.hero-feature-img'); return !el || (el.complete && el.naturalWidth > 0); })()`);
+        if (heroImgReady) break;
+        await delay(250);
+      }
       const state = await evaluate(`({
         title: document.querySelector('h1')?.textContent,
         path: location.pathname,
@@ -43,6 +51,13 @@ try {
       assert(state.scrollWidth <= state.width + 1, JSON.stringify(state));
       assert.doesNotMatch(state.text, /Bot Standby|Status Engine Bot|Detail Channel YouTube|hls_confirmed/);
       assert.doesNotMatch(state.text, /JKT48 Live Archive|JKT48 LIVE ARCHIVE/);
+      // Anti-regresi nada bahasa: halaman publik memakai sapaan "kamu" dan
+      // istilah "replay". Kata formal "Anda" dan istilah lama "siaran ulang"
+      // tidak boleh balik lagi ke UI publik.
+      if (route === '/' || route === '/members' || route === '/about') {
+        assert.doesNotMatch(state.text, /\bAnda\b/, `Kata "Anda" terlalu formal di ${state.path}`);
+        assert.doesNotMatch(state.text, /siaran ulang/i, `Istilah "siaran ulang" tidak dipakai di ${state.path}`);
+      }
       if (state.brand) { assert.match(state.brand, /JKT48\s*REPLAY/); assert(!state.logo48, 'Logo 48 lama masih tampil'); }
       if (state.navToggleVisible !== null) {
         if (width <= 900) {
@@ -66,7 +81,7 @@ try {
       // asli) selama masih ada replay terbit — angka diambil dari ringkasan
       // hasil katalog, jadi uji ini tetap benar walau isi arsip berubah.
       if (route === '/') {
-        const totalReplays = Number((state.text.match(/(\d+)\s+replay tersedia/) || [])[1] || 0);
+        const totalReplays = Number((state.text.match(/(\d+)\s+replay siap ditonton/) || [])[1] || 0);
         if (totalReplays > 0) {
           assert(state.heroFeature, `Hero poster wajib tampil saat ada ${totalReplays} replay`);
           assert.match(state.title, /^LIVE (IDN|SHOWROOM)/, `Judul hero harus judul replay asli: ${state.title}`);

@@ -21,18 +21,18 @@ export async function generateMetadata({ params }: WatchPageProps): Promise<Meta
   const { id } = await params;
   const video = getVideoById(id);
   if (!video) {
-    return { title: 'Video Tidak Ditemukan' };
+    return { title: 'Replay tidak ditemukan' };
   }
   return {
     title: `${video.title} - ${video.streamer_name}`,
     description: video.is_visible
-      ? `Tonton replay ${video.title} oleh ${video.streamer_name}. Sumber: ${video.platform === 'idn' ? 'IDN Live' : 'Showroom'}.`
-      : `Replay ${video.title} oleh ${video.streamer_name} segera hadir.`,
+      ? `Nonton replay ${video.title} dari ${video.streamer_name} — ${video.platform === 'idn' ? 'IDN Live' : 'Showroom'}.`
+      : `Replay ${video.title} dari ${video.streamer_name} segera tayang.`,
     // Pra-rilis tidak boleh diindex mesin pencari sampai benar-benar terbit.
     robots: video.is_visible ? undefined : { index: false, follow: false },
     openGraph: {
       title: `${video.title} - ${video.streamer_name}`,
-      description: `Arsip siaran ulang JKT48 Replay`,
+      description: `Replay live JKT48 — IDN & Showroom`,
       images: [video.thumbnail_url],
     },
   };
@@ -126,12 +126,12 @@ export default async function WatchPage({ params }: WatchPageProps) {
         {/* Right Column: Related Videos */}
         <aside>
           <h2 className="sidebar-title">
-            Lainnya dari {video.streamer_name}
+            Replay lain dari {video.streamer_name}
           </h2>
 
           {filteredRelated.length === 0 ? (
             <p style={{ color: 'var(--text-tertiary)', fontSize: '0.88rem' }}>
-              Belum ada replay lain.
+              Belum ada replay lain dari member ini.
             </p>
           ) : (
             <div className="related-list">

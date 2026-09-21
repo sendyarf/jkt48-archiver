@@ -42,8 +42,8 @@ export default function CountdownTimer({ publishAt, title }: Props) {
     return (
       <div className="countdown-panel">
         <Clock size={28} aria-hidden="true" />
-        <p className="countdown-label">Replay sudah tersedia</p>
-        <p className="countdown-sub">Memuat pemutar…</p>
+        <p className="countdown-label">Replay-nya sudah tayang</p>
+        <p className="countdown-sub">Lagi menyiapkan pemutar…</p>
       </div>
     );
   }
@@ -81,7 +81,7 @@ export default function CountdownTimer({ publishAt, title }: Props) {
         </div>
       </div>
 
-      <p className="countdown-sub">Pemutar akan terbuka otomatis saat waktu rilis tiba.</p>
+      <p className="countdown-sub">Pemutar kebuka otomatis begitu waktunya tiba.</p>
     </div>
   );
 }

@@ -58,13 +58,13 @@ export default function TelegramDownloadButton({ youtubeVideoId, title }: Props)
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Download via Bot Telegram"
+          aria-label="Download lewat Bot Telegram"
           className="modal-overlay"
           onClick={() => setOpen(false)}
         >
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2 className="modal-title">Download via Bot Telegram</h2>
+              <h2 className="modal-title">Download lewat Bot Telegram</h2>
               <button
                 type="button"
                 aria-label="Tutup"
@@ -77,9 +77,9 @@ export default function TelegramDownloadButton({ youtubeVideoId, title }: Props)
             </div>
 
             <p className="modal-body">
-              Video <strong style={{ color: '#fff' }}>{title}</strong> akan dikirim ke kamu
-              lewat bot Telegram resmi kami. Klik tombol di bawah, lalu tekan{' '}
-              <strong>Start</strong> di Telegram — video otomatis terkirim.
+              Video <strong style={{ color: '#fff' }}>{title}</strong> bakal dikirim ke kamu
+              lewat bot Telegram kami. Tekan tombol di bawah, lalu tap{' '}
+              <strong>Start</strong> di Telegram — videonya langsung masuk.
             </p>
 
             {deepLink ? (
@@ -104,12 +104,12 @@ export default function TelegramDownloadButton({ youtubeVideoId, title }: Props)
 
             {launched && !copied && (
               <p className="modal-feedback" role="status">
-                ✓ Mengarahkan ke Telegram… tekan <strong>Start</strong> di aplikasi untuk menerima video.
+                ✓ Membuka Telegram… tap <strong>Start</strong> supaya videonya terkirim.
               </p>
             )}
 
             <p className="modal-hint">
-              Video dikirim sebagai file yang bisa diputar &amp; disimpan dari aplikasi Telegram.
+              Videonya dikirim sebagai file — bisa langsung diputar atau disimpan dari Telegram.
             </p>
           </div>
         </div>

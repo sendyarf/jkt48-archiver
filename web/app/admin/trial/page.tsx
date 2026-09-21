@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import VideoPlayer from '@/components/VideoPlayer';
 
 export const metadata: Metadata = {
-  title: 'Ujicoba Pemutar | Admin',
+  title: 'Uji Pemutar | Admin',
   robots: { index: false, follow: false },
 };
 
@@ -38,10 +38,10 @@ export default async function PlayerTrialPage({
       <div className="section-heading">
         <div>
           <p className="eyebrow">ALAT UJI · PRIVATE</p>
-          <h1>Ujicoba pemutar video</h1>
+          <h1>Uji pemutar video</h1>
           <p>
-            Halaman ini hanya untuk menguji tampilan pemutar. Tidak terhubung ke katalog dan tidak
-            dipublikasikan ke pengunjung.
+            Halaman ini cuma buat ngetes tampilan pemutar. Tidak nyambung ke katalog dan tidak
+            dilihat pengunjung.
           </p>
         </div>
       </div>
@@ -103,7 +103,7 @@ export default async function PlayerTrialPage({
       )}
 
       <div className="panel">
-        <h2>Yang bisa disimpulkan dari ujicoba ini</h2>
+        <h2>Catatan dari ujicoba ini</h2>
         <ul className="trial-notes">
           <li>
             Platform <strong>showroom</strong> memakai kelas <code>horizontal-player</code> dan rasio

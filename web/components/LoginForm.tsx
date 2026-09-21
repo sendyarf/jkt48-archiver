@@ -9,7 +9,7 @@ export default function LoginForm() {
   const [error, setError] = useState('');
   useEffect(() => { localStorage.removeItem('jkt48_admin_secret'); }, []);
   return <section className="login-panel panel"><span className="eyebrow">AKSES TERBATAS</span><h1>Selamat datang kembali</h1>
-    <p>Masuk untuk mengelola member dan publikasi arsip.</p>
+    <p>Masuk buat ngatur member dan publikasi replay.</p>
     <form onSubmit={async e => {
       e.preventDefault(); setBusy(true); setError('');
       try {
@@ -24,6 +24,6 @@ export default function LoginForm() {
       <input id="admin-secret-input" type="password" autoComplete="current-password" required maxLength={1024} value={secret} onChange={e => setSecret(e.target.value)} />
       {error && <p role="alert" className="notice error">{error}</p>}
       <button className="primary-button" disabled={busy}>{busy ? 'Memverifikasi…' : 'Masuk ke Admin Studio'}</button>
-    </form><p className="help-text">Sesi berakhir setelah 8 jam. Jangan bagikan kredensial Anda.</p>
+    </form><p className="help-text">Sesi berakhir sendiri setelah 8 jam. Jangan bagikan password ini ke siapa pun.</p>
   </section>;
 }
