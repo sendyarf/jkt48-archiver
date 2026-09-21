@@ -142,7 +142,7 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       (gitignored) mengubah sumber 1080x1920 → output **1280x720**, plus uji
       rotasi hue untuk membuktikan 6 sel berbeda. Test diperbarui
       (`test_grid_dimensions_fill_720p`, `test_xstack_filter_cover_no_bars`).
-- [x] **Hero band + spotlight replay terbaru (menggantikan panel ringkasan arsip)**:
+- [x] **Hero band + spotlight replay terbaru (menggantikan panel ringkasan arsip; band dua kolom ini digantikan lagi oleh entri berikutnya)**:
       hero kini satu panel `hero-band` (glow maroon) berisi teks di kiri
       (`hero-intro`: eyebrow, H1, copy, tombol "Jelajahi replay" jadi sekunder
       saat ada spotlight, link "Lihat member") dan **kartu spotlight** di kanan
@@ -158,6 +158,25 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       menguji `hero-band`/`hero-card` (tidak overflow + hero 2 kolom ≥1024px).
       Verifikasi: `tsc`, `eslint`, `npm run build`, `verify:home-upcoming`,
       `verify:auto-publish`, dan browser check **20/20 PASS** (360/390/768/1024/1440).
+- [x] **Hero portal diubah ke gaya hero film (full-bleed) + kalimat semboyan dibuang**:
+      `HeroSpotlight.tsx` tidak lagi kartu 16:9 di kolom kanan, tapi satu panel
+      `.hero-feature` — thumbnail replay terbaru menutupi SELURUH panel
+      (`.hero-feature-img`, `next/image` fill, tetap tajam tanpa blur) dengan scrim
+      gelap (`.hero-feature-scrim`), lalu isi ditumpuk di atasnya
+      (`.hero-feature-body`): `JKT48 REPLAY · <BARU TERBIT|REPLAY TERBARU|SEGERA
+      HADIR>` → H1 = judul replay asli → meta platform·durasi → "Tonton sekarang"
+      (primer) + "Jelajahi arsip" (sekunder, anchor `#catalog`).
+      Blok teks pemasaran di hero DIHAPUS (eyebrow ARSIP REPLAY · KOMUNITAS, copy
+      "Momen favorit. Bisa ditonton lagi.", paragraf "Semua replay live JKT48 di
+      satu tempat...", link "Lihat member") berikut markup `.hero-band`/`.hero-intro`
+      di `PublicCatalog.tsx`. CSS `.hero-band*`/`.hero-intro*`/`.hero-card*`/
+      `.hero-eyebrow`/`.hero-note*` dibuang, diganti `.hero-feature*`; breakpoint
+      900px (min-height dilepas + scrim tegak bawah→atas) dan 720px (tombol hero
+      full-width). `verify/portal-browser-check.mjs` kini menguji `.hero-feature`
+      (tidak overflow), `.hero-feature-body` (tetap di dalam panel), dan
+      `.hero-feature-img` (gambar benar-benar termuat), serta h1 = judul replay asli.
+      Verifikasi: `tsc`, `eslint`, `npm run build`, browser check **20/20 PASS**
+      (360/390/768/1024/1440), `verify:home-upcoming`, `verify:auto-publish` PASS.
 
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 

@@ -16,7 +16,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .section-heading > div { min-width: 0; flex: 1 1 220px; }
 .section-heading h1 { font-size: clamp(1.35rem, 1.1rem + 1.8vw, 2.15rem); line-height: 1.2; margin-bottom: 8px; overflow-wrap: break-word; }
 .section-heading h2 { font-size: clamp(1.15rem, 1rem + 0.9vw, 1.5rem); overflow-wrap: break-word; }
-.section-heading p:not(.eyebrow), .hero-copy, .help-text, .result-summary { color: var(--text-secondary); }
+.section-heading p:not(.eyebrow), .help-text, .result-summary { color: var(--text-secondary); }
 .primary-button, .secondary-button, .text-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 15px; border-radius: 9px; font-weight: 600; font-size: .82rem; }
 .primary-button { background: #be123c; border: 1px solid #e11d48; color: white; }
 .primary-button:hover { background: #9f1239; }
@@ -24,31 +24,24 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .secondary-button:hover { border-color: #94a3b8; }
 .text-button { color: #fda4af; }
 .catalog-hero-block { padding-top: clamp(16px, 2.4vw, 24px); padding-bottom: clamp(16px, 2.4vw, 24px); }
-/* Band hero sinematik: satu panel gelap dengan glow maroon, teks di kiri dan
-   kartu spotlight replay terbaru di kanan. Dua kolom seimbang (align-items:
-   center) supaya tidak ada ruang kosong menggantung seperti versi lama. */
-.hero-band { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 420px); align-items: center; gap: clamp(18px, 2.6vw, 34px); padding: clamp(18px, 2.4vw, 30px); border: 1px solid #3d2331; border-radius: 18px; background: radial-gradient(115% 130% at 4% 0%, rgba(190, 18, 60, .26) 0%, rgba(190, 18, 60, 0) 58%), linear-gradient(114deg, #1b1019 0%, #150c13 48%, #0c0710 100%); }
-.hero-band.is-solo { grid-template-columns: minmax(0, 1fr); }
-.hero-intro { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; }
-.catalog-hero-block h1 { font-size: clamp(1.6rem, 1.2rem + 1.9vw, 2.55rem); line-height: 1.1; letter-spacing: -.035em; overflow-wrap: break-word; text-wrap: balance; }
-.catalog-hero-block h1 span { color: #fda4af; }
-.hero-copy { max-width: 48ch; margin: 10px 0 16px; line-height: 1.6; font-size: clamp(.86rem, .84rem + .35vw, .95rem); }
+/* Hero gaya poster film: thumbnail replay terbaru tampil FULL-BLEED sebagai
+   latar (tajam, tanpa blur sinematik), teks ditumpuk di atasnya dengan scrim
+   gelap dari sisi kiri supaya tetap kontras. Judul = judul replay asli, jadi
+   banner selalu memuat informasi nyata (member + tanggal + jam). */
+.hero-feature { position: relative; display: flex; align-items: flex-end; min-height: clamp(300px, 27vw, 380px); overflow: hidden; border: 1px solid #3d2331; border-radius: 18px; background: #0b060d; }
+.hero-feature-media { position: absolute; inset: 0; }
+.hero-feature-img { object-fit: cover; object-position: center 24%; }
+.hero-feature-scrim { position: absolute; inset: 0; background: linear-gradient(94deg, rgba(7, 3, 10, .94) 0%, rgba(7, 3, 10, .8) 38%, rgba(7, 3, 10, .3) 74%, rgba(7, 3, 10, .46) 100%), linear-gradient(0deg, rgba(7, 3, 10, .9) 0%, rgba(7, 3, 10, .18) 52%, rgba(7, 3, 10, .3) 100%); }
+.hero-feature-body { position: relative; width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: clamp(18px, 2.4vw, 32px); }
+.hero-feature-kicker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: .7rem; letter-spacing: .16em; font-weight: 800; color: #fda4af; }
+.hero-feature-brand { color: #fff; }
+/* Judul dibatasi 5 baris: judul terpanjang (100 karakter) tidak boleh mendorong
+   tinggi banner sampai menutupi grid di bawahnya. */
+.hero-feature-title { max-width: min(30ch, 100%); font-size: clamp(1.55rem, 1rem + 2.6vw, 3.1rem); line-height: 1.05; letter-spacing: -.03em; overflow-wrap: break-word; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.hero-feature-title a:hover { color: #fecdd3; }
+.hero-feature-meta { color: #dcd2da; font-size: .82rem; }
 .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .hero-actions .primary-button, .hero-actions .secondary-button, .hero-actions .text-button { flex: 0 1 auto; }
-/* Kartu spotlight: satu aksi utama (Tonton replay) supaya tidak bersaing
-   dengan tombol kiri. Poster 16:9 = bingkai asli thumbnail (kolase 3x2 bot). */
-.hero-card { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid #52303d; border-radius: 14px; background: #1a0f17; box-shadow: 0 16px 34px rgba(2, 2, 10, .38); }
-.hero-card-thumb { position: relative; display: block; width: 100%; aspect-ratio: 16 / 9; background: #05070f; overflow: hidden; }
-.hero-card-img { object-fit: cover; transition: transform .4s ease; }
-.hero-card-thumb:hover .hero-card-img, .hero-card-thumb:focus-visible .hero-card-img { transform: scale(1.03); }
-.hero-card-play { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; opacity: 0; background: rgba(2, 6, 23, .42); transition: opacity .2s ease; }
-.hero-card-thumb:hover .hero-card-play, .hero-card-thumb:focus-visible .hero-card-play { opacity: 1; }
-.hero-card-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.hero-card-kicker { font-size: .64rem; letter-spacing: .16em; font-weight: 800; color: #fda4af; }
-.hero-card-title { font-size: clamp(.98rem, .9rem + .5vw, 1.18rem); line-height: 1.28; overflow-wrap: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.hero-card-title:hover { color: #fecdd3; }
-.hero-card-meta { display: flex; flex-wrap: wrap; gap: 6px; color: #c6aeb8; font-size: .76rem; }
-.hero-card-cta { align-self: flex-start; margin-top: 7px; }
 .catalog-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; padding: clamp(12px, 2vw, 16px); border: 1px solid var(--border-card); border-radius: 12px; background: #101622; }
 .catalog-filters label, .form-row label, .search-field { display: flex; flex-direction: column; gap: 6px; font-size: .76rem; font-weight: 600; color: var(--text-secondary); min-width: 0; }
 .catalog-filters .primary-button, .catalog-filters .secondary-button, .catalog-filters .text-button { flex: 0 0 auto; }
@@ -80,12 +73,13 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .member-card { box-shadow: none; }
 .footer-brand { font-weight: 700; color: #f8fafc; margin-bottom: 8px; }
 
-/* Hero: di bawah 900px kartu spotlight turun ke bawah teks (satu kolom). Lebar
-   kartu dibatasi 640px saja — cukup besar untuk poster ala aplikasi streaming,
-   tapi tidak menutupi seluruh layar tablet. */
+/* Hero: di bawah 900px teks menempati seluruh lebar panel (bukan lagi separuh
+   kiri), jadi min-height dilepas dan scrim dibuat tegak dari bawah ke atas. */
 @media (max-width: 900px) {
-  .hero-band { grid-template-columns: minmax(0, 1fr); }
-  .hero-card { max-width: 640px; }
+  .hero-feature { min-height: 0; }
+  .hero-feature-img { object-position: center 20%; }
+  .hero-feature-scrim { background: linear-gradient(0deg, rgba(7, 3, 10, .95) 0%, rgba(7, 3, 10, .78) 38%, rgba(7, 3, 10, .34) 74%, rgba(7, 3, 10, .5) 100%); }
+  .hero-feature-body { padding: 18px 16px; }
 }
 
 /* Form filter: tumpuk rapi di layar kecil */
@@ -95,6 +89,6 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .catalog-filters .filter-actions { margin-left: 0; width: 100%; }
   .catalog-filters .filter-actions .primary-button { flex: 1 1 auto; }
   /* Tombol hero jadi lebar penuh agar mudah dijangkau jempol. */
+  .hero-actions { align-self: stretch; }
   .hero-actions .primary-button, .hero-actions .secondary-button, .hero-actions .text-button { flex: 1 1 100%; }
-  .hero-card-cta { align-self: stretch; justify-content: center; }
 }

@@ -115,18 +115,25 @@ mengerjakan proyek ini. Jangan melanggar tanpa alasan yang jelas dan disepakati.
   sukses. Saklar `THUMBNAIL_COLLAGE_ENABLED` (default true). Video LAMA tak
   disentuh. JANGAN kembalikan logika `pick_sample_times` ke while-loop mundur
   1 detik — itu infinite-loop untuk video < ~8 detik (insiden 21 Sep 2026).
-- **Hero portal = "hero band" dua kolom, BUKAN backdrop blur full-bleed.**
-  Markup `web/components/PublicCatalog.tsx`: `.hero-band` > `.hero-intro` (eyebrow,
-  H1, copy, tombol "Jelajahi replay" — jadi `.secondary-button` saat spotlight ada)
-  + `<HeroSpotlight>` (`.hero-card`: poster 16:9, badge platform/durasi, kicker
-  BARU TERBIT / REPLAY TERBARU / SEGERA HADIR, meta member·tanggal, satu CTA
-  "Tonton replay"). Saat pengunjung filter/cari/buka halaman 2+, `.hero-band`
-  dapat kelas `is-solo` (satu kolom) dan kartu disembunyikan. Spotlight memakai
-  `result.videos[0]` halaman 1 tanpa filter → nol query tambahan, dan URL-nya
-  harus sama persis dengan `VideoCard` (`watch_id || youtube_video_id || id`).
-  Breakpoint: 900px (kartu turun ke bawah teks, `max-width: 640px`), 720px (tombol
-  hero + CTA kartu full-width). Jangan hidupkan lagi panel ringkasan arsip
-  (`.hero-note`) atau blur sinematik — pengguna menolaknya.
+- **Hero portal = poster film full-bleed satu panel (`hero-feature`), BUKAN dua
+  kolom dan BUKAN panel teks + kalimat pemasaran.**
+  Markup `web/components/PublicCatalog.tsx`: `.catalog-hero-block` > `<HeroSpotlight>`
+  → `.hero-feature`. Thumbnail replay terbaru mengisi SELURUH panel sebagai latar
+  (`.hero-feature-img`, `next/image` fill, TAJAM tanpa blur) + scrim gelap
+  (`.hero-feature-scrim`); isi ditumpuk di atasnya (`.hero-feature-body`): kicker
+  `JKT48 REPLAY · <BARU TERBIT|REPLAY TERBARU|SEGERA HADIR>`, H1 = judul replay apa
+  adanya (`buildDisplayTitle` → "LIVE IDN <MEMBER> - <tanggal> | <jam> WIB"), meta
+  platform·durasi, lalu dua tombol — "Tonton sekarang" (`.primary-button`) dan
+  "Jelajahi arsip" (`.secondary-button` → `#catalog`). Hero hanya tampil di halaman
+  depan tanpa filter; sumber = `result.videos[0]` halaman 1 tanpa filter → nol query
+  tambahan, dan URL-nya harus sama persis dengan `VideoCard`
+  (`watch_id || youtube_video_id || id`). Judul hero sekaligus `h1` halaman; saat
+  hero tidak tampil, `h1` jatuh ke judul section katalog.
+  Breakpoint: 900px (min-height dilepas, scrim tegak bawah→atas), 720px (tombol hero
+  full-width). JANGAN hidupkan lagi: hero dua kolom `.hero-band`/`.hero-card`,
+  panel ringkasan arsip (`.hero-note`), atau kalimat semboyan di hero
+  ("Momen favorit. Bisa ditonton lagi.") — pengguna minta hero mengikuti gaya hero
+  film dan hanya memuat informasi nyata dari replay.
 - **Istilah UI publik = "replay", bukan "rekaman"/"siaran ulang".** Kartu, filter,
   empty state, metadata SEO, dan halaman Tentang memakai kata "replay" agar
   seragam dengan nama situs (JKT48 Replay). Kata "arsip" tetap dipakai untuk

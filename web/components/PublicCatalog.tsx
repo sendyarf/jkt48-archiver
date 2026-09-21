@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { getAllVideos, getPublicMembers, getUpcomingVideos } from '@/lib/db';
 import VideoCard from '@/components/VideoCard';
 import HeroSpotlight from '@/components/HeroSpotlight';
-import { ArrowUpRight, MonitorPlay, PlayCircle, Search, User } from 'lucide-react';
+import { MonitorPlay, PlayCircle, Search, User } from 'lucide-react';
 export default async function PublicCatalog({ searchParams }: { searchParams: Promise<{ q?: string; member?: string; platform?: string; page?: string }> }) {
   const params = await searchParams;
   const q = (params.q || '').slice(0, 100);
@@ -23,14 +23,18 @@ export default async function PublicCatalog({ searchParams }: { searchParams: Pr
   );
   const pageUrl = (page: number) => { const p = new URLSearchParams(); if(q) p.set('q', q); if(member) p.set('member', member); if(platform) p.set('platform', platform); p.set('page', String(page)); return `/?${p}#catalog`; };
   // Spotlight hero: replay terbit terbaru — diambil dari baris pertama hasil
-  // getAllVideos halaman 1 TANPA filter, sehingga nol query tambahan. Saat
-  // pengunjung memakai filter/pencarian/halaman 2+, panel kanan disembunyikan
-  // (hero jadi satu kolom) — spotlight tidak ikut berubah mengikuti filter.
+  // getAllVideos halaman 1 TANPA filter, sehingga nol query tambahan. Hero
+  // hanya tampil di halaman depan tanpa filter: saat pengunjung memakai
+  // filter/pencarian/halaman 2+, panel hero (dan teksnya) tidak dirender sama
+  // sekali supaya banner tidak menampilkan replay yang tidak sesuai hasil.
+  // Judul hero sekaligus jadi h1 halaman; saat hero tidak ada, h1 diambil alih
+  // judul section katalog.
   const hero = !filtered && result.page === 1 ? result.videos[0] : undefined;
   const heroWatchUrl = hero ? `/watch/${hero.watch_id || hero.youtube_video_id || hero.id}` : '/#catalog';
+  const catalogHeading = filtered ? 'Hasil pencarian' : 'Replay terbaru';
   return <div className="public-catalog">
-    <section className="container catalog-hero-block"><div className={hero ? 'hero-band' : 'hero-band is-solo'}><div className="hero-intro"><p className="eyebrow">ARSIP REPLAY · KOMUNITAS</p><h1>Momen favorit.<br /><span>Bisa ditonton lagi.</span></h1><p className="hero-copy">Semua replay live JKT48 di satu tempat. Cari berdasarkan member, judul, atau tanggal.</p><div className="hero-actions"><a className={hero ? 'secondary-button' : 'primary-button'} href="#catalog">Jelajahi replay</a><Link href="/members" className="text-button">Lihat member <ArrowUpRight size={16} /></Link></div></div>{hero ? <HeroSpotlight video={hero} watchUrl={heroWatchUrl} /> : null}</div></section>
-    <section className="container page-section" id="catalog"><header className="section-heading"><div><p className="eyebrow">REPLAY</p><h2>{filtered ? 'Hasil pencarian' : 'Replay terbaru'}</h2></div><p>Terbaru lebih dulu</p></header>
+    {hero ? <section className="container catalog-hero-block"><HeroSpotlight video={hero} watchUrl={heroWatchUrl} /></section> : null}
+    <section className="container page-section" id="catalog"><header className="section-heading"><div><p className="eyebrow">REPLAY</p>{hero ? <h2>{catalogHeading}</h2> : <h1>{catalogHeading}</h1>}</div><p>Terbaru lebih dulu</p></header>
       <form action="/#catalog" method="GET" className="catalog-filters"><label className="catalog-search">Cari replay<span className="input-with-icon"><Search size={18} aria-hidden="true" /><input name="q" type="search" id="catalog-search-input" defaultValue={q} maxLength={100} placeholder="Judul, member, atau tanggal" /></span></label><label className="catalog-select">Member<span className="select-with-icon"><User size={18} aria-hidden="true" /><select name="member" defaultValue={member}><option value="">Semua member</option>{member && !members.some(m => m.username === member) && <option value={member}>{member}</option>}{members.map(m => <option value={m.username} key={m.username}>{m.display_name}</option>)}</select></span></label><label className="catalog-select">Platform<span className="select-with-icon"><MonitorPlay size={18} aria-hidden="true" /><select name="platform" defaultValue={platform}><option value="">Semua platform</option><option value="idn">IDN Live</option><option value="showroom">Showroom</option></select></span></label><div className="filter-actions"><button className="primary-button">Terapkan</button>{filtered && <Link href="/#catalog" className="text-button">Reset</Link>}</div></form>
       <p className="result-summary">{result.total} replay tersedia{upcoming.length > 0 ? ` (+${upcoming.length} segera hadir)` : ''}{q && <> untuk “{q}”</>}</p>
       {merged.length ? <div className="video-grid" id="main-video-grid">{merged.map(video => <VideoCard key={video.youtube_video_id} video={video} />)}</div> : <div className="empty-state"><PlayCircle size={40} aria-hidden="true" /><h2>{filtered ? 'Replay tidak ditemukan' : 'Arsip masih kosong'}</h2><p>{filtered ? 'Coba kata kunci lain, atau reset filter.' : 'Replay yang sudah terbit akan tampil di sini.'}</p>{(filtered || result.page > 1) && <Link className="secondary-button" href="/#catalog">Lihat semua replay</Link>}</div>}
