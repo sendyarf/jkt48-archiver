@@ -85,15 +85,26 @@ pip install -r requirements.txt
 Selesai. **Tidak perlu** mengubah `deploy/ecosystem.config.js`: berkas itu mencari
 interpreter dengan urutan `BOT_PYTHON` (env) → `.venv/bin/python` →
 `venv/bin/python` → `python3` sistem, sehingga bot PM2 otomatis memakai venv di
-atas. Verifikasi setelah PM2 jalan:
+atas.
+
+> **Kalau bot sudah berjalan sebelum venv dibuat**, `pm2 restart` tidak cukup:
+> PM2 menyimpan `script` pada saat proses dibuat dan **tidak** membaca ulang
+> `ecosystem.config.js` saat restart (issue PM2 #3742). Buat ulang prosesnya:
+>
+> ```bash
+> pm2 delete jkt48-archiver-bot
+> pm2 start deploy/ecosystem.config.js --only jkt48-archiver-bot
+> pm2 save
+> ```
+
+Verifikasi setelah PM2 jalan:
 
 ```bash
 pm2 describe jkt48-archiver-bot | grep -E 'script path|exec cwd'
 ```
 
 Baris `script path` harus menunjuk `<repo>/.venv/bin/python`. Bila tetap menunjuk
-`/usr/bin/python3`, bot akan mati dengan `ModuleNotFoundError` (namespace paket
-`telethon` biasanya sudah ada, sehingga gejalanya justru membingungkan).
+`/usr/bin/python3`, bot akan mati dengan `ModuleNotFoundError`.
 
 ## 3. Konfigurasi environment
 
@@ -346,5 +357,5 @@ kerusakan.
 | Web menampilkan data berbeda dari bot | `DB_PATH` di `web/.env` menunjuk berkas lain |
 | `database is locked` | Bot dan web menulis bersamaan; aktifkan WAL + `busy_timeout` |
 | `pip install` gagal: `error: externally-managed-environment` | PEP 668 mengunci `pip` sistem (Ubuntu 23.04+/Debian 12+); buat venv `.venv` lalu pasang di dalamnya |
-| Bot mati dengan `ModuleNotFoundError` setelah `pm2 restart` | PM2 memakai `python3` sistem; buat `.venv` (atau set `BOT_PYTHON`), pasang `requirements.txt` di dalamnya, lalu `pm2 restart jkt48-archiver-bot --update-env` |
+| Bot mati dengan `ModuleNotFoundError` setelah `pm2 restart` | PM2 tidak membaca ulang `script` dari config saat restart (issue #3742). Buat `.venv`, pasang `requirements.txt` di dalamnya, lalu `pm2 delete jkt48-archiver-bot && pm2 start deploy/ecosystem.config.js --only jkt48-archiver-bot`; interpreter manual bisa lewat `BOT_PYTHON` |
 | Bot jalan tetapi fitur TikTok selalu gagal dengan 403 | `curl_cffi` belum terpasang di interpreter yang dipakai PM2 (lihat `pm2 describe jkt48-archiver-bot`) |

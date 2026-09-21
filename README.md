@@ -93,13 +93,27 @@ ditolak dengan pesan itu. Solusinya adalah venv di atas — **bukan**
 `--break-system-packages`, yang bisa merusak paket Python yang dipakai apt.
 
 PM2 memilih interpreter bot dengan urutan: `BOT_PYTHON` (env) → `.venv/bin/python`
-→ `venv/bin/python` → `python3` sistem. Jadi begitu `.venv` ada, `pm2 restart`
-otomatis memakai dependensi dari venv. Untuk memastikan interpreter yang benar
-dipakai:
+→ `venv/bin/python` → `python3` sistem.
+
+> **Penting:** `pm2 restart` **tidak** membaca ulang `ecosystem.config.js`
+> (issue PM2 #3742) — ia memakai konfigurasi yang tersimpan saat proses pertama
+> kali dibuat. Jadi bila bot sudah berjalan sebelum `.venv` dibuat, interpreter
+> baru hanya terpakai setelah proses dibuat ulang:
+>
+> ```bash
+> pm2 delete jkt48-archiver-bot
+> pm2 start deploy/ecosystem.config.js --only jkt48-archiver-bot
+> pm2 save
+> ```
+
+Verifikasi interpreter yang benar-benar dipakai:
 
 ```bash
 pm2 describe jkt48-archiver-bot | grep -E 'script path|exec cwd'
 ```
+
+`script path` harus menunjuk `<repo>/.venv/bin/python`. Bila masih `/usr/bin/python3`,
+bot akan mati dengan `ModuleNotFoundError` saat impor dependensi.
 
 Seluruh perintah `python3 -m bot.…` di dokumen ini diasumsikan dijalankan **dari
 dalam venv** (`source .venv/bin/activate`); di luar venv, pakai
@@ -459,8 +473,11 @@ persis seperti sebelumnya sampai dinyalakan.
 ### Menyalakan
 
 ```bash
-# 0. Dependensi baru: curl_cffi (wajib, tanpa ini tikwm & halaman embed TikTok
-#    menjawab 403 dari IP datacenter). Jalankan di venv yang dipakai PM2.
+# 0. Dependensi baru: curl_cffi. Tanpa ini, tikwm dan halaman embed TikTok
+#    menjawab 403 dari IP datacenter — jadi WAJIB ada di interpreter yang
+#    dipakai PM2, bukan hanya di python yang dipakai menguji manual.
+#    Di Ubuntu 24.04 pip sistem dikunci PEP 668 -> pakai venv (.venv).
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # 1. Seed daftar akun (51 akun sudah disiapkan di tiktok_accounts.json)
@@ -473,8 +490,15 @@ TIKTOK_PROVIDER=auto                   # tikwm → embed → yt-dlp
 TIKTOK_CHECK_INTERVAL_SECONDS=300      # 1 akun per siklus (round-robin)
 TIKTOK_REQUEST_INTERVAL_SECONDS=1.1    # batas gratis tikwm ±1 req/detik
 
-# 3. Restart (nama proses PM2 = jkt48-archiver-bot, lihat deploy/ecosystem.config.js)
-pm2 restart jkt48-archiver-bot --update-env
+# 3. Jalankan/segarkan PM2 (nama proses = jkt48-archiver-bot).
+#    --update-env cukup untuk nilai .env baru, tetapi TIDAK memperbarui `script`,
+#    jadi venv baru baru terpakai setelah proses dibuat ulang:
+pm2 delete jkt48-archiver-bot
+pm2 start deploy/ecosystem.config.js --only jkt48-archiver-bot --update-env
+pm2 save
+
+# 4. Pastikan interpreter = venv (kalau masih /usr/bin/python3, curl_cffi tak ada)
+pm2 describe jkt48-archiver-bot | grep -E 'script path|exec cwd'
 ```
 
 ### Yang terjadi tiap siklus

@@ -301,6 +301,14 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
     - `curl_cffi` harus ada di interpreter **yang dipakai PM2**, bukan hanya di
       python yang dipakai menguji manual — kalau tidak, fitur TikTok selalu 403.
 
+17. **PM2: `restart` tidak membaca ulang `ecosystem.config.js`.** Nilai `script`,
+    `interpreter`, dan `cwd` disimpan saat proses **dibuat**; `pm2 restart`
+    (termasuk `--update-env`) hanya menyegarkan environment, bukan path. Untuk
+    perubahan `script`/interpreter: `pm2 delete <app>` → `pm2 start
+    deploy/ecosystem.config.js --only <app>` → `pm2 save`. (Issue PM2 #3742.)
+    Ini penting untuk arsip TikTok: kalau `.venv` baru dibuat setelah bot
+    berjalan, `curl_cffi` tidak akan terlihat walau `restart` sudah dilakukan.
+
 ## Kesalahan masa lalu yang sudah diperbaiki
 
 1. **Merge di-upload sebelum live selesai** — timer merge tidak ter-reset saat

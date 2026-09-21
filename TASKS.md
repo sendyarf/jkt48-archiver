@@ -290,6 +290,10 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
          TikTok selalu 403 karena `curl_cffi` hilang di interpreter PM2).
       3. README TikTok menyuruh `pm2 restart jkt48-bot`, padahal nama proses PM2
          adalah `jkt48-archiver-bot` — perintah lama tidak berefek apa pun.
+         Sekaligus dicatat bahwa `pm2 restart` **tidak** memuat ulang `script`
+         dari `ecosystem.config.js` (issue PM2 #3742), sehingga venv baru hanya
+         terpakai setelah `pm2 delete` + `pm2 start ... --only jkt48-archiver-bot`
+         (dijelaskan di README, deploy/README.md, dan MEMORY.md).
       Verifikasi: `node --check` OK; logika prioritas diuji nyata (6 kasus di
       direktori bersih) — tanpa venv → `python3`, `venv/` → `venv/bin/python`,
       keduanya → `.venv` menang, venv Windows → `Scripts/python.exe`,
