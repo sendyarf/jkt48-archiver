@@ -260,6 +260,18 @@ class Config:
     # Sumber daftar akun TikTok (dibaca saat seed, bukan setiap poll).
     TIKTOK_ACCOUNTS_FILE: str = os.getenv("TIKTOK_ACCOUNTS_FILE", "tiktok_accounts.json")
 
+    # Cache daftar member resmi JKT48 (dari jkt48.com/api/v1). Dipakai
+    # `bot/seed_tiktok.py` sebagai sumber OTORITATIF pemetaan akun TikTok →
+    # member (field `tiktok_account`) + foto member untuk halaman /tiktok.
+    # Perbarui dengan: python3 -m bot.jkt48_members --update
+    JKT48_MEMBERS_FILE: str = os.getenv("JKT48_MEMBERS_FILE", "jkt48_members.json")
+
+    # Jeda antar-request saat menarik roster resmi (detik). 58 member =
+    # 1 request daftar + 58 request detail; jangan dirapatkan berlebihan.
+    JKT48_MEMBERS_INTERVAL_SECONDS: float = float(
+        os.getenv("JKT48_MEMBERS_INTERVAL_SECONDS", "0.35")
+    )
+
     # Interval satu siklus pemantauan TikTok (detik). Satu siklus memeriksa
     # SATU akun saja (round-robin) supaya tidak menabrak batas request.
     TIKTOK_CHECK_INTERVAL_SECONDS: int = int(

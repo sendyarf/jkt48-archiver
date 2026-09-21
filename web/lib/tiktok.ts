@@ -16,6 +16,8 @@ export interface TikTokAccount {
   /** Nama member (dari member_hls) atau nama tampilan akun; fallback username. */
   display_name: string;
   member_username?: string;
+  /** Foto member dari roster resmi jkt48.com (kosong bila belum ada). */
+  avatar_url?: string;
   post_count: number;
   last_post_at?: string;
 }
@@ -51,6 +53,7 @@ interface AccountRow {
   display_name: string | null;
   member_username: string | null;
   member_display_name: string | null;
+  avatar_url: string | null;
   last_post_at: string | null;
   post_count: number | null;
 }
@@ -169,6 +172,7 @@ export function getTikTokAccounts(): TikTokAccount[] {
       a.display_name,
       a.member_username,
       mh.display_name as member_display_name,
+      a.avatar_url,
       a.last_post_at,
       (SELECT COUNT(*) FROM tiktok_posts p
         WHERE p.unique_id = a.unique_id AND p.visible = 1) as post_count
@@ -186,6 +190,9 @@ export function getTikTokAccounts(): TikTokAccount[] {
       row.display_name?.trim() ||
       prettifyUsername(row.unique_id),
     member_username: row.member_username || undefined,
+    // Foto profil member dari roster resmi; sumbernya kolom bot, bukan
+    // member_hls (roster memuat member yang belum ada baris member_hls-nya).
+    avatar_url: row.avatar_url?.trim() || undefined,
     post_count: Number(row.post_count || 0),
     last_post_at: row.last_post_at || '',
   }));

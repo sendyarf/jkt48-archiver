@@ -19,7 +19,7 @@ Bot Python otomatis untuk memantau, merekam, dan mendistribusikan siaran langsun
 - **Status Viewer**: Pantau status bot real-time (recording aktif, antrian upload, HLS coverage) via CLI.
 - **Kelola Channel via Telegram/CLI**: Tambah–stop–resume–hapus channel/member tanpa edit DB manual (`/stop jkt48-official`, `python3 -m bot.member_cli list`), lengkap dengan daftar member + HLS dan penghentian rekaman yang sedang berjalan.
 - **Cleanup Tool**: Bersihkan sesi stale dan file lama dari disk & database via satu perintah.
-- **Arsip TikTok (Postingan · Foto · Story)**: Memantau akun TikTok member tanpa login, mengarsipkan video **dan** postingan foto (foto dikirim ke channel Telegram sebagai album — maksimal 10 foto per part — sekaligus dirangkai menjadi slide show untuk YouTube), plus story yang tersimpan sebagai video. Halaman publik `/tiktok` menampilkan tata letak 3 kolom: daftar akun (kiri), pemutar (tengah), daftar arsip (kanan). Nyalakan dengan `TIKTOK_ENABLED=true` + `python3 -m bot.seed_tiktok`.
+- **Arsip TikTok (Postingan · Foto · Story)**: Memantau akun TikTok member tanpa login, mengarsipkan video **dan** postingan foto (foto dikirim ke channel Telegram sebagai album — maksimal 10 foto per part — sekaligus dirangkai menjadi slide show untuk YouTube), plus story yang tersimpan sebagai video. Halaman publik `/tiktok` menampilkan tata letak 3 kolom: daftar akun (kiri, lengkap dengan foto member dari roster resmi jkt48.com), pemutar (tengah), daftar arsip (kanan). Nyalakan dengan `TIKTOK_ENABLED=true` + `python3 -m bot.seed_tiktok`.
 
 ---
 
@@ -487,17 +487,24 @@ persis seperti sebelumnya sampai dinyalakan.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 1. Seed daftar akun (51 akun sudah disiapkan di tiktok_accounts.json)
+# 1. Roster resmi jkt48.com -> jkt48_members.json (58 member, 48 punya akun
+#    TikTok). Ini sumber OTORITATIF pemetaan akun -> member + foto member di
+#    halaman /tiktok. Tidak wajib, tapi tanpa ini `jkt48.aurellia_` (akun
+#    Aurellia/Lia) tidak bisa dipetakan karena username IDN-nya `jkt48_lia`.
+python3 -m bot.jkt48_members --update
+python3 -m bot.jkt48_members --print     # cek isi cache
+
+# 2. Seed daftar akun (51 akun sudah disiapkan di tiktok_accounts.json)
 python3 -m bot.seed_tiktok --dry-run   # lihat rencana + pencocokan member
 python3 -m bot.seed_tiktok
 
-# 2. .env
+# 3. .env
 TIKTOK_ENABLED=true
 TIKTOK_PROVIDER=auto                   # tikwm → embed → yt-dlp
 TIKTOK_CHECK_INTERVAL_SECONDS=300      # 1 akun per siklus (round-robin)
 TIKTOK_REQUEST_INTERVAL_SECONDS=1.1    # batas gratis tikwm ±1 req/detik
 
-# 3. Jalankan/segarkan PM2 (nama proses = jkt48-archiver-bot).
+# 4. Jalankan/segarkan PM2 (nama proses = jkt48-archiver-bot).
 #    --update-env cukup untuk nilai .env baru, tetapi TIDAK memperbarui `script`,
 #    jadi venv baru baru terpakai setelah proses dibuat ulang:
 pm2 delete jkt48-archiver-bot
@@ -510,29 +517,41 @@ pm2 describe jkt48-archiver-bot | grep -E 'script path|exec cwd'
 
 ### Pemetaan akun TikTok → member (di `seed_tiktok`)
 
-Username TikTok sering tidak sama dengan username IDN, jadi seed mencocokkan
-dalam **dua lapis**:
+Username TikTok sering tidak sama dengan username IDN, jadi seed memakai **tiga
+sumber** berurutan:
 
+0. **Roster resmi jkt48.com** (`python3 -m bot.jkt48_members --update` →
+   `jkt48_members.json`) — **otoritatif**, karena memakai field `tiktok_account`
+   milik member. Menyelesaikan kasus yang mustahil ditebak dari nama:
+   `jkt48.aurellia_` → **`jkt48_lia`** (Aurellia, IDN `jkt48_lia`). Di mesin
+   pengembangan roster memetakan **47 akun** dan memberi **foto** ke 50 akun.
 1. **Varian nama persis** (`indahjkt48` → `jkt48_indah`, `lulu_jkt48` → `jkt48_lulu`).
-2. **Nama inti** — dipakai bila lapis 1 gagal: buang penanda `jkt48`, angka, dan
-   inisial satu huruf, lalu cocokkan inti akun dengan inti member
+2. **Nama inti** — dipakai bila roster & lapis 1 gagal: buang penanda `jkt48`,
+   angka, dan inisial satu huruf, lalu cocokkan inti akun dengan inti member
    (`jkt48.lyn.s` → `lyn` → `jkt48_lyn`, `jkt48.ella.a` → `jkt48_ella`,
    `jkt48.raisha.s` → `jkt48_raisha`), termasuk pencocokan awalan
    `kathrin` → `jkt48_kathrina`.
+
+`member_username` yang ditulis manual di `tiktok_accounts.json` selalu menang
+atas ketiganya, dan bila roster berbeda dari hasil pencocokan nama, seed memilih
+**roster** serta mencatat perbedaannya di log.
 
 Pengaman lapis 2: inti harus ≥3 huruf, awalan harus ≥5 huruf, dan hasil hanya
 diambil bila **tunggal** — inti yang ambigu (mis. dua member dengan inti
 `raisha`) dilewati supaya tidak salah pasang. Akun cadangan `jkt48.u16` (dipakai
 beberapa member underage sekaligus) **tidak pernah** dipetakan ke satu member.
 
-Akun yang tetap tak berpasangan tidak dihentikan; `member_username`-nya `NULL`
-sampai member-nya ada di `member_hls`, dan seed berikutnya akan mengisinya
-otomatis (kolom itu hanya diisi bila masih kosong, jadi koreksi manual aman).
+Akun yang tidak dilaporkan API resmi tetapi membernya jelas dari nama
+(`jkt48.heidi__`, `jkt48.rara_`) tetap mendapat **nama + foto resmi** lewat
+pencocokan balik (roster ↔ `member_hls`), tanpa perlu menebak pemilik akunnya.
 
-Hasil seed di VPS (21 Sep 2026): **49 dari 51 akun** terpetakan — 45 lapis 1 +
-4 lapis 2 (`kathrinjkt48`, `jkt48.ella.a`, `jkt48.lyn.s`, `jkt48.raisha.s`).
-Sisanya `jkt48.aurellia_` (member-nya belum ada di `member_hls`) dan `jkt48.u16`
-(akun cadangan bersama — normal).
+Hasil seed (21 Sep 2026): **49 dari 51 akun** terpetakan di mesin pengembangan
+(dengan roster: `jkt48.aurellia_` → `jkt48_lia`) — sisanya `anindyajkt48`
+(baris `jkt48_anindya` belum ada di DB dev) dan `jkt48.u16` (akun cadangan
+bersama — normal). Di VPS keduanya tinggal `jkt48.u16`, karena `jkt48_anindya`
+sudah ada. Akun tak berpasangan tidak dihentikan: `member_username`-nya `NULL`
+sampai member-nya ada di `member_hls`, dan seed berikutnya mengisinya otomatis
+(kolom itu hanya diisi bila masih kosong, jadi koreksi manual aman).
 
 ### Yang terjadi tiap siklus
 
@@ -590,6 +609,10 @@ python3 -m bot.tiktok_monitor --dry-run           # hanya deteksi, tanpa unduh
   channel arsip Telegram).
 - Tombol download memakai deep-link bot `tt_<post_id>`; bot mengirim **video**
   atau **foto (album)** sesuai jenis arsipnya.
+- Foto member di sidebar kiri diambil dari roster resmi jkt48.com (kolom
+  `avatar_url`, hasil `python3 -m bot.jkt48_members --update`); bila belum ada,
+  dipakai inisial nama supaya tata letak tidak melompat. Domain `jkt48.com`
+  diizinkan di `web/next.config.ts` (`images.remotePatterns`).
 - Verifikasi: `cd web && npm run verify:tiktok`.
 
 ---
@@ -740,7 +763,7 @@ python3 -m bot.status --cleanup --hours 48
 | `merge_groups` | Grup rekaman yang perlu di-merge (reconnect window) |
 | `member_hls` | URL HLS permanen tiap member + flag `hls_confirmed` & `enabled` (stop/aktif) |
 | `youtube_channels` | Daftar channel YouTube, token, & counter upload harian |
-| `tiktok_accounts` | Akun TikTok yang dipantau (username, nama member, `sec_uid`, `enabled`) |
+| `tiktok_accounts` | Akun TikTok yang dipantau (username, nama member, `sec_uid`, `avatar_url` = foto roster resmi jkt48.com, `enabled`) |
 | `tiktok_posts` | Arsip TikTok: video/foto/story, jumlah foto, `telegram_message_ids` (album), `youtube_video_id`, `visible` |
 
 ### Status Sesi (`live_sessions.status`)

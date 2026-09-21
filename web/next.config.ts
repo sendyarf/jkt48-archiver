@@ -12,6 +12,8 @@ const nextConfig: NextConfig = {
       { protocol: 'https', hostname: '**.tiktokcdn.com' },
       { protocol: 'https', hostname: '**.tiktokcdn-us.com' },
       { protocol: 'https', hostname: '**.tiktokcdn-eu.com' },
+      // Foto member arsip TikTok: URL roster resmi jkt48.com (bot/jkt48_members.py).
+      { protocol: 'https', hostname: 'jkt48.com' },
     ],
   },
 };

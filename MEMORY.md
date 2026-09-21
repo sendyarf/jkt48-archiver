@@ -340,6 +340,41 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
     PowerShell (`Select-String`) bukan berarti skripnya gagal: uji dengan
     `$LASTEXITCODE` langsung setelah perintah Python.
 
+21. **Roster resmi jkt48.com adalah sumber OTORITATIF identitas member.**
+    `GET https://jkt48.com/api/v1/members/` (ringkasan) + `/members/<id>`
+    (detail, ada `tiktok_account`) dijawab 200 `application/json` bila memakai
+    `curl_cffi` + impersonate; request biasa → 403 Cloudflare. Karena itu
+    `bot/jkt48_members.py` memakai ulang lapisan HTTP `bot/tiktok_client`
+    (`browser_headers`/`http_request`/`RateLimiter`) — jangan menulis logika TLS
+    kedua. Hasilnya di-cache ke `jkt48_members.json` (ikut di-commit seperti
+    `showroom_rooms.json`, supaya VPS tidak perlu menarik 58 request tiap seed).
+    Perbarui: `python3 -m bot.jkt48_members --update`.
+    - Roster **menyelesaikan kasus yang mustahil ditebak dari nama**:
+      `jkt48.aurellia_` adalah akun Aurellia, tetapi username IDN-nya `jkt48_lia`.
+    - Hanya field yang dipakai yang disimpan (`KEPT_FIELDS`); data pribadi
+      (tanggal lahir, golongan darah) sengaja TIDAK disimpan.
+    - Urutan penetapan member di `seed_tiktok`: `member_username` manual di JSON
+      → roster resmi → varian nama → nama inti. Bila roster berbeda dari hasil
+      pencocokan nama, **roster menang** dan perbedaannya ditulis ke log.
+    - Akun yang tidak dilaporkan API resmi (`jkt48.heidi__`, `jkt48.rara_`) tetap
+      dapat nama + foto lewat peta balik roster ↔ `member_hls`.
+
+22. **Test yang menyentuh berkas harus mengisolasi path-nya.** `seed_tiktok`
+    membaca `Config.JKT48_MEMBERS_FILE`; begitu `jkt48_members.json` ada di root
+    repo, hasil test bisa bergantung data nyata mesin, bukan kode. Karena itu
+    `tests/test_seed_tiktok.py` men-set `Config.DB_PATH` **dan**
+    `Config.JKT48_MEMBERS_FILE` ke berkas sementara di `setUp` (dikembalikan di
+    `tearDown`), seperti `tests/test_showroom_seed.py`. Wajib untuk setiap modul
+    baru yang membaca berkas dari `Config`.
+
+23. **Foto member di web bersumber dari kolom bot, bukan `member_hls`.**
+    `tiktok_accounts.avatar_url` diisi `seed_tiktok` dari roster; komponen
+    membacanya lewat `web/lib/tiktok.ts`, dan domain `jkt48.com` diizinkan di
+    `web/next.config.ts` (`images.remotePatterns`). Bila foto kosong, komponen
+    memakai inisial nama (`.tiktok-account-initial`) supaya tinggi baris tidak
+    berubah. `avatar_url` ditulis dengan `COALESCE` — foto hasil koreksi manual
+    tidak ditimpa seed ulang.
+
 ## Kesalahan masa lalu yang sudah diperbaiki
 
 1. **Merge di-upload sebelum live selesai** — timer merge tidak ter-reset saat

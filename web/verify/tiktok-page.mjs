@@ -44,6 +44,8 @@ const POST_LULU = '7681262713913347348';
 const POST_PENDING = '7670000000000000099';   // belum siap (tanpa yt & tg)
 const POST_HIDDEN = '7670000000000000088';    // visible = 0
 const ACCOUNT_OFF = 'offjkt48';               // enabled = 0
+// Foto member dari roster resmi (bot/jkt48_members.py → kolom avatar_url).
+const AVATAR_INDAH = 'https://jkt48.com/api/v1/storages/media/jkt48-member/indah_cahya.jpg';
 
 const db = new DatabaseSync(dbPath);
 db.exec(`
@@ -86,6 +88,7 @@ CREATE TABLE tiktok_accounts (
   display_name TEXT NOT NULL DEFAULT '',
   member_username TEXT,
   sec_uid TEXT,
+  avatar_url TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
   last_checked_at TEXT,
   last_post_at TEXT,
@@ -118,10 +121,10 @@ INSERT INTO member_hls (username, display_name, hls_confirmed) VALUES
   ('jkt48_indah', 'Indah JKT48', 1),
   ('jkt48_lulu', 'Lulu JKT48', 1);
 
-INSERT INTO tiktok_accounts (unique_id, display_name, member_username, enabled) VALUES
-  ('indahjkt48', 'Indah JKT48', 'jkt48_indah', 1),
-  ('lulu_jkt48', 'Lulu JKT48', 'jkt48_lulu', 1),
-  ('${ACCOUNT_OFF}', 'Akun Nonaktif', NULL, 0);
+INSERT INTO tiktok_accounts (unique_id, display_name, member_username, avatar_url, enabled) VALUES
+  ('indahjkt48', 'Indah JKT48', 'jkt48_indah', '${AVATAR_INDAH}', 1),
+  ('lulu_jkt48', 'Lulu JKT48', 'jkt48_lulu', NULL, 1),
+  ('${ACCOUNT_OFF}', 'Akun Nonaktif', NULL, NULL, 0);
 `);
 
 db.exec(`
@@ -215,6 +218,15 @@ try {
   assert.ok(html.includes('Lulu JKT48'), 'Akun Lulu harus tampil di sidebar');
   assert.ok(!html.includes('Akun Nonaktif'), 'Akun yang di-stop (enabled=0) tidak boleh tampil');
   assert.ok(!html.includes(ACCOUNT_OFF), 'Username akun nonaktif tidak boleh tampil');
+
+  // Foto member dari roster resmi (kolom avatar_url) lewat next/image; akun
+  // tanpa foto tetap memakai inisial supaya baris daftar tidak melompat.
+  assert.match(html, /tiktok-account-avatar/, 'Akun dengan foto roster memakai .tiktok-account-avatar');
+  assert.ok(
+    html.includes(encodeURIComponent(AVATAR_INDAH)),
+    'Foto member harus dimuat dari URL roster resmi jkt48.com'
+  );
+  assert.match(html, /tiktok-account-initial/, 'Akun tanpa foto tetap memakai inisial');
 
   // ── Sidebar kanan: hanya arsip yang sudah siap ──────────────────────────
   assert.ok(html.includes('twinnie'), 'Arsip video terbaru harus muncul di daftar');

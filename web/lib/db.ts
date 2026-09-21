@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
-import { decodeWatchId, encodeWatchId, isRawYoutubeId } from './codec';
+import { decodeWatchId, encodeWatchId } from './codec';
 
 let _db: DatabaseSync | null = null;
 
@@ -59,6 +59,7 @@ export function getDb(): DatabaseSync {
         display_name    TEXT NOT NULL DEFAULT '',
         member_username TEXT,
         sec_uid         TEXT,
+        avatar_url      TEXT,
         enabled         INTEGER NOT NULL DEFAULT 1,
         last_checked_at TEXT,
         last_post_at    TEXT,
@@ -109,6 +110,18 @@ export function getDb(): DatabaseSync {
     } catch {
       // Tabel live_sessions belum ada (mis. database baru) — biarkan query
       // pemanggil yang menangani.
+    }
+
+    // Kolom `avatar_url` (foto member dari roster resmi jkt48.com) dipakai
+    // sidebar /tiktok. Database lama belum memilikinya, sedangkan CREATE TABLE
+    // IF NOT EXISTS tidak mengubah tabel yang sudah ada.
+    try {
+      const columns = _db.prepare('PRAGMA table_info(tiktok_accounts)').all() as unknown as { name: string }[];
+      if (columns.length > 0 && !columns.some(column => column.name === 'avatar_url')) {
+        _db.exec('ALTER TABLE tiktok_accounts ADD COLUMN avatar_url TEXT');
+      }
+    } catch {
+      // Tabel tiktok_accounts belum ada — sama seperti di atas.
     }
   }
   return _db;

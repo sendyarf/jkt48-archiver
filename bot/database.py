@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS tiktok_accounts (
     display_name    TEXT NOT NULL DEFAULT '',
     member_username TEXT,
     sec_uid         TEXT,
+    avatar_url      TEXT,
     enabled         INTEGER NOT NULL DEFAULT 1,
     last_checked_at TEXT,
     last_post_at    TEXT,
@@ -226,6 +227,15 @@ def init_db() -> None:
         if "platform" not in mg_cols:
             conn.execute("ALTER TABLE merge_groups ADD COLUMN platform TEXT NOT NULL DEFAULT 'idn'")
             logger.info("Schema migration: added platform column to merge_groups")
+
+        # Kolom arsip TikTok: database lama dibuat sebelum `avatar_url` ada,
+        # jadi harus ditambahkan manual (CREATE TABLE IF NOT EXISTS tidak
+        # mengubah tabel yang sudah ada). Tabelnya pasti ada karena baru saja
+        # dibuat di atas, jadi PRAGMA di sini aman.
+        ta_cols = [r[1] for r in conn.execute("PRAGMA table_info(tiktok_accounts)")]
+        if "avatar_url" not in ta_cols:
+            conn.execute("ALTER TABLE tiktok_accounts ADD COLUMN avatar_url TEXT")
+            logger.info("Schema migration: added avatar_url column to tiktok_accounts")
 
     logger.info("Database initialised at %s", Config.DB_PATH)
 
@@ -1098,28 +1108,38 @@ def upsert_tiktok_account(
     display_name: str = "",
     member_username: Optional[str] = None,
     enabled: bool = True,
+    avatar_url: Optional[str] = None,
 ) -> None:
     """
     Tambah/perbarui akun TikTok yang dipantau.
 
-    Nama (`display_name` / `member_username`) dan flag `enabled` TIDAK ditimpa
-    bila sudah ada isinya — supaya hasil koreksi manual (atau stop sementara)
-    tidak hilang saat seed diulang.
+    Nama (`display_name` / `member_username` / `avatar_url`) dan flag `enabled`
+    TIDAK ditimpa bila sudah ada isinya — supaya hasil koreksi manual (atau stop
+    sementara) tidak hilang saat seed diulang.
     """
     uid = _tiktok_uid(unique_id)
     if not uid:
         return
     with _get_conn() as conn:
         conn.execute(
-            """INSERT INTO tiktok_accounts (unique_id, display_name, member_username, enabled)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO tiktok_accounts
+                   (unique_id, display_name, member_username, enabled, avatar_url)
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(unique_id) DO UPDATE SET
                    display_name = CASE
                        WHEN tiktok_accounts.display_name = '' THEN excluded.display_name
                        ELSE tiktok_accounts.display_name END,
                    member_username = COALESCE(tiktok_accounts.member_username,
-                                              excluded.member_username)""",
-            (uid, (display_name or "").strip(), (member_username or None), 1 if enabled else 0),
+                                              excluded.member_username),
+                   avatar_url = COALESCE(tiktok_accounts.avatar_url,
+                                         excluded.avatar_url)""",
+            (
+                uid,
+                (display_name or "").strip(),
+                (member_username or None),
+                1 if enabled else 0,
+                (avatar_url or None),
+            ),
         )
 
 

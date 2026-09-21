@@ -334,6 +334,40 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       dibersihkan dari BOM UTF-8 yang membuat skrip audit (dan alat lain)
       error — 16 test lamanya tetap lulus.
 
+- [x] **Roster resmi jkt48.com: peta akun TikTok + foto member** (fitur baru,
+      dipicu data API resmi yang diberikan pengguna). Modul baru
+      `bot/jkt48_members.py`:
+      1. Parser murni `parse_member_list` / `parse_member_detail` /
+         `merge_members` / `photo_url`; hanya `KEPT_FIELDS` yang disimpan (data
+         pribadi seperti tanggal lahir & golongan darah TIDAK disimpan).
+      2. Lapisan HTTP memakai ulang `bot/tiktok_client` (`browser_headers`,
+         `http_request`, `RateLimiter`) — jkt48.com dijawab 403 Cloudflare untuk
+         request biasa, 200 JSON dengan `curl_cffi` + impersonate (diuji 21 Sep
+         2026). 1 request daftar + 58 request detail, jeda
+         `JKT48_MEMBERS_INTERVAL_SECONDS=0.35`.
+      3. Cache `jkt48_members.json` (di-commit, seperti `showroom_rooms.json`)
+         + CLI `--update` / `--print`, gagal → exit 1, satu detail gagal tidak
+         menggagalkan seluruh proses.
+      `seed_tiktok` kini memakai roster sebagai sumber **otoritatif**:
+      `jkt48.aurellia_` → `jkt48_lia` (sebelumnya mustahil ditebak dari nama),
+      `handle_index` menang atas pencocokan nama (perbedaan dilaporkan di log),
+      peta balik mengisi nama + foto untuk akun yang tidak dilaporkan API
+      (`jkt48.heidi__`, `jkt48.rara_`), dan `member_username` manual tetap
+      menang. Kolom `avatar_url` baru di `tiktok_accounts` (bot + migrasi
+      `web/lib/db.ts`), ditulis `COALESCE` agar koreksi manual tidak tertimpa.
+      Sisi web: foto member di sidebar kiri `/tiktok` via `next/image`
+      (+ pola gambar `jkt48.com`), fallback inisial bila foto kosong. Hasil
+      dry-run nyata: roster 58 member/48 akun TikTok, 47 akun terhubung,
+      **50 akun dapat foto**, sisa tak berpasangan tinggal `anindyajkt48`
+      (baris `jkt48_anindya` tidak ada di DB dev) + `jkt48.u16`.
+      Verifikasi: **419 test Python lulus** (+43: `tests/test_jkt48_members.py`
+      baru 35 test + 12 test integrasi roster di `tests/test_seed_tiktok.py`,
+      yang kini juga mengisolasi `Config.JKT48_MEMBERS_FILE`), pyflakes bersih,
+      `tsc` 0, `eslint` 0 (sekaligus menghapus impor `isRawYoutubeId` yang tak
+      terpakai di `web/lib/db.ts`), `build` OK, **`verify:tiktok` PASS**
+      (kini juga memeriksa foto member + fallback inisial), browser check
+      **25/25 PASS**, `verify:home-upcoming` & `verify:auto-publish` PASS.
+
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 
 - [ ] **Arsip TikTok — verifikasi di VPS**: metode sudah terbukti di mesin
@@ -345,6 +379,15 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       lalu pastikan listing, story, unduhan, dan upload berjalan. Periksa juga
       `pm2 describe jkt48-archiver-bot` → `script path` harus menunjuk
       `.venv/bin/python`, supaya `curl_cffi` benar-benar ada di interpreter bot.
+- [ ] **Jalankan roster + reseed di VPS** (langkah baru, wajib agar foto member
+      dan `jkt48.aurellia_` muncul di produksi): `python3 -m bot.jkt48_members
+      --update` → `python3 -m bot.seed_tiktok` → `TIKTOK_ENABLED=true
+      pm2 restart jkt48-archiver-bot --update-env`. Periksa log seed:
+      `jkt48.aurellia_` harus menunjuk `jkt48_lia` dan 50 akun harus punya foto.
+      Bila cache sudah ter-commit, `--update` boleh dilewati (data tetap dipakai).
+- [ ] Segarkan roster berkala (mis. sekali sebulan atau saat ada member baru):
+      `python3 -m bot.jkt48_members --update` lalu commit `jkt48_members.json`.
+      Belum ada otomatisasi/jadwal.
 - [ ] Saklar publik per-postingan TikTok dari halaman admin (kolom `visible`
       sudah ada di DB, tetapi belum ada UI-nya).
 - [ ] Pantau kuota tikwm: story satu-satunya sumber story, jadi bila kuota harian

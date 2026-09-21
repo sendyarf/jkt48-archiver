@@ -45,13 +45,18 @@ ACCOUNTS = {
 
 
 class TikTokSeedBase(unittest.TestCase):
-    """DB sementara + file daftar akun, keduanya dikembalikan di tearDown."""
+    """DB + berkas sementara (akun & cache roster), dikembalikan di tearDown."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         base = Path(self._tmp.name)
         self._old_db = Config.DB_PATH
+        self._old_roster = Config.JKT48_MEMBERS_FILE
         Config.DB_PATH = str(base / "test.db")
+        # Isolasi cache roster: berkas ini tidak dibuat, jadi pencocokan nama
+        # diuji apa adanya. Test yang butuh roster menulisnya sendiri.
+        self.roster_file = base / "jkt48_members.json"
+        Config.JKT48_MEMBERS_FILE = str(self.roster_file)
         self.accounts_file = base / "tiktok_accounts.json"
         self.accounts_file.write_text(json.dumps(ACCOUNTS), encoding="utf-8")
         database.init_db()
@@ -60,7 +65,14 @@ class TikTokSeedBase(unittest.TestCase):
 
     def tearDown(self):
         Config.DB_PATH = self._old_db
+        Config.JKT48_MEMBERS_FILE = self._old_roster
         self._tmp.cleanup()
+
+    def _write_roster(self, members: list[dict]) -> None:
+        """Tulis cache roster resmi (bentuk `jkt48_members.json`)."""
+        self.roster_file.write_text(
+            json.dumps({"count": len(members), "members": members}), encoding="utf-8"
+        )
 
     def _indexes(self) -> tuple[dict, dict]:
         return seed_tiktok.build_member_index(), seed_tiktok.build_member_core_index()
@@ -208,6 +220,119 @@ class TestSeedEndToEnd(TikTokSeedBase):
         seed_tiktok.seed(accounts)
         self.assertEqual(self._account_row("indahjkt48")["enabled"], 0)
         self.assertEqual(database.get_tiktok_accounts(), [])
+
+
+def roster_entry(member_id: int, nickname: str, handle: str = "", **overrides) -> dict:
+    """Satu member di cache roster resmi (bentuk `jkt48_members.json`)."""
+    entry = {
+        "jkt48_member_id": member_id,
+        "code": nickname.upper(),
+        "name": nickname,
+        "nickname": nickname,
+        "type": "LOVE",
+        "tiktok_account": handle,
+        "instagram_account": "",
+        "twitter_account": "",
+        "photo": f"https://jkt48.com/api/v1/storages/media/jkt48-member/{nickname.lower()}.jpg",
+    }
+    entry.update(overrides)
+    return entry
+
+
+class TestRosterIntegration(TikTokSeedBase):
+    """Roster resmi jkt48.com = sumber OTORITATIF pemetaan akun TikTok → member."""
+
+    def _seed_accounts(self, *unique_ids: str):
+        accounts = [{"unique_id": uid} for uid in unique_ids]
+        return seed_tiktok.seed(accounts)
+
+    def test_roster_link_and_reverse_need_cache(self):
+        self.assertEqual(seed_tiktok.build_roster_link(), {})
+        self.assertEqual(seed_tiktok.build_roster_reverse(), {})
+
+    def test_roster_maps_account_the_name_matcher_cannot(self):
+        """`jkt48.aurellia_` ↔ `jkt48_lia`: username IDN sama sekali beda."""
+        database.upsert_member_hls("jkt48_lia", "jkt48_lia")  # nama masih placeholder
+        self._write_roster([
+            roster_entry(31, "Lia", "jkt48.aurellia_", name="Aurellia"),
+        ])
+
+        self.assertIsNone(self._match("jkt48.aurellia_"))  # pencocokan nama gagal
+        unmatched, _ = self._seed_accounts("jkt48.aurellia_")
+
+        row = self._account_row("jkt48.aurellia_")
+        self.assertEqual(row["member_username"], "jkt48_lia")
+        self.assertEqual(unmatched, [])
+        # Nama placeholder `member_hls` diganti nama resmi roster.
+        self.assertEqual(row["display_name"], "Lia JKT48")
+        self.assertEqual(
+            row["avatar_url"],
+            "https://jkt48.com/api/v1/storages/media/jkt48-member/lia.jpg",
+        )
+
+    def test_roster_wins_over_name_matching(self):
+        self._write_roster([
+            roster_entry(31, "Ella", "jkt48.lyn.s", name="Gabriela Abigail"),
+        ])
+        self.assertEqual(self._match("jkt48.lyn.s")["username"], "jkt48_lyn")
+
+        self._seed_accounts("jkt48.lyn.s")
+
+        self.assertEqual(self._account_row("jkt48.lyn.s")["member_username"], "jkt48_ella")
+
+    def test_name_matching_used_when_roster_silent(self):
+        self._write_roster([roster_entry(116, "Indah", "indahjkt48")])
+
+        self._seed_accounts("jkt48.lyn.s")
+
+        row = self._account_row("jkt48.lyn.s")
+        self.assertEqual(row["member_username"], "jkt48_lyn")
+        self.assertIsNone(row["avatar_url"])
+
+    def test_reverse_match_enriches_account_not_reported_by_api(self):
+        """Akun seperti `jkt48.heidi__` tidak ada di API, tapi membernya jelas."""
+        database.upsert_member_hls("jkt48_heidi", "Heidi JKT48")
+        self._write_roster([roster_entry(111, "Heidi", "")])  # tiktok_account kosong
+
+        self.assertNotIn("jkt48.heidi__", seed_tiktok.build_roster_link())
+        self._seed_accounts("jkt48.heidi__")
+
+        row = self._account_row("jkt48.heidi__")
+        self.assertEqual(row["member_username"], "jkt48_heidi")
+        self.assertEqual(row["display_name"], "Heidi JKT48")  # nama manusia menang
+        self.assertTrue(row["avatar_url"].endswith("/heidi.jpg"))
+
+    def test_avatar_and_name_are_not_overwritten_on_rerun(self):
+        self._write_roster([roster_entry(116, "Indah", "indahjkt48")])
+        self._seed_accounts("indahjkt48")
+        with database._get_conn() as conn:
+            conn.execute(
+                "UPDATE tiktok_accounts SET avatar_url = 'https://contoh/manual.jpg' "
+                "WHERE unique_id = 'indahjkt48'"
+            )
+
+        self._seed_accounts("indahjkt48")
+
+        row = self._account_row("indahjkt48")
+        self.assertEqual(row["avatar_url"], "https://contoh/manual.jpg")
+        self.assertEqual(row["display_name"], "Indah JKT48")
+
+    def test_manual_member_username_in_json_always_wins(self):
+        self._write_roster([roster_entry(31, "Ella", "jkt48.lyn.s")])
+
+        seed_tiktok.seed([
+            {"unique_id": "jkt48.lyn.s", "member_username": "jkt48_lulu"},
+        ])
+
+        self.assertEqual(self._account_row("jkt48.lyn.s")["member_username"], "jkt48_lulu")
+
+    def test_backup_account_stays_unmapped_with_roster(self):
+        self._write_roster([roster_entry(116, "Indah", "indahjkt48")])
+
+        unmatched, backups = self._seed_accounts("jkt48.u16")
+
+        self.assertEqual((unmatched, backups), (["jkt48.u16"], ["jkt48.u16"]))
+        self.assertIsNone(self._account_row("jkt48.u16")["member_username"])
 
 
 if __name__ == "__main__":

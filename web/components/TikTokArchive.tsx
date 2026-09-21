@@ -127,9 +127,21 @@ export default function TikTokArchive({
               aria-pressed={account === acc.unique_id}
               onClick={() => pickAccount(acc.unique_id)}
             >
-              <span className="tiktok-account-initial" aria-hidden="true">
-                {acc.display_name.trim().charAt(0).toUpperCase() || '?'}
-              </span>
+              {acc.avatar_url ? (
+                <span className="tiktok-account-avatar">
+                  <Image
+                    src={acc.avatar_url}
+                    alt=""
+                    width={30}
+                    height={30}
+                    sizes="30px"
+                  />
+                </span>
+              ) : (
+                <span className="tiktok-account-initial" aria-hidden="true">
+                  {acc.display_name.trim().charAt(0).toUpperCase() || '?'}
+                </span>
+              )}
               <span className="tiktok-account-meta">
                 <span className="tiktok-account-name">{acc.display_name}</span>
                 <span className="tiktok-account-handle">@{acc.unique_id}</span>

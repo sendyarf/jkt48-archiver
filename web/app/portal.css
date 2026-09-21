@@ -97,6 +97,11 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .tiktok-account-item:hover { background: #171f2e; border-color: #2a3446; }
 .tiktok-account-item.active { background: #1d1526; border-color: #5b2440; }
 .tiktok-account-initial { display: grid; place-items: center; flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; background: #302031; color: #fda4af; font-size: .82rem; font-weight: 700; }
+/* Foto member dari roster resmi jkt48.com (kolom `avatar_url`). Bentuknya sama
+   dengan inisial di atas supaya baris daftar tidak "melompat" saat foto belum
+   ada atau gagal dimuat. */
+.tiktok-account-avatar { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; overflow: hidden; background: #302031; border: 1px solid #4c2333; }
+.tiktok-account-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .tiktok-account-meta { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
 .tiktok-account-name { font-size: .84rem; font-weight: 600; color: #f8fafc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tiktok-account-handle { font-size: .72rem; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
