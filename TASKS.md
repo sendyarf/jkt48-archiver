@@ -275,13 +275,37 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       Verifikasi: **356 test Python lulus** (95 test TikTok), pyflakes bersih,
       `tsc`/`eslint`/`build` OK, `verify:tiktok` PASS, browser check 25/25 PASS.
 
+- [x] **Deploy: interpreter bot (PEP 668 / venv)** — dipicu oleh kegagalan nyata di
+      VPS: `pip install -r requirements.txt` ditolak
+      `error: externally-managed-environment`. Tiga cacat diperbaiki:
+      1. `deploy/ecosystem.config.js` kini memilih interpreter dengan urutan
+         `BOT_PYTHON` → `.venv/bin/python` → `venv/bin/python` →
+         `.venv|venv/Scripts/python.exe` → `python3`. Sebelumnya **hanya**
+         `.venv`, padahal README menyuruh membuat `venv`, sehingga pengikut
+         README menjalankan bot dengan `python3` sistem yang dependensinya tidak
+         lengkap (`ModuleNotFoundError`).
+      2. `deploy/README.md` **tidak punya langkah `pip install`** untuk bot sama
+         sekali — ditambahkan bagian "Dependensi bot (venv)" + baris prasyarat +
+         3 baris troubleshooting (PEP 668, `ModuleNotFoundError` setelah restart,
+         TikTok selalu 403 karena `curl_cffi` hilang di interpreter PM2).
+      3. README TikTok menyuruh `pm2 restart jkt48-bot`, padahal nama proses PM2
+         adalah `jkt48-archiver-bot` — perintah lama tidak berefek apa pun.
+      Verifikasi: `node --check` OK; logika prioritas diuji nyata (6 kasus di
+      direktori bersih) — tanpa venv → `python3`, `venv/` → `venv/bin/python`,
+      keduanya → `.venv` menang, venv Windows → `Scripts/python.exe`,
+      `BOT_PYTHON` → menang atas semuanya; `apps[0]` (web) tidak berubah.
+
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 
 - [ ] **Arsip TikTok — verifikasi di VPS**: metode sudah terbukti di mesin
-      pengembangan (embed listing + tikwm story, lihat catatan di bawah), tetapi
-      jalur produksi tetap perlu dijalankan sekali di VPS:
-      `TIKTOK_ENABLED=true python3 -m bot.tiktok_monitor --account jkt48.maira`
-      lalu pastikan listing, story, unduhan, dan upload berjalan.
+      pengembangan (embed listing + tikwm story, lihat catatan di atas), tetapi
+      jalur produksi tetap perlu dijalankan sekali di VPS. Urutan yang benar:
+      `python3 -m venv .venv && source .venv/bin/activate && pip install -r
+      requirements.txt` (PEP 668 melarang pip sistem), lanjutkan dengan
+      `TIKTOK_ENABLED=true python3 -m bot.tiktok_monitor --account jkt48.maira`,
+      lalu pastikan listing, story, unduhan, dan upload berjalan. Periksa juga
+      `pm2 describe jkt48-archiver-bot` → `script path` harus menunjuk
+      `.venv/bin/python`, supaya `curl_cffi` benar-benar ada di interpreter bot.
 - [ ] Saklar publik per-postingan TikTok dari halaman admin (kolom `visible`
       sudah ada di DB, tetapi belum ada UI-nya).
 - [ ] Pantau kuota tikwm: story satu-satunya sumber story, jadi bila kuota harian

@@ -78,11 +78,32 @@ ffmpeg -version
 git clone https://github.com/sendyarf/jkt48-live.git
 cd jkt48-live
 
-python3 -m venv venv
-source venv/bin/activate
+# Nama .venv (dengan titik) agar cocok dengan deteksi otomatis PM2 di
+# deploy/ecosystem.config.js. Nama `venv` juga masih dideteksi, jadi setup lama
+# tidak perlu diubah.
+python3 -m venv .venv
+source .venv/bin/activate
 
 pip install -r requirements.txt
 ```
+
+**`error: externally-managed-environment` (PEP 668).** Ubuntu 23.04+/Debian 12+
+mengunci `pip` sistem, sehingga `pip install -r requirements.txt` **di luar venv**
+ditolak dengan pesan itu. Solusinya adalah venv di atas — **bukan**
+`--break-system-packages`, yang bisa merusak paket Python yang dipakai apt.
+
+PM2 memilih interpreter bot dengan urutan: `BOT_PYTHON` (env) → `.venv/bin/python`
+→ `venv/bin/python` → `python3` sistem. Jadi begitu `.venv` ada, `pm2 restart`
+otomatis memakai dependensi dari venv. Untuk memastikan interpreter yang benar
+dipakai:
+
+```bash
+pm2 describe jkt48-archiver-bot | grep -E 'script path|exec cwd'
+```
+
+Seluruh perintah `python3 -m bot.…` di dokumen ini diasumsikan dijalankan **dari
+dalam venv** (`source .venv/bin/activate`); di luar venv, pakai
+`.venv/bin/python -m bot.…`.
 
 ### 3. Konfigurasi `.env`
 
@@ -438,18 +459,22 @@ persis seperti sebelumnya sampai dinyalakan.
 ### Menyalakan
 
 ```bash
+# 0. Dependensi baru: curl_cffi (wajib, tanpa ini tikwm & halaman embed TikTok
+#    menjawab 403 dari IP datacenter). Jalankan di venv yang dipakai PM2.
+pip install -r requirements.txt
+
 # 1. Seed daftar akun (51 akun sudah disiapkan di tiktok_accounts.json)
 python3 -m bot.seed_tiktok --dry-run   # lihat rencana + pencocokan member
 python3 -m bot.seed_tiktok
 
 # 2. .env
 TIKTOK_ENABLED=true
-TIKTOK_PROVIDER=auto                   # tikwm dulu, lalu yt-dlp
+TIKTOK_PROVIDER=auto                   # tikwm → embed → yt-dlp
 TIKTOK_CHECK_INTERVAL_SECONDS=300      # 1 akun per siklus (round-robin)
 TIKTOK_REQUEST_INTERVAL_SECONDS=1.1    # batas gratis tikwm ±1 req/detik
 
-# 3. Restart
-pm2 restart jkt48-bot --update-env
+# 3. Restart (nama proses PM2 = jkt48-archiver-bot, lihat deploy/ecosystem.config.js)
+pm2 restart jkt48-archiver-bot --update-env
 ```
 
 ### Yang terjadi tiap siklus

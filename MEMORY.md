@@ -285,6 +285,22 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
     `_ffconcat_escape()` memakai `resolve().as_posix()`; jangan kembalikan
     `as_posix()` tanpa `resolve()`.
 
+16. **Deploy: interpreter bot & PEP 668 (insiden 21 Sep 2026).**
+    - `pip` sistem Ubuntu 23.04+/Debian 12+ dikunci PEP 668
+      (`error: externally-managed-environment`). Dependensi bot **harus** di venv;
+      jangan pakai `--break-system-packages` (merusak paket Python milik apt).
+    - **Nama venv kanonik `.venv`**, tetapi `deploy/ecosystem.config.js` menerima
+      urutan: `BOT_PYTHON` (env) → `.venv/bin/python` → `venv/bin/python` →
+      `.venv|venv/Scripts/python.exe` → `python3` sistem. Sebelum perbaikan,
+      berkas itu **hanya** mencari `.venv` sementara README menyuruh membuat
+      `venv`, sehingga pengikut README menjalankan bot dengan `python3` sistem dan
+      bot mati dengan `ModuleNotFoundError`.
+    - Verifikasi interpreter: `pm2 describe jkt48-archiver-bot` → `script path`.
+      Venv di luar repo bisa dipaksa: `BOT_PYTHON=/path/python pm2 restart
+      jkt48-archiver-bot --update-env`.
+    - `curl_cffi` harus ada di interpreter **yang dipakai PM2**, bukan hanya di
+      python yang dipakai menguji manual — kalau tidak, fitur TikTok selalu 403.
+
 ## Kesalahan masa lalu yang sudah diperbaiki
 
 1. **Merge di-upload sebelum live selesai** — timer merge tidak ter-reset saat

@@ -13,11 +13,34 @@ const path = require('node:path');
 const repoRoot = path.resolve(__dirname, '..');
 const webRoot = path.join(repoRoot, 'web');
 
-// Python untuk bot: venv repo bila ada (Linux), kalau tidak pakai python3 sistem.
+// Python untuk bot: venv repo bila ada, kalau tidak pakai python3 sistem.
 // path.join dipakai agar tetap valid di Windows saat file ini dicek sintaksnya.
 const fs = require('node:fs');
-const venvPython = path.join(repoRoot, '.venv', 'bin', 'python');
-const botPython = fs.existsSync(venvPython) ? venvPython : 'python3';
+//
+// Urutan pencarian interpreter bot:
+//   1. BOT_PYTHON (env)          -- jalan keluar tanpa menyunting berkas ini,
+//                                   dipakai bila venv diletakkan di luar repo.
+//   2. .venv/bin/python          -- nama yang dipakai README instalasi.
+//   3. venv/bin/python           -- nama lama di README. Tetap didukung supaya
+//                                   setup yang sudah jalan tidak mendadak pindah
+//                                   ke python3 sistem yang dependency-nya belum
+//                                   tentu lengkap (bot langsung mati dengan
+//                                   ModuleNotFoundError).
+//   4. Scripts/python.exe        -- venv Windows (dipakai saat uji lokal).
+//   5. python3                   -- sistem.
+//
+// Karena pip sistem Debian/Ubuntu 24.04 dikunci PEP 668
+// ("externally-managed-environment"), dependensi bot memang seharusnya berada di
+// venv. Cara memastikan interpreter yang dipakai: `pm2 describe` lalu lihat
+// "script path"/"exec cwd".
+const venvCandidates = [
+  path.join(repoRoot, '.venv', 'bin', 'python'),
+  path.join(repoRoot, 'venv', 'bin', 'python'),
+  path.join(repoRoot, '.venv', 'Scripts', 'python.exe'),
+  path.join(repoRoot, 'venv', 'Scripts', 'python.exe'),
+];
+const venvPython = venvCandidates.find((candidate) => fs.existsSync(candidate));
+const botPython = process.env.BOT_PYTHON || venvPython || 'python3';
 
 module.exports = {
   apps: [
@@ -47,6 +70,8 @@ module.exports = {
       cwd: repoRoot,
       // Pakai python dari venv repo bila ada; jatuh ke python3 sistem bila tidak.
       // Tanpa ini PM2 memakai python3 sistem yang tidak punya dependency bot.
+      // Nilainya dihitung di atas (lihat `botPython`); set `BOT_PYTHON` untuk
+      // memaksa interpreter tertentu.
       script: botPython,
       args: '-m bot.main',
       interpreter: 'none',

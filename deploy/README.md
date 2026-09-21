@@ -33,7 +33,7 @@ bisa diakses langsung dari internet. Semua trafik wajib lewat nginx.
 |---|---|
 | VPS Linux + IP publik | |
 | Node.js ≥ 20 | Untuk Next.js 16 |
-| Python 3 + venv | Untuk bot |
+| Python 3 + venv | Untuk bot. Ubuntu 24.04 mengunci `pip` sistem (PEP 668) → dependensi bot **harus** di venv `.venv` (langkah 2) |
 | ffmpeg, yt-dlp | Untuk perekaman & penggabungan |
 | PM2 | `sudo npm i -g pm2` |
 | nginx + certbot | `sudo apt install nginx certbot python3-certbot-nginx` |
@@ -68,6 +68,32 @@ akan gagal bila DNS belum mengarah ke server.
 git clone https://github.com/sendyarf/jkt48-live.git
 cd jkt48-live
 ```
+
+### Dependensi bot (venv)
+
+`pip` sistem Ubuntu 24.04 dikunci **PEP 668**, jadi
+`pip install -r requirements.txt` gagal dengan
+`error: externally-managed-environment`. Jangan diakali dengan
+`--break-system-packages`; pakai venv:
+
+```bash
+python3 -m venv .venv          # nama .venv = yang dideteksi PM2
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Selesai. **Tidak perlu** mengubah `deploy/ecosystem.config.js`: berkas itu mencari
+interpreter dengan urutan `BOT_PYTHON` (env) → `.venv/bin/python` →
+`venv/bin/python` → `python3` sistem, sehingga bot PM2 otomatis memakai venv di
+atas. Verifikasi setelah PM2 jalan:
+
+```bash
+pm2 describe jkt48-archiver-bot | grep -E 'script path|exec cwd'
+```
+
+Baris `script path` harus menunjuk `<repo>/.venv/bin/python`. Bila tetap menunjuk
+`/usr/bin/python3`, bot akan mati dengan `ModuleNotFoundError` (namespace paket
+`telethon` biasanya sudah ada, sehingga gejalanya justru membingungkan).
 
 ## 3. Konfigurasi environment
 
@@ -319,3 +345,6 @@ kerusakan.
 | Rekaman tidak bertambah di web | `UPLOAD_TARGET=telegram` (web hanya membaca `youtube_video_id`) |
 | Web menampilkan data berbeda dari bot | `DB_PATH` di `web/.env` menunjuk berkas lain |
 | `database is locked` | Bot dan web menulis bersamaan; aktifkan WAL + `busy_timeout` |
+| `pip install` gagal: `error: externally-managed-environment` | PEP 668 mengunci `pip` sistem (Ubuntu 23.04+/Debian 12+); buat venv `.venv` lalu pasang di dalamnya |
+| Bot mati dengan `ModuleNotFoundError` setelah `pm2 restart` | PM2 memakai `python3` sistem; buat `.venv` (atau set `BOT_PYTHON`), pasang `requirements.txt` di dalamnya, lalu `pm2 restart jkt48-archiver-bot --update-env` |
+| Bot jalan tetapi fitur TikTok selalu gagal dengan 403 | `curl_cffi` belum terpasang di interpreter yang dipakai PM2 (lihat `pm2 describe jkt48-archiver-bot`) |
