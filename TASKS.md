@@ -368,6 +368,45 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       (kini juga memeriksa foto member + fallback inisial), browser check
       **25/25 PASS**, `verify:home-upcoming` & `verify:auto-publish` PASS.
 
+- [x] **Hardening batch (22 Sep 2026)** — perubahan kecil yang menutup lubang
+      operasional & keamanan, diverifikasi penuh sebelum commit:
+      1. **Guard ruang disk sebelum rekaman baru**: `MIN_FREE_DISK_MB`
+         (default 2048) + `has_enough_disk_space()` di `bot/downloader.py`,
+         dipanggil di loop utama IDN **dan** `_check_showroom` sebelum spawn
+         task. Di bawah ambang → live terdeteksi tapi TIDAK direkam (warning
+         log), rekaman yang sudah jalan dibiarkan; cek fail-open bila
+         `disk_usage` error. Test: `tests/test_disk_space.py` (+6).
+      2. **SQLite WAL + busy_timeout + index**: bot (`database.py`) dan web
+         (`lib/db.ts`) kini memakai `journal_mode=WAL`, `busy_timeout=5000`,
+         `synchronous=NORMAL` agar akses bersamaan bot(writer)/web(reader)
+         tidak "database is locked". Index query berat dibuat **best-effort
+         per-statement** — fixture uji & DB lama yang skemanya minimal (mis.
+         `merge_groups` tanpa kolom `status`) tidak boleh membuat `init_db` /
+         `getDb` gagal (regresi yang sempat mematahkan `verify:auto-publish`
+         & `verify:tiktok`).
+      3. **Rate-limit login per-IP** (`web/lib/auth.ts`): bucket di-key
+         `login:<ip>` (x-forwarded-for bila ada) supaya satu brute-force tidak
+         mengunci semua admin 15 menit.
+      4. **`APP_ORIGIN` fail-closed di production**: tanpa origin yang diset,
+         Origin check jadi no-op; kini menolak permintaan (dev tetap memakai
+         origin request). `.env.example` mewajibkan `APP_ORIGIN`.
+      5. **Upload YouTube error non-kuota → `pending_upload`** (bukan
+         `failed` permanen) — `get_pending_uploads_youtube` hanya memilih
+         `pending_upload`, jadi error network/OAuth kini bisa di-retry.
+      6. **Ref task retry upload disimpan** (`self._retry_task`) agar tidak
+         di-GC di tengah jalan; task admin bot diberi `name="admin-bot"`.
+      7. **Halaman 404 kustom** (`web/app/not-found.tsx` + CSS
+         `.not-found*`) — nada bahasa mengikuti UI publik ("kamu"/"replay").
+      8. **Dependensi**: `yt-dlp` di-pin longgar (`>=2025.1.15`) karena
+         extractor IDN/Showroom/TikTok sering berubah; `requests` naik patch;
+         `tqdm`/`asyncio-throttle` dibuang (tak terpakai kode).
+      Verifikasi: **420 test Python lulus** (+6), `py_compile` OK, pyflakes
+      bersih untuk berkas yang disentuh, `tsc` 0, `eslint` 0, `build` OK,
+      `verify:home-upcoming` PASS, `verify:auto-publish` PASS,
+      `verify:tiktok` PASS. (`portal-browser-check.mjs` butuh Chrome CDP +
+      server :3101 yang tidak tersedia di sesi ini — jalankan terpisah bila
+      perlu.)
+
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 
 - [ ] **Arsip TikTok — verifikasi di VPS**: metode sudah terbukti di mesin

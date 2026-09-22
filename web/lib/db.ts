@@ -39,6 +39,10 @@ export function getDb(): DatabaseSync {
     }
 
     _db = new DatabaseSync(dbPath);
+    // WAL + busy_timeout: bot (writer) dan web (reader) berbagi file yang sama.
+    _db.exec('PRAGMA journal_mode=WAL');
+    _db.exec('PRAGMA busy_timeout=5000');
+    _db.exec('PRAGMA synchronous=NORMAL');
 
     // Initialize media_catalog table if not exists
     _db.exec(`
@@ -100,6 +104,27 @@ export function getDb(): DatabaseSync {
         added_at            TEXT DEFAULT (datetime('now'))
       );
     `);
+
+    // Index untuk query berat — best-effort & per-statement: fixture uji dan
+    // database lama bisa tidak punya tabel/kolomnya (mis. merge_groups tanpa
+    // status). Gagal membuat index hanya memengaruhi performa, bukan benar/salah.
+    const indexStatements = [
+      'CREATE INDEX IF NOT EXISTS idx_live_sessions_status ON live_sessions(status)',
+      'CREATE INDEX IF NOT EXISTS idx_live_sessions_youtube ON live_sessions(youtube_video_id)',
+      'CREATE INDEX IF NOT EXISTS idx_live_sessions_member ON live_sessions(member_username)',
+      'CREATE INDEX IF NOT EXISTS idx_live_sessions_created ON live_sessions(created_at)',
+      'CREATE INDEX IF NOT EXISTS idx_live_sessions_merge ON live_sessions(merge_group_id)',
+      'CREATE INDEX IF NOT EXISTS idx_merge_groups_status ON merge_groups(status)',
+      'CREATE INDEX IF NOT EXISTS idx_tiktok_posts_status ON tiktok_posts(status)',
+      'CREATE INDEX IF NOT EXISTS idx_tiktok_posts_unique ON tiktok_posts(unique_id)',
+    ];
+    for (const sql of indexStatements) {
+      try {
+        _db.exec(sql);
+      } catch {
+        // Tabel/kolom belum ada — lewati.
+      }
+    }
 
     // Kolom milik skema bot yang dipakai aturan publik & label platform.
     // Bila web dijalankan terhadap database lama yang belum memilikinya,

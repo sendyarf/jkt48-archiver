@@ -194,3 +194,17 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .hero-actions { align-self: stretch; }
   .hero-actions .primary-button, .hero-actions .secondary-button, .hero-actions .text-button { flex: 1 1 100%; }
 }
+
+/* ── 404 (/ tidak ditemukan) ────────────────────────────────────────────── */
+.not-found { display: flex; align-items: center; justify-content: center; min-height: min(62vh, 560px); }
+.not-found-card { width: min(560px, 100%); text-align: center; padding: clamp(28px, 5vw, 48px) clamp(18px, 4vw, 36px); background: #101622; border: 1px solid var(--border-card); border-radius: 18px; box-shadow: 0 24px 60px -30px rgba(0, 0, 0, .8); }
+.not-found-card .eyebrow { margin-bottom: 8px; }
+.not-found-code { font-family: var(--font-display); font-size: clamp(4.5rem, 3rem + 10vw, 7.5rem); font-weight: 800; line-height: 1; letter-spacing: -.04em; background: linear-gradient(135deg, #fff 10%, #fda4af 55%, #e11d48 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 10px; }
+.not-found-card h1 { font-size: clamp(1.35rem, 1.1rem + 1.4vw, 1.85rem); margin-bottom: 10px; }
+.not-found-text { color: var(--text-secondary); font-size: .9rem; line-height: 1.7; max-width: 40ch; margin: 0 auto 22px; overflow-wrap: anywhere; }
+.not-found-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; }
+.not-found-actions .primary-button, .not-found-actions .secondary-button, .not-found-actions .text-button { min-height: 42px; }
+@media (max-width: 720px) {
+  .not-found-actions { flex-direction: column; align-self: stretch; }
+  .not-found-actions .primary-button, .not-found-actions .secondary-button, .not-found-actions .text-button { width: 100%; }
+}

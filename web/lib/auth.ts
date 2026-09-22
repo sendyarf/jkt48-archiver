@@ -28,14 +28,29 @@ export function validSecret(input: unknown): boolean {
 }
 
 // Shared SQLite limit: survives restarts and does not trust forwarded IP headers.
-export function allowLogin(): boolean {
+// Bucket di-key per IP (x-forwarded-for bila di belakang nginx; fallback remote
+// address) supaya satu brute-force tidak mengunci SEMUA admin 15 menit
+// (PUBLIC-ADMIN.md: batasi juga di reverse proxy).
+export function allowLogin(request?: Request): boolean {
   const db = authDb();
   const now = Date.now();
   db.prepare('DELETE FROM web_login_limits WHERE expires_at <= ?').run(now);
+  const ip = clientIp(request);
   const row = db.prepare(`INSERT INTO web_login_limits (bucket, attempts, expires_at)
-    VALUES ('admin', 1, ?) ON CONFLICT(bucket) DO UPDATE SET attempts = attempts + 1
-    RETURNING attempts`).get(now + 15 * 60 * 1000) as { attempts: number };
+    VALUES (?, 1, ?) ON CONFLICT(bucket) DO UPDATE SET attempts = attempts + 1
+    RETURNING attempts`).get(`login:${ip}`, now + 15 * 60 * 1000) as { attempts: number };
   return row.attempts <= 20;
+}
+
+function clientIp(request?: Request): string {
+  if (!request) return 'unknown';
+  const fwd = request.headers.get('x-forwarded-for');
+  if (fwd) return (fwd.split(',')[0] || '').trim() || 'unknown';
+  try {
+    return new URL(request.url).hostname || 'unknown';
+  } catch {
+    return 'unknown';
+  }
 }
 
 export async function createSession() {
@@ -70,6 +85,16 @@ export async function destroySession() {
 }
 
 export function sameOrigin(request: Request): boolean {
-  const expected = process.env.APP_ORIGIN || new URL(request.url).origin;
-  return request.headers.get('origin') === expected;
+  const origin = process.env.APP_ORIGIN;
+  // Fail closed di production: tanpa APP_ORIGIN, Origin check jadi no-op
+  // (expected akan sama dengan request sendiri). .env.example mewajibkan ini.
+  if (!origin) {
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[auth] APP_ORIGIN belum di-set — menolak permintaan (origin check fail-closed).');
+      return false;
+    }
+    // Dev: izinkan origin yang match host request.
+    return request.headers.get('origin') === new URL(request.url).origin;
+  }
+  return request.headers.get('origin') === origin;
 }

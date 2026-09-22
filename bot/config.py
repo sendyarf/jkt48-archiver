@@ -234,6 +234,11 @@ class Config:
     # Directory on VPS to save downloads temporarily
     DOWNLOAD_DIR: str = os.getenv("DOWNLOAD_DIR", "/tmp/jkt48-lives")
 
+    # Ruang disk minimum (MB) sebelum mulai recording baru. Di bawah ambang
+    # ini deteksi live di-skip + warning log (bukan crash) supaya yt-dlp/ffmpeg
+    # tidak gagal di tengah jalan dan meninggalkan sesi macet.
+    MIN_FREE_DISK_MB: int = int(os.getenv("MIN_FREE_DISK_MB", "2048"))
+
     # Thumbnail kolase 3x2 utk video BARU (true/false). Dibuat dari file lokal
     # via ffmpeg lalu dipasang ke YouTube (~50 unit kuota). Gagal membuat /
     # memasang thumbnail TIDAK menggagalkan upload. Video lama tak disentuh.

@@ -191,7 +191,7 @@ class AdminBot:
             )
             return None
         self._running = True
-        self._task = asyncio.create_task(self.run())
+        self._task = asyncio.create_task(self.run(), name="admin-bot")
         return self._task
 
     async def run(self) -> None:

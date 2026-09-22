@@ -5,7 +5,7 @@ telethon==1.36.0
 
 # HTTP client for IDN API
 httpx==0.27.2
-requests==2.32.3
+requests==2.32.4
 
 # Arsip TikTok: meniru TLS/HTTP2 fingerprint Chrome agar lolos Cloudflare pada
 # tikwm.com & halaman embed TikTok (tanpa ini keduanya dijawab 403).
@@ -13,19 +13,17 @@ curl_cffi==0.14.0
 
 # HLS downloader (handles quality selection, reconnect, auth headers)
 # ffmpeg is still required on the system for muxing: sudo apt install ffmpeg
-yt-dlp==2025.1.15
+# yt-dlp di-pin longgar: extractor IDN/Showroom/TikTok sering berubah dan
+# pin stale (mis. 2025.1.15) bisa mematahkan recording mendadak.
+yt-dlp>=2025.1.15
 
 # YouTube Data API v3
 google-api-python-client==2.149.0
 google-auth-oauthlib==1.2.1
 google-auth-httplib2==0.2.0
 
-# Async utilities
-asyncio-throttle==1.0.2
-
 # Environment & config
 python-dotenv==1.0.1
 
 # Progress bars & logging
-tqdm==4.66.5
 colorlog==6.8.2

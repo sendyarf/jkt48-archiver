@@ -443,3 +443,22 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
     `%r` supaya timeout berpesan kosong tetap menampakkan tipe exception-nya.
     Perilaku CDN diverifikasi langsung: URL mati dari log insiden → timeout 8 dtk,
     URL live → HTTP 200 dalam 400 ms.
+
+24. **Index DB harus best-effort per-statement (insiden 22 Sep 2026).**
+    `CREATE INDEX` yang dibungkus satu `exec()` bersama `CREATE TABLE` membuat
+    `getDb()` / `init_db()` GAGAL BILA salah satu tabel/kolom belum ada —
+    fixture uji `auto-publish` punya `merge_groups` tanpa kolom `status`, dan
+    fixture `tiktok-page` tidak punya `merge_groups` sama sekali →
+    `verify:auto-publish` & `verify:tiktok` error `no such column: status`
+    dan halaman hanya menampilkan skeleton. Index hanya optimasi performa:
+    selalu jalankan per-statement di try/except (bot: `sqlite3.OperationalError`
+    → `logger.debug`; web: catch kosong). JANGAN menggabungkannya dengan
+    pembuatan tabel dalam satu eksekusi yang tidak bisa gagal sebagian.
+
+25. **Guard disk sebelum MULAI rekaman baru (`MIN_FREE_DISK_MB`, default 2048).**
+    `has_enough_disk_space()` di `bot/downloader.py` dipanggil di loop utama IDN
+    dan `_check_showroom` SEBELUM `create_task`. Di bawah ambang → deteksi live
+    dilewati dengan warning (bukan crash); rekaman yang SUDAH berjalan tidak
+    disentuh. Fail-open bila `shutil.disk_usage` error (FS aneh jangan blokir).
+    Jangan pindahkan pemeriksaan ke dalam task — guard harus mencegah spawn,
+    bukan membatalkan di tengah jalan.

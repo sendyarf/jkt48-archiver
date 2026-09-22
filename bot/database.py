@@ -142,6 +142,12 @@ CREATE TABLE IF NOT EXISTS tiktok_posts (
 def _get_conn() -> Generator[sqlite3.Connection, None, None]:
     conn = sqlite3.connect(Config.DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # WAL + busy_timeout: bot (writer) dan web (reader) membuka file yang sama;
+    # tanpa ini concurrent access bisa "database is locked" (dokumentasi
+    # deploy/README.md & SHOWROOM-PLAN.md §5).
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     try:
         yield conn
         conn.commit()
@@ -150,6 +156,21 @@ def _get_conn() -> Generator[sqlite3.Connection, None, None]:
         raise
     finally:
         conn.close()
+
+
+# Index untuk query berat (status filter, youtube_video_id, hls_url, merge group).
+# Dibuat idempoten di setiap init_db().
+CREATE_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_live_sessions_status ON live_sessions(status)",
+    "CREATE INDEX IF NOT EXISTS idx_live_sessions_youtube ON live_sessions(youtube_video_id)",
+    "CREATE INDEX IF NOT EXISTS idx_live_sessions_hls ON live_sessions(hls_url)",
+    "CREATE INDEX IF NOT EXISTS idx_live_sessions_member ON live_sessions(member_username)",
+    "CREATE INDEX IF NOT EXISTS idx_live_sessions_created ON live_sessions(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_live_sessions_merge ON live_sessions(merge_group_id)",
+    "CREATE INDEX IF NOT EXISTS idx_merge_groups_status ON merge_groups(status)",
+    "CREATE INDEX IF NOT EXISTS idx_tiktok_posts_status ON tiktok_posts(status)",
+    "CREATE INDEX IF NOT EXISTS idx_tiktok_posts_unique ON tiktok_posts(unique_id)",
+]
 
 
 def init_db() -> None:
@@ -161,6 +182,13 @@ def init_db() -> None:
         conn.execute(CREATE_YOUTUBE_CHANNELS_SQL)
         conn.execute(CREATE_TIKTOK_ACCOUNTS_SQL)
         conn.execute(CREATE_TIKTOK_POSTS_SQL)
+        for stmt in CREATE_INDEXES_SQL:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                # Skema lama / fixture bisa belum punya tabel/kolomnya.
+                # Index hanya optimasi performa — jangan gagalkan init_db.
+                logger.debug("Index dilewati (skema belum siap): %s", stmt)
 
         # Migrate live_sessions columns if missing
         cols = [r[1] for r in conn.execute("PRAGMA table_info(live_sessions)")]

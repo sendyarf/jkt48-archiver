@@ -135,6 +135,28 @@ def _ensure_download_dir() -> Path:
     return path
 
 
+def has_enough_disk_space(min_mb: Optional[int] = None) -> bool:
+    """
+    True bila space bebas di DOWNLOAD_DIR masih di atas ambang MIN_FREE_DISK_MB.
+
+    Dipanggil sebelum mulai recording supaya yt-dlp/ffmpeg tidak gagal di
+    tengah jalan karena disk penuh (insiden yang tercatat di SHOWROOM-PLAN §6.1).
+    """
+    threshold_mb = Config.MIN_FREE_DISK_MB if min_mb is None else min_mb
+    try:
+        free_mb = shutil.disk_usage(str(_ensure_download_dir())).free // (1024 * 1024)
+    except OSError:
+        # Tidak bisa cek → jangan blokir recording (mis. FS aneh).
+        return True
+    if free_mb < threshold_mb:
+        logger.warning(
+            "Disk space rendah: %d MB bebas < ambang %d MB — recording dilewati.",
+            free_mb, threshold_mb,
+        )
+        return False
+    return True
+
+
 def _output_path(member_username: str, live_id: str) -> Path:
     """
     Build a deterministic output file path (WITHOUT extension).

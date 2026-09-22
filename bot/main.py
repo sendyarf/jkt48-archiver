@@ -36,6 +36,7 @@ from bot.downloader import (
     delete_file,
     get_file_size_bytes,
     cancel_download,
+    has_enough_disk_space,
     DownloadError,
 )
 from bot.hls_discovery import HLSDiscovery
@@ -140,8 +141,10 @@ class JKT48LiveBot:
         # Initial members sync
         self.sync_members_whitelist()
 
-        # Check and process pending uploads in background
-        asyncio.create_task(self.retry_pending_uploads())
+        # Check and process pending uploads in background.
+        # Ref disimpan agar task tidak di-GC di tengah jalan (Python docs:
+        # create_task tanpa referensi kuat bisa di-collect → exception hilang).
+        self._retry_task = asyncio.create_task(self.retry_pending_uploads())
 
         # Telegram admin bot (long polling) — control channels from Telegram
         self.admin_bot = AdminBot(on_stop_recording=self._cancel_active_recording)
@@ -438,8 +441,12 @@ class JKT48LiveBot:
                         channel_id=Config.ADMIN_CHAT_ID,
                     )
             except Exception as exc:
+                # Error non-kuota (network, OAuth, dsb.) juga retryable —
+                # tandai pending_upload agar file TIDAK stuck permanen sebagai
+                # `failed` tanpa pernah dicoba lagi (get_pending_uploads_youtube
+                # hanya memilih pending_upload).
                 logger.exception("Unexpected error uploading %s to YouTube: %s", live_id, exc)
-                set_status("failed", error_message=str(exc))
+                set_status("pending_upload", error_message=str(exc))
 
     async def _archive_to_telegram(
         self,
@@ -895,6 +902,10 @@ class JKT48LiveBot:
         if not live_rooms:
             return
 
+        # Guard disk yang sama dengan jalur IDN (lihat _main_loop).
+        if not has_enough_disk_space():
+            return
+
         logger.info("Showroom: %d room sedang live", len(live_rooms))
         for room in live_rooms:
             username = (room.get("username") or "").lower()
@@ -1060,6 +1071,13 @@ class JKT48LiveBot:
 
                 if candidate_members:
                     active_now = await self.hls_monitor.check_active_members(candidate_members)
+
+                    # Guard disk: jangan MULAI rekaman baru bila ruang hampir
+                    # habis (yt-dlp/ffmpeg bisa gagal di tengah jalan). Rekaman
+                    # yang sudah berjalan tetap dibiarkan; deteksi diulang siklus
+                    # berikutnya begitu space cukup.
+                    if active_now and not has_enough_disk_space():
+                        active_now = []
 
                     for member in active_now:
                         u = member["username"].lower()
