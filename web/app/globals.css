@@ -2105,10 +2105,13 @@ input:checked + .slider:before {
   object-fit: contain;
 }
 
+/* Tombol ←/→ ada di BAWAH foto, bukan tengah samping: posisi lama menimpa
+   navigasi feed ↑/↓ (.tiktok-nav) di tepi kanan area pemutar. */
 .photo-carousel-btn {
   position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+  bottom: 10px;
+  top: auto;
+  transform: none;
   width: 40px;
   height: 40px;
   border-radius: 50%;
@@ -2121,11 +2124,11 @@ input:checked + .slider:before {
 }
 
 .photo-carousel-btn.prev { left: 10px; }
-.photo-carousel-btn.next { right: 10px; }
+.photo-carousel-btn.next { left: 58px; right: auto; }
 
 .photo-carousel-counter {
   position: absolute;
-  bottom: 10px;
+  bottom: 14px;
   right: 12px;
   font-size: 0.72rem;
   font-weight: 700;
