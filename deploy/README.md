@@ -187,6 +187,42 @@ yt-dlp di-SIGTERM lebih dulu, task diberi waktu `GRACEFUL_SHUTDOWN_SECONDS`, dan
 file parsial yang tertinggal (≥ 5 MB) didaftarkan sebagai segmen sah lalu masuk
 merge group. Jadi `pm2 restart` di tengah live tidak lagi membuang potongan
 rekaman — asalkan `kill_timeout` tetap ≥ `GRACEFUL_SHUTDOWN_SECONDS + 10`.
+
+## 5a. Memperbarui kode (deploy fitur baru)
+
+`pm2 restart` **hanya menjalankan ulang proses** — ia TIDAK menarik kode baru
+dan TIDAK membangun ulang website. Rute/halaman yang baru ditambahkan (mis.
+`/tiktok`) akan tetap menjawab **404** sampai build baru dibuat. Urutan yang
+benar setiap kali ada pembaruan kode:
+
+```bash
+cd ~/jkt48-live                 # sesuaikan dengan lokasi clone
+git pull
+
+# Website: build ulang WAJIB — .next yang lama tidak tahu rute baru.
+# Hentikan dulu web-nya: build menimpa folder .next yang sedang dipakai
+# (lihat "Catatan yang mudah terlewat"). Bot TIDAK perlu dihentikan.
+pm2 stop jkt48-web
+cd web
+npm ci                          # aman diulang; hanya mengubah node_modules bila perlu
+npm run build                   # pastikan rute baru muncul di tabel "Route (app)"
+cd ..
+pm2 restart jkt48-web
+
+# Bot: muat kode + variabel .env terbaru.
+pm2 restart jkt48-archiver-bot --update-env
+```
+
+Verifikasi setelah deploy:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://jkt48.vidx.download/tiktok   # harus 200
+cd web && node verify/tiktok-live-check.mjs http://127.0.0.1:3101             # diagnostik lengkap
+```
+
+`verify/tiktok-live-check.mjs` memeriksa halaman /tiktok, DB_PATH web vs bot,
+dan jumlah arsip yang benar-benar tampil — tanpa menulis apa pun ke database.
+
 ## 6. nginx + HTTPS
 
 > **Urutan ini penting.** Konfigurasi nginx di repo menunjuk berkas sertifikat di
@@ -351,6 +387,7 @@ kerusakan.
 
 | Gejala | Penyebab yang paling mungkin |
 |---|---|
+| Halaman baru (mis. `/tiktok`) 404 padahal situs lain normal | Build produksi basi — `pm2 restart` tidak membangun ulang `.next`. Jalankan urutan di bagian 5a (`npm run build` lalu `pm2 restart jkt48-web`) |
 | Login selalu 403 | `APP_ORIGIN` tidak sama persis dengan origin di browser |
 | `ERR_TOO_MANY_REDIRECTS` | Mode SSL/TLS Cloudflare masih **Flexible**; ubah ke Full (strict) |
 | Situs berhenti saat proxy dinyalakan | Mode Full tapi origin belum punya sertifikat valid |
