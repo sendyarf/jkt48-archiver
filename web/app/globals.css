@@ -2154,13 +2154,89 @@ input:checked + .slider:before {
 
 .member-detail-hero {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 16px;
   padding: 16px;
   background: var(--bg-card);
   border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
   margin-bottom: 16px;
+}
+
+.member-detail-avatar {
+  width: 72px;
+  height: 72px;
+  flex-shrink: 0;
+}
+
+.member-detail-avatar.member-avatar-lg {
+  border-color: var(--border-active, #f43f5e);
+}
+
+.member-detail-meta {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.member-detail-meta-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+/* Baris tautan eksternal (IDN, Showroom, sosial) di dalam strip profil. */
+.member-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+}
+
+.member-link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-card);
+  background: var(--bg-card);
+  color: #f8fafc;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.member-link-chip:hover {
+  border-color: var(--border-active, #f43f5e);
+  color: #fecdd3;
+}
+
+.member-link-chip.live {
+  background: rgba(14, 165, 233, 0.12);
+  border-color: rgba(14, 165, 233, 0.35);
+}
+
+.member-link-chip.showroom {
+  background: rgba(244, 63, 94, 0.12);
+  border-color: rgba(244, 63, 94, 0.35);
+}
+
+.member-link-chip.social {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+@media (max-width: 560px) {
+  .member-detail-hero {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 
 /* ─── Reduced motion: hormati pengguna sensitif animasi ────────────────── */

@@ -15,6 +15,8 @@ venv/
 *.mp4
 *.log
 jkt48_live.db
+jkt48_live.db-shm
+jkt48_live.db-wal
 scratch/
 .playwright-mcp/
 .pytest_cache/

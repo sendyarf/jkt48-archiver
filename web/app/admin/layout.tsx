@@ -9,7 +9,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   if (!(await isAdmin())) redirect('/login');
   return <div className="admin-shell container">
     <aside className="admin-sidebar"><p className="eyebrow">RUANG PENGELOLA</p><h2>Admin Studio</h2>
-      <nav aria-label="Navigasi admin"><Link href="/admin">Member</Link><Link href="/admin/publications">Publikasi</Link><Link href="/admin/status">Sistem & antrean</Link><Link href="/admin/trial">Uji pemutar</Link><Link href="/">Balik ke situs</Link></nav>
+      <nav aria-label="Navigasi admin"><Link href="/admin">Member</Link><Link href="/admin/publications">Publikasi</Link><Link href="/admin/videos">Sembunyikan</Link><Link href="/admin/queue">Antrean</Link><Link href="/admin/status">Sistem & antrean</Link><Link href="/admin/trial">Uji pemutar</Link><Link href="/">Balik ke situs</Link></nav>
     </aside><div className="admin-content">{children}</div>
   </div>;
 }

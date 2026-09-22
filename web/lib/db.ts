@@ -51,6 +51,13 @@ export function getDb(): DatabaseSync {
         published INTEGER NOT NULL DEFAULT 0 CHECK(published IN (0, 1)),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      -- Soft-hide per konten (content_uid / youtube_video_id) dari /admin/videos.
+      -- Menang atas web_publications & aturan auto-publish bila baris ada.
+      CREATE TABLE IF NOT EXISTS web_video_overrides (
+        content_key TEXT PRIMARY KEY,
+        published INTEGER NOT NULL DEFAULT 0 CHECK(published IN (0, 1)),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
       CREATE TABLE IF NOT EXISTS media_catalog (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
         live_id           TEXT UNIQUE,
@@ -137,6 +144,9 @@ export function getDb(): DatabaseSync {
         if (!existing.has('download_ended_at')) {
           _db.exec('ALTER TABLE live_sessions ADD COLUMN download_ended_at TEXT');
         }
+        if (!existing.has('download_started_at')) {
+          _db.exec('ALTER TABLE live_sessions ADD COLUMN download_started_at TEXT');
+        }
         if (!existing.has('platform')) {
           _db.exec("ALTER TABLE live_sessions ADD COLUMN platform TEXT NOT NULL DEFAULT 'idn'");
         }
@@ -210,10 +220,19 @@ export const AUTO_PUBLISH_AFTER_HOURS_SHOWROOM: number = (() => {
  * platform lain memakai AUTO_PUBLISH_AFTER_HOURS (default 72; 0 = nonaktif, wajib
  * manual). Baris tanpa kolom/platform diperlakukan 'idn' agar perilaku lama tidak
  * berubah.
+ *
+ * Prioritas keputusan (paling kuat → otomatis):
+ *   1. web_video_overrides pada content_key (/admin/videos — sembunyikan/terbitkan
+ *      per konten, termasuk arsip TG-first tanpa youtube_video_id)
+ *   2. web_publications pada youtube_video_id (/admin/publications)
+ *   3. Aturan auto-publish per platform.
  */
 function publicVisibilitySql(alias = 'ls'): string {
-  const explicitOn = `EXISTS (SELECT 1 FROM web_publications p WHERE p.youtube_video_id = ${alias}.youtube_video_id AND p.published = 1)`;
-  const withheld = `EXISTS (SELECT 1 FROM web_publications p0 WHERE p0.youtube_video_id = ${alias}.youtube_video_id AND p0.published = 0)`;
+  const contentKey = `COALESCE(NULLIF(${alias}.youtube_video_id, ''), ${alias}.content_uid)`;
+  const overrideHide = `EXISTS (SELECT 1 FROM web_video_overrides vo WHERE vo.content_key = ${contentKey} AND vo.content_key != '' AND vo.published = 0)`;
+  const overrideShow = `EXISTS (SELECT 1 FROM web_video_overrides vo WHERE vo.content_key = ${contentKey} AND vo.content_key != '' AND vo.published = 1)`;
+  const explicitOn = `EXISTS (SELECT 1 FROM web_publications p WHERE p.youtube_video_id = ${alias}.youtube_video_id AND p.youtube_video_id != '' AND p.published = 1)`;
+  const withheld = `EXISTS (SELECT 1 FROM web_publications p0 WHERE p0.youtube_video_id = ${alias}.youtube_video_id AND p0.youtube_video_id != '' AND p0.published = 0)`;
   const elapsedHours = `(julianday('now') - julianday(COALESCE(${alias}.download_ended_at, ${alias}.created_at))) * 24`;
   // Showroom: 0 = langsung tampil (konstanta 1, tanpa jeda), negatif = nonaktif,
   // positif = terjadwal N jam. Nilai positif sebelumnya diperlakukan sama dengan 0
@@ -226,7 +245,8 @@ function publicVisibilitySql(alias = 'ls'): string {
   const idnAuto = AUTO_PUBLISH_AFTER_HOURS > 0
     ? `(${elapsedHours} >= ${AUTO_PUBLISH_AFTER_HOURS})`
     : '0';
-  return `(${explicitOn} OR (NOT ${withheld} AND (CASE WHEN COALESCE(${alias}.platform, 'idn') = 'showroom' THEN ${showroomAuto} ELSE ${idnAuto} END)))`;
+  const fallback = `(${explicitOn} OR (NOT ${withheld} AND (CASE WHEN COALESCE(${alias}.platform, 'idn') = 'showroom' THEN ${showroomAuto} ELSE ${idnAuto} END)))`;
+  return `((NOT ${overrideHide}) AND (${overrideShow} OR ${fallback}))`;
 }
 
 export interface VideoItem {
@@ -518,8 +538,11 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
       )
     )`,
     // Ditahan admin (published = 0) / terbit manual (published = 1) bukan pra-rilis.
-    `NOT EXISTS (SELECT 1 FROM web_publications pw WHERE pw.youtube_video_id = ls.youtube_video_id AND pw.published = 0)`,
-    `NOT EXISTS (SELECT 1 FROM web_publications po WHERE po.youtube_video_id = ls.youtube_video_id AND po.published = 1)`,
+    // Baik keputusan publications (YT) maupun override /admin/videos (content_key).
+    `NOT EXISTS (SELECT 1 FROM web_publications pw WHERE pw.youtube_video_id = ls.youtube_video_id AND ls.youtube_video_id != '' AND pw.published = 0)`,
+    `NOT EXISTS (SELECT 1 FROM web_publications po WHERE po.youtube_video_id = ls.youtube_video_id AND ls.youtube_video_id != '' AND po.published = 1)`,
+    `NOT EXISTS (SELECT 1 FROM web_video_overrides vw WHERE vw.content_key = COALESCE(NULLIF(ls.youtube_video_id, ''), ls.content_uid) AND vw.content_key != '' AND vw.published = 0)`,
+    `NOT EXISTS (SELECT 1 FROM web_video_overrides vo2 WHERE vo2.content_key = COALESCE(NULLIF(ls.youtube_video_id, ''), ls.content_uid) AND vo2.content_key != '' AND vo2.published = 1)`,
   ];
   const params: (string | number)[] = [];
   if (showroomHours <= 0) conditions.push(`COALESCE(ls.platform, 'idn') != 'showroom'`);
@@ -655,7 +678,12 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     WHERE (ls.youtube_video_id = ? OR ls.live_id = ? OR ls.id = ? OR ls.content_uid = ?)
       AND NOT EXISTS (
         SELECT 1 FROM web_publications pw
-        WHERE pw.youtube_video_id = ls.youtube_video_id AND pw.published = 0
+        WHERE pw.youtube_video_id = ls.youtube_video_id AND ls.youtube_video_id != '' AND pw.published = 0
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM web_video_overrides wo
+        WHERE wo.content_key = COALESCE(NULLIF(ls.youtube_video_id, ''), ls.content_uid)
+          AND wo.content_key != '' AND wo.published = 0
       )
     ORDER BY ls.id DESC
     LIMIT 1
@@ -870,9 +898,12 @@ export function getStreamersList(): Streamer[] {
 
 interface ActiveSessionRow {
   id: number;
+  live_id: string;
   member_username: string;
   member_name: string | null;
   status: string;
+  platform: string;
+  error_message: string | null;
 }
 
 interface YouTubeChannelRow {
@@ -901,20 +932,28 @@ export interface SystemStats {
   total_archived_videos: number;
   members_count: { total: number; active: number };
   youtube_channels: YouTubeChannelStat[];
+  tiktok: TikTokAdminStats;
 }
 
 export function getSystemStats(): SystemStats {
   const db = getDb();
 
-  // Active recording sessions
+  // Sesi masih berjalan — termasuk uploading_telegram (sama dengan bot/status.py).
   const activeStmt = db.prepare(`
-    SELECT id, member_username, member_name, status FROM live_sessions 
-    WHERE status IN ('detected', 'downloading', 'segment_done', 'download_complete', 'merging', 'uploading_youtube', 'pending_upload')
+    SELECT id, live_id, member_username, member_name, status,
+           COALESCE(NULLIF(platform, ''), 'idn') AS platform,
+           error_message
+    FROM live_sessions
+    WHERE status IN (
+      'detected', 'downloading', 'segment_done', 'download_complete',
+      'merging', 'uploading_telegram', 'uploading_youtube', 'pending_upload'
+    )
     ORDER BY created_at DESC
+    LIMIT 50
   `);
   const activeSessions = activeStmt.all() as unknown as ActiveSessionRow[];
 
-  // Pending YouTube uploads
+  // Pending upload (retry queue)
   const pendingStmt = db.prepare(`
     SELECT COUNT(*) as count FROM live_sessions WHERE status = 'pending_upload'
   `);
@@ -928,7 +967,7 @@ export function getSystemStats(): SystemStats {
 
   // Total members monitored
   const totalMembersStmt = db.prepare(`
-    SELECT 
+    SELECT
       COUNT(*) as total,
       SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as active
     FROM member_hls
@@ -965,6 +1004,7 @@ export function getSystemStats(): SystemStats {
       quota_limit: 6, // approximate safe daily video upload limit
       last_reset: c.last_reset_at,
     })),
+    tiktok: getTikTokAdminStats(),
   };
 }
 
@@ -990,4 +1030,516 @@ export function addMember(username: string, displayName: string): boolean {
   `);
   const result = stmt.run(cleanUser, cleanName);
   return result.changes > 0;
+}
+
+// ─── Admin: daftar video + soft-hide (/admin/videos) ─────────────────────────
+
+export interface AdminVideo {
+  content_key: string;
+  youtube_video_id: string;
+  content_uid: string;
+  platform: string;
+  member_username: string;
+  member_name: string;
+  title: string;
+  started_at: string | null;
+  created_at: string | null;
+  has_tg: number;
+  has_yt: number;
+  visible: number;
+  /** null = tanpa override; 0 = disembunyikan admin; 1 = diterbitkan admin. */
+  override: number | null;
+  hours_since_end: number | null;
+  row_count: number;
+}
+
+/**
+ * Semua konten untuk tabel admin /admin/videos — termasuk yang tersembunyi
+ * dan arsip TG-first tanpa youtube_video_id. Digroup per content_key.
+ */
+export function getAdminVideos(
+  search = '',
+  page = 1,
+  visibility: 'all' | 'visible' | 'hidden' = 'all',
+): { videos: AdminVideo[]; hasMore: boolean } {
+  const db = getDb();
+  const filter = `%${search.slice(0, 100)}%`;
+  const keyExpr = CONTENT_KEY_SQL;
+  const rows = db.prepare(`
+    SELECT
+      ${keyExpr} AS content_key,
+      MAX(ls.youtube_video_id) AS youtube_video_id,
+      MAX(COALESCE(NULLIF(ls.content_uid, ''), '')) AS content_uid,
+      COALESCE(NULLIF(MAX(ls.platform), ''), 'idn') AS platform,
+      ls.member_username,
+      COALESCE(NULLIF(MAX(ls.member_name), ''), mh.display_name, ls.member_username) AS member_name,
+      COALESCE(NULLIF(MAX(mg.live_title), ''), '') AS live_title,
+      MIN(ls.started_at) AS started_at,
+      MAX(ls.created_at) AS created_at,
+      MAX(CASE WHEN ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != '' THEN 1 ELSE 0 END) AS has_tg,
+      MAX(CASE WHEN ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != '' THEN 1 ELSE 0 END) AS has_yt,
+      MAX(CASE WHEN vo.published IS NULL THEN NULL ELSE vo.published END) AS override,
+      MAX(${publicVisibilitySql('ls')}) AS visible,
+      MAX((julianday('now') - julianday(COALESCE(ls.download_ended_at, ls.created_at))) * 24) AS hours_since_end,
+      COUNT(*) AS row_count
+    FROM live_sessions ls
+    LEFT JOIN merge_groups mg ON mg.id = ls.merge_group_id
+    LEFT JOIN member_hls mh ON mh.username = ls.member_username
+    LEFT JOIN web_video_overrides vo ON vo.content_key = ${keyExpr}
+    WHERE (
+      (ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != '')
+      OR (
+        ls.content_uid IS NOT NULL AND ls.content_uid != ''
+        AND ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != ''
+      )
+    )
+    AND (ls.member_username LIKE ? OR ls.member_name LIKE ? OR mg.live_title LIKE ? OR mh.display_name LIKE ? OR ${keyExpr} LIKE ?)
+    GROUP BY ${keyExpr}
+    HAVING (${visibility === 'visible' ? 'visible = 1' : visibility === 'hidden' ? 'visible = 0' : '1 = 1'})
+    ORDER BY MAX(COALESCE(ls.download_ended_at, ls.created_at)) DESC
+    LIMIT 51 OFFSET ?
+  `).all(filter, filter, filter, filter, filter, (page - 1) * 50) as unknown as Array<{
+    content_key: string | null;
+    youtube_video_id: string | null;
+    content_uid: string | null;
+    platform: string;
+    member_username: string;
+    member_name: string | null;
+    live_title: string;
+    started_at: string | null;
+    created_at: string | null;
+    has_tg: number;
+    has_yt: number;
+    override: number | null;
+    visible: number;
+    hours_since_end: number | null;
+    row_count: number;
+  }>;
+
+  const videos: AdminVideo[] = rows.slice(0, 50).map((row) => {
+    const ytId = (row.youtube_video_id || '').trim();
+    const contentUid = (row.content_uid || '').trim();
+    const platform = normalizePlatform(row.platform);
+    const displayName = cleanDisplayName(row.member_username, row.member_name || undefined);
+    const title = row.live_title
+      || buildDisplayTitle(platform, displayName, row.started_at || row.created_at || '');
+    return {
+      content_key: row.content_key || ytId || contentUid,
+      youtube_video_id: ytId,
+      content_uid: contentUid,
+      platform: row.platform,
+      member_username: row.member_username,
+      member_name: displayName,
+      title,
+      started_at: row.started_at,
+      created_at: row.created_at,
+      has_tg: row.has_tg ? 1 : 0,
+      has_yt: row.has_yt ? 1 : 0,
+      visible: row.visible ? 1 : 0,
+      override: row.override,
+      hours_since_end: row.hours_since_end,
+      row_count: row.row_count,
+    };
+  });
+  return { videos, hasMore: rows.length > 50 };
+}
+
+/**
+ * Soft-hide / tampilkan konten di situs publik (/admin/videos).
+ * Menulis web_video_overrides pada content_key — berlaku untuk YouTube
+ * maupun arsip TG-first, dan menang atas aturan auto-publish.
+ */
+export function setContentVisibility(contentKey: string, published: boolean): boolean {
+  const key = (contentKey || '').trim();
+  if (!key || key.length > 120) return false;
+  const db = getDb();
+  const exists = db.prepare(`
+    SELECT 1 FROM live_sessions
+    WHERE youtube_video_id = ? OR content_uid = ?
+    LIMIT 1
+  `).get(key, key);
+  if (!exists) return false;
+  db.prepare(`
+    INSERT INTO web_video_overrides (content_key, published, updated_at)
+    VALUES (?, ?, datetime('now'))
+    ON CONFLICT(content_key) DO UPDATE SET
+      published = excluded.published,
+      updated_at = datetime('now')
+  `).run(key, published ? 1 : 0);
+  return true;
+}
+
+/** Hapus override admin → konten kembali mengikuti aturan publications/auto. */
+export function clearContentVisibility(contentKey: string): boolean {
+  const key = (contentKey || '').trim();
+  if (!key) return false;
+  const result = getDb()
+    .prepare(`DELETE FROM web_video_overrides WHERE content_key = ?`)
+    .run(key);
+  return result.changes > 0;
+}
+
+// ─── Admin: antrean terpadu (/admin/queue) ───────────────────────────────────
+
+export type QueueSource = 'live' | 'tiktok';
+
+export interface QueueItem {
+  source: QueueSource;
+  id: string;
+  content_key: string;
+  platform: string;
+  member_username: string;
+  member_name: string;
+  title: string;
+  status: string;
+  /** Tujuan pemrosesan saat ini / terakhir: youtube | telegram | download | merge */
+  destination: string;
+  error_message: string | null;
+  file_size_bytes: number;
+  has_yt: number;
+  has_tg: number;
+  youtube_video_id: string;
+  kind: string;
+  created_at: string | null;
+  age_hours: number | null;
+}
+
+export interface QueueSummary {
+  live_total: number;
+  live_by_status: Record<string, number>;
+  live_by_platform: Record<string, number>;
+  tiktok_total: number;
+  tiktok_by_status: Record<string, number>;
+  tiktok_yt_backlog: number;
+}
+
+/** Status live_sessions yang dianggap "masih dalam alur kerja" untuk antrean. */
+const QUEUE_LIVE_STATUSES = [
+  'detected', 'downloading', 'segment_done', 'download_complete',
+  'merging', 'uploading_telegram', 'uploading_youtube',
+  'pending_upload', 'failed',
+] as const;
+
+/** Status tiktok_posts yang masih diproses / menunggu / gagal. */
+const QUEUE_TIKTOK_STATUSES = [
+  'detected', 'downloading', 'uploading_telegram', 'uploading_youtube',
+  'pending_upload', 'failed',
+] as const;
+
+function inferLiveDestination(status: string, hasYt: boolean, hasTg: boolean, error: string): string {
+  const err = (error || '').toLowerCase();
+  if (status === 'uploading_telegram' || status === 'done_telegram') return 'telegram';
+  if (status === 'uploading_youtube' || status === 'done_youtube') return 'youtube';
+  if (status === 'detected' || status === 'downloading') return 'download';
+  if (status === 'segment_done' || status === 'download_complete' || status === 'merging') return 'merge';
+  if (status === 'pending_upload' || status === 'failed') {
+    if (err.includes('youtube') || err.includes('quota')) return 'youtube';
+    if (err.includes('telegram')) return 'telegram';
+    if (hasYt && !hasTg) return 'telegram';
+    if (!hasYt) return 'youtube';
+    return 'youtube';
+  }
+  if (hasYt) return 'telegram';
+  return 'youtube';
+}
+
+/**
+ * Antrean terpadu: sesi live (IDN/Showroom) + post TikTok, digroup per
+ * konten (file/content_uid) agar segmen merge tidak menduplikasi baris.
+ */
+export function getAdminQueue(options: {
+  source?: 'all' | 'live' | 'tiktok';
+  platform?: string;
+  status?: string;
+  limit?: number;
+} = {}): { items: QueueItem[]; summary: QueueSummary } {
+  const db = getDb();
+  const source = options.source || 'all';
+  const platformFilter = (options.platform || '').trim().toLowerCase();
+  const statusFilter = (options.status || '').trim();
+  const limit = Math.max(1, Math.min(200, options.limit || 100));
+
+  const items: QueueItem[] = [];
+  const summary: QueueSummary = {
+    live_total: 0,
+    live_by_status: {},
+    live_by_platform: {},
+    tiktok_total: 0,
+    tiktok_by_status: {},
+    tiktok_yt_backlog: 0,
+  };
+
+  if (source === 'all' || source === 'live') {
+    const placeholders = QUEUE_LIVE_STATUSES.map(() => '?').join(',');
+    let sql = `
+      SELECT
+        ls.id,
+        COALESCE(NULLIF(ls.content_uid, ''), ls.live_id) AS content_key,
+        COALESCE(NULLIF(ls.platform, ''), 'idn') AS platform,
+        ls.member_username,
+        COALESCE(NULLIF(ls.member_name, ''), mh.display_name, ls.member_username) AS member_name,
+        COALESCE(NULLIF(mg.live_title, ''), '') AS live_title,
+        ls.status,
+        ls.error_message,
+        ls.file_size_bytes,
+        ls.youtube_video_id,
+        ls.telegram_message_ids,
+        ls.created_at,
+        MIN(COALESCE(ls.download_ended_at, ls.created_at)) AS last_end,
+        MAX(ls.id) AS max_id
+      FROM live_sessions ls
+      LEFT JOIN merge_groups mg ON mg.id = ls.merge_group_id
+      LEFT JOIN member_hls mh ON mh.username = ls.member_username
+      WHERE ls.status IN (${placeholders})
+    `;
+    const params: (string | number)[] = [...QUEUE_LIVE_STATUSES];
+    if (platformFilter && platformFilter !== 'all' && platformFilter !== 'tiktok') {
+      sql += ` AND COALESCE(NULLIF(ls.platform, ''), 'idn') = ?`;
+      params.push(platformFilter === 'showroom' ? 'showroom' : 'idn');
+    }
+    if (statusFilter && statusFilter !== 'all') {
+      sql += ` AND ls.status = ?`;
+      params.push(statusFilter);
+    }
+    sql += `
+      GROUP BY COALESCE(NULLIF(ls.content_uid, ''), ls.live_id)
+      ORDER BY last_end DESC
+      LIMIT ?
+    `;
+    params.push(limit);
+
+    const rows = db.prepare(sql).all(...params) as unknown as Array<{
+      id: number;
+      content_key: string | null;
+      platform: string;
+      member_username: string;
+      member_name: string | null;
+      live_title: string;
+      status: string;
+      error_message: string | null;
+      file_size_bytes: number | null;
+      youtube_video_id: string | null;
+      telegram_message_ids: string | null;
+      created_at: string | null;
+      last_end: string | null;
+    }>;
+
+    for (const r of rows) {
+      const hasYt = !!(r.youtube_video_id && r.youtube_video_id.trim());
+      const hasTg = !!(r.telegram_message_ids && r.telegram_message_ids.trim());
+      const displayName = cleanDisplayName(r.member_username, r.member_name || undefined);
+      const platform = normalizePlatform(r.platform);
+      const title = r.live_title
+        || buildDisplayTitle(platform, displayName, r.last_end || r.created_at || '');
+      items.push({
+        source: 'live',
+        id: String(r.id),
+        content_key: r.content_key || '',
+        platform: r.platform,
+        member_username: r.member_username,
+        member_name: displayName,
+        title,
+        status: r.status,
+        destination: inferLiveDestination(r.status, hasYt, hasTg, r.error_message || ''),
+        error_message: r.error_message,
+        file_size_bytes: r.file_size_bytes || 0,
+        has_yt: hasYt ? 1 : 0,
+        has_tg: hasTg ? 1 : 0,
+        youtube_video_id: (r.youtube_video_id || '').trim(),
+        kind: 'live',
+        created_at: r.created_at,
+        age_hours: hoursSince(r.last_end || r.created_at),
+      });
+    }
+
+    // Ringkasan live (tanpa filter platform/status agar angka tetap global).
+    const sumRows = db.prepare(`
+      SELECT status, COALESCE(NULLIF(platform, ''), 'idn') AS platform, COUNT(*) AS c
+      FROM live_sessions
+      WHERE status IN (${QUEUE_LIVE_STATUSES.map(() => '?').join(',')})
+      GROUP BY status, platform
+    `).all(...QUEUE_LIVE_STATUSES) as unknown as Array<{ status: string; platform: string; c: number }>;
+    for (const r of sumRows) {
+      summary.live_total += r.c;
+      summary.live_by_status[r.status] = (summary.live_by_status[r.status] || 0) + r.c;
+      summary.live_by_platform[r.platform] = (summary.live_by_platform[r.platform] || 0) + r.c;
+    }
+  }
+
+  if (source === 'all' || source === 'tiktok') {
+    const placeholders = QUEUE_TIKTOK_STATUSES.map(() => '?').join(',');
+    let sql = `
+      SELECT
+        p.id, p.unique_id, p.kind, p.is_story, p.title, p.status, p.error_message,
+        p.media_size_bytes, p.youtube_video_id, p.telegram_message_ids,
+        COALESCE(NULLIF(p.created_at, ''), p.added_at) AS created_at,
+        a.display_name AS account_name, a.member_username
+      FROM tiktok_posts p
+      LEFT JOIN tiktok_accounts a ON a.unique_id = p.unique_id
+      WHERE p.status IN (${placeholders})
+    `;
+    const params: (string | number)[] = [...QUEUE_TIKTOK_STATUSES];
+    if (platformFilter && platformFilter !== 'all' && platformFilter !== 'tiktok') {
+      // Antrean TikTok tidak punya platform idn/showroom — sembunyikan bila filter live.
+      sql += ` AND 1 = 0`;
+    }
+    if (statusFilter && statusFilter !== 'all') {
+      sql += ` AND p.status = ?`;
+      params.push(statusFilter);
+    }
+    sql += ` ORDER BY created_at DESC LIMIT ?`;
+    params.push(limit);
+
+    try {
+      const rows = db.prepare(sql).all(...params) as unknown as Array<{
+        id: string;
+        unique_id: string;
+        kind: string;
+        is_story: number;
+        title: string | null;
+        status: string;
+        error_message: string | null;
+        media_size_bytes: number | null;
+        youtube_video_id: string | null;
+        telegram_message_ids: string | null;
+        created_at: string | null;
+        account_name: string | null;
+        member_username: string | null;
+      }>;
+
+      for (const r of rows) {
+        const hasYt = !!(r.youtube_video_id && r.youtube_video_id.trim());
+        const hasTg = !!(r.telegram_message_ids && r.telegram_message_ids.trim());
+        const memberUsername = r.member_username || r.unique_id;
+        const displayName = cleanDisplayName(memberUsername, r.account_name || undefined);
+        let destination = 'download';
+        if (r.status === 'uploading_telegram') destination = 'telegram';
+        else if (r.status === 'uploading_youtube') destination = 'youtube';
+        else if (r.status === 'pending_upload' || r.status === 'failed') {
+          const err = (r.error_message || '').toLowerCase();
+          if (err.includes('youtube') || (!hasYt && hasTg)) destination = 'youtube';
+          else if (err.includes('telegram') || !hasTg) destination = 'telegram';
+          else destination = 'youtube';
+        } else if (r.status === 'done') destination = hasYt ? 'youtube' : 'telegram';
+        else if (r.status === 'detected' || r.status === 'downloading') destination = 'download';
+
+        const kindLabel = r.is_story ? 'story' : (r.kind === 'photo' ? 'photo' : 'video');
+        items.push({
+          source: 'tiktok',
+          id: r.id,
+          content_key: `tt_${r.id}`,
+          platform: 'tiktok',
+          member_username: memberUsername,
+          member_name: displayName,
+          title: (r.title || '').trim() || `TikTok ${kindLabel} @${r.unique_id}`,
+          status: r.status,
+          destination,
+          error_message: r.error_message,
+          file_size_bytes: r.media_size_bytes || 0,
+          has_yt: hasYt ? 1 : 0,
+          has_tg: hasTg ? 1 : 0,
+          youtube_video_id: (r.youtube_video_id || '').trim(),
+          kind: kindLabel,
+          created_at: r.created_at,
+          age_hours: hoursSince(r.created_at),
+        });
+      }
+
+      const sumRows = db.prepare(`
+        SELECT status, COUNT(*) AS c FROM tiktok_posts
+        WHERE status IN (${QUEUE_TIKTOK_STATUSES.map(() => '?').join(',')})
+        GROUP BY status
+      `).all(...QUEUE_TIKTOK_STATUSES) as unknown as Array<{ status: string; c: number }>;
+      for (const r of sumRows) {
+        summary.tiktok_total += r.c;
+        summary.tiktok_by_status[r.status] = (summary.tiktok_by_status[r.status] || 0) + r.c;
+      }
+
+      // Backlog TikTok→YouTube: sudah arsip TG, status done, belum punya YT.
+      const backlog = db.prepare(`
+        SELECT COUNT(*) AS c FROM tiktok_posts
+        WHERE COALESCE(telegram_message_ids, '') <> ''
+          AND COALESCE(youtube_video_id, '') = ''
+          AND status = 'done'
+          AND visible = 1
+      `).get() as { c: number } | undefined;
+      summary.tiktok_yt_backlog = backlog?.c || 0;
+    } catch {
+      // Tabel tiktok_posts belum ada (database lama) — biarkan kosong.
+    }
+  }
+
+  return { items, summary };
+}
+
+function hoursSince(iso: string | null): number | null {
+  if (!iso) return null;
+  const t = Date.parse(/[: ]/.test(iso) && !iso.endsWith('Z') && !iso.includes('T')
+    ? iso.replace(' ', 'T') + (iso.includes('+') || iso.endsWith('Z') ? '' : 'Z')
+    : iso);
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, (Date.now() - t) / 3600000);
+}
+
+// ─── Admin: ringkasan TikTok untuk /admin/status ─────────────────────────────
+
+export interface TikTokAdminStats {
+  accounts_total: number;
+  accounts_enabled: number;
+  posts_total: number;
+  posts_by_status: Record<string, number>;
+  pending_upload: number;
+  failed: number;
+  yt_backlog: number;
+  uploading: number;
+}
+
+export function getTikTokAdminStats(): TikTokAdminStats {
+  const db = getDb();
+  const empty: TikTokAdminStats = {
+    accounts_total: 0,
+    accounts_enabled: 0,
+    posts_total: 0,
+    posts_by_status: {},
+    pending_upload: 0,
+    failed: 0,
+    yt_backlog: 0,
+    uploading: 0,
+  };
+  try {
+    const acc = db.prepare(`
+      SELECT COUNT(*) AS total, SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS enabled
+      FROM tiktok_accounts
+    `).get() as { total: number; enabled: number | null } | undefined;
+    const byStatus = db.prepare(`
+      SELECT status, COUNT(*) AS c FROM tiktok_posts GROUP BY status
+    `).all() as unknown as Array<{ status: string; c: number }>;
+    const backlog = db.prepare(`
+      SELECT COUNT(*) AS c FROM tiktok_posts
+      WHERE COALESCE(telegram_message_ids, '') <> ''
+        AND COALESCE(youtube_video_id, '') = ''
+        AND status = 'done' AND visible = 1
+    `).get() as { c: number } | undefined;
+
+    const posts_by_status: Record<string, number> = {};
+    let posts_total = 0;
+    for (const r of byStatus) {
+      posts_by_status[r.status] = r.c;
+      posts_total += r.c;
+    }
+    return {
+      accounts_total: acc?.total || 0,
+      accounts_enabled: acc?.enabled || 0,
+      posts_total,
+      posts_by_status,
+      pending_upload: posts_by_status.pending_upload || 0,
+      failed: posts_by_status.failed || 0,
+      yt_backlog: backlog?.c || 0,
+      uploading: (posts_by_status.downloading || 0)
+        + (posts_by_status.uploading_telegram || 0)
+        + (posts_by_status.uploading_youtube || 0),
+    };
+  } catch {
+    return empty;
+  }
 }

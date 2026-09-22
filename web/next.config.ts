@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // /status → /admin/status harus HTTP redirect (307), bukan redirect()
+  // di page yang bisa ter-streaming menjadi meta tag client-side.
+  redirects: async () => [
+    { source: '/status', destination: '/admin/status', permanent: false },
+  ],
   images: {
     remotePatterns: [
       // Thumbnail YouTube (img.youtube.com & i.ytimg.com)
@@ -14,6 +19,8 @@ const nextConfig: NextConfig = {
       { protocol: 'https', hostname: '**.tiktokcdn-eu.com' },
       // Foto member arsip TikTok: URL roster resmi jkt48.com (bot/jkt48_members.py).
       { protocol: 'https', hostname: 'jkt48.com' },
+      // Cover room Showroom (showroom_rooms.json) — fallback foto profil member.
+      { protocol: 'https', hostname: 'static.showroom-live.com' },
     ],
   },
 };
