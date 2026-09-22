@@ -15,7 +15,7 @@ from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
-from bot.config import Config, ChannelConfig
+from bot.config import Config
 from bot import database
 from bot import timeutil
 
@@ -206,32 +206,44 @@ class YouTubeChannelPool:
         channels = Config.load_youtube_channels()
         if channel_label:
             channels = [c for c in channels if c.label == channel_label] or channels
+        if not channels:
+            logger.warning("set_thumbnail dilewati: tidak ada channel YouTube untuk %s.", video_id)
+            return False
 
-        media = MediaFileUpload(str(path), mimetype="image/jpeg", resumable=False)
+        # MediaFileUpload dibuat PER percobaan: stream bisa ter-consume saat
+        # request pertama gagal di tengah jalan, sehingga channel berikutnya
+        # menerima body kosong dan thumbnail tidak pernah terpasang.
+        last_err = ""
         for ch in channels:
             try:
+                media = MediaFileUpload(str(path), mimetype="image/jpeg", resumable=False)
                 service = self._get_service_for_channel(ch.token_file, ch.secret_file)
                 service.thumbnails().set(
                     videoId=video_id, media_body=media
                 ).execute()
                 logger.info(
-                    "Thumbnail kolase terpasang ke video %s via channel '%s'.",
+                    "Thumbnail terpasang ke video %s via channel '%s'.",
                     video_id, ch.label,
                 )
                 return True
             except HttpError as exc:
+                last_err = str(exc)
                 logger.warning(
                     "set_thumbnail gagal via channel '%s' (%s); coba channel lain.",
                     ch.label, exc,
                 )
                 continue
             except Exception as exc:
+                last_err = str(exc)
                 logger.warning(
                     "set_thumbnail error via channel '%s' (%s); coba channel lain.",
                     ch.label, exc,
                 )
                 continue
-        logger.warning("set_thumbnail gagal di semua channel untuk video %s.", video_id)
+        logger.warning(
+            "set_thumbnail gagal di semua channel untuk video %s%s",
+            video_id, f" (terakhir: {last_err})" if last_err else "",
+        )
         return False
 
     # Bulan Indonesia — judul YouTube dibuat identik dengan format judul website

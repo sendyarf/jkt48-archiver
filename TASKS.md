@@ -407,6 +407,20 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       server :3101 yang tidak tersedia di sesi ini — jalankan terpisah bila
       perlu.)
 
+- [x] **Thumbnail kolase 3x2: perbaiki kegagalan intermiten (22 Sep 2026)** —
+      sebagian video menampilkan thumbnail otomatis YouTube (pilar hitam)
+      padahal kolase seharusnya terpasang. Dua akar: (1) 6 seek dalam satu
+      perintah ffmpeg gagal total bila SATU titik kosong di segmen merge;
+      (2) pixel format beda antar segmen → xstack tolak. Perbaikan:
+      ekstrak frame per-intan + retry offset, `format=yuv420p`, folder kerja
+      temp, dan **fallback wajib 1 frame cover 1280x720** sehingga YouTube
+      tidak pernah lagi memakai auto-thumb berpilar hitam bila file lokal
+      ada. `set_thumbnail` kini membuat `MediaFileUpload` per channel
+      (stream tidak dikonsumsi silang). Verifikasi: nyata ffmpeg kolase +
+      fallback + video 2 dtk semuanya **1280x720**; **424 test Python** hijau
+      (+4 pada `test_youtube_title.py`); pyflakes bersih untuk berkas yang
+      disentuh.
+
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 
 - [ ] **Arsip TikTok — verifikasi di VPS**: metode sudah terbukti di mesin

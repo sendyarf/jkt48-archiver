@@ -4,23 +4,34 @@ thumbnail_collage.py - Thumbnail kolase 3x2 dari frame video, ffmpeg saja.
 Alur:
     1. Baca durasi video via ffprobe.
     2. Ambil 6 frame tersebar merata (lewati 5% awal/akhir yang biasanya
-       layar hitam / loading) via `ffmpeg -ss <t> -frames:v 1`.
-    3. Gabung 6 frame jadi 1 gambar 1280x720 (grid 3x2, sel 426x360) via
-       filter_complex xstack. Tanpa dependensi baru (Pillow TIDAK dipakai).
+       layar hitam / loading) — tiap frame di-ekstrak TERPISAH ke JPEG dulu
+       (retry bila seek gagal), lalu digabung via xstack.
+    3. Gabung 6 frame jadi 1 gambar 1280x720 (grid 3x2, sel 426x360).
+    4. Bila kurang dari 6 frame berhasil diambil → fallback SATU frame
+       cover-crop 1280x720 (tetap tanpa pilar hitam), bukan menyerah dan
+       membiarkan YouTube memakai thumbnail otomatis (pilar hitam).
 
 Tiap frame diskalakan model "cover" (scale + crop tengah) sehingga tiap sel
 terisi PENUH tanpa pilar hitam / letterbox. Penting karena sumber live
 IDN/Showroom umumnya vertikal (9:16) sedangkan kartu web 16:9.
 
-Dipakai untuk video BARU ke depan (jalur upload YouTube di bot/main.py):
-setelah upload sukses, kolase dibuat dari file lokal lalu dipasang via
-YouTube API `thumbnails.set` (~50 unit kuota). Video lama tak disentuh.
+Mengapa ekstrak per-frame (bukan 6 `-ss` dalam satu perintah ffmpeg):
+    - Merge live = banyak segmen; seek di tengah stream bisa gagal / kosong
+      untuk satu titik tanpa harus menggagalkan seluruh kolase.
+    - Pixel format bisa berbeda antar segmen → wajib `format=yuv420p`
+      sebelum xstack (kalau tidak, xstack error dan thumbnail gagal total).
+
+Dipakai untuk video BARU ke depan (jalur upload YouTube di bot/main.py dan
+bot/tiktok_monitor.py): setelah upload sukses, kolase dibuat dari file lokal
+lalu dipasang via YouTube API `thumbnails.set` (~50 unit kuota). Video lama
+tak disentuh.
 """
 import logging
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Optional, Sequence, Union
+from typing import List, Optional, Sequence, Union
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +111,8 @@ def build_xstack_filter() -> str:
     Filter ffmpeg untuk 6 input -> 1 gambar PERSIS 1280x720.
 
     Tiap input: scale+crop "cover" (isi penuh, tanpa pilar hitam) ke ukuran
-    sel-nya (kolom kanan 2 px lebih lebar), lalu xstack grid 3x2:
+    sel-nya (kolom kanan 2 px lebih lebar), paksa yuv420p (segmen live bisa
+    beda pixel format), lalu xstack grid 3x2:
         [0][1][2]
         [3][4][5]
     """
@@ -109,7 +121,7 @@ def build_xstack_filter() -> str:
         w = column_width(i % COLLAGE_COLS)
         parts.append(
             f"[{i}:v]scale={w}:{CELL_HEIGHT}:force_original_aspect_ratio=increase,"
-            f"crop={w}:{CELL_HEIGHT},setsar=1[v{i}];"
+            f"crop={w}:{CELL_HEIGHT},setsar=1,format=yuv420p[v{i}];"
         )
     layout = "|".join(
         f"{sum(COLUMN_WIDTHS[:i % COLLAGE_COLS])}_{(i // COLLAGE_COLS) * CELL_HEIGHT}"
@@ -117,6 +129,135 @@ def build_xstack_filter() -> str:
     )
     inputs = "".join(f"[v{i}]" for i in range(COLLAGE_COUNT))
     return f"{''.join(parts)}{inputs}xstack=inputs={COLLAGE_COUNT}:layout={layout}"
+
+
+def _is_nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _extract_frame_at(video: Path, t: float, dest: Path, timeout: int = 30) -> bool:
+    """Ekstrak SATU frame ke `dest`. True bila file JPEG terbentuk & tidak kosong."""
+    dest.unlink(missing_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-v", "error",
+        "-ss", f"{t:.2f}", "-i", str(video),
+        "-frames:v", "1", "-q:v", "2",
+        str(dest),
+    ]
+    try:
+        proc = _run(cmd, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return proc.returncode == 0 and _is_nonempty_file(dest)
+
+
+def _candidate_times(t: float, duration: float) -> List[float]:
+    """Titik cadangan bila seek utama gagal (mundur, lalu maju sedikit)."""
+    out = [t]
+    for delta in (0.75, 1.5, 3.0):
+        back = round(t - delta, 2)
+        if back >= 0.5:
+            out.append(back)
+        fwd = round(t + delta, 2)
+        if duration > 0 and fwd < duration - 0.2:
+            out.append(fwd)
+        elif duration <= 0 and fwd < 3600:
+            out.append(fwd)
+    # Unik, urut pertama tetap t asli.
+    seen = set()
+    uniq = []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            uniq.append(x)
+    return uniq
+
+
+def _extract_frames(video: Path, times: Sequence[float], duration: float, folder: Path) -> List[Path]:
+    """
+    Ekstrak frame satu per satu. Gagal di satu titik TIDAK membatalkan
+    seluruh kolase — titik itu dicoba ulang dengan offset, lalu dilewati.
+    """
+    frames: List[Path] = []
+    for i, t in enumerate(times):
+        dest = folder / f"frame_{i}.jpg"
+        ok = False
+        for cand in _candidate_times(t, duration):
+            if _extract_frame_at(video, cand, dest):
+                ok = True
+                break
+        if ok:
+            frames.append(dest)
+        else:
+            logger.warning("Thumbnail: gagal ekstrak frame di %.2fs (dilewati).", t)
+    return frames
+
+
+def _combine_frames(frames: Sequence[Path], dest: Path, timeout: int) -> bool:
+    """Gabung frame JPEG jadi kolase 3x2 1280x720. Frames harus ≥ 6 (pakai 6 pertama)."""
+    if len(frames) < COLLAGE_COUNT:
+        return False
+    dest.unlink(missing_ok=True)
+    cmd: list = ["ffmpeg", "-y", "-v", "error"]
+    for f in frames[:COLLAGE_COUNT]:
+        cmd += ["-i", str(f)]
+    cmd += [
+        "-filter_complex", build_xstack_filter(),
+        "-frames:v", "1",
+        "-q:v", "3",
+        str(dest),
+    ]
+    try:
+        proc = _run(cmd, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    if proc.returncode != 0:
+        tail = proc.stderr.decode("utf-8", errors="replace")[-400:]
+        logger.warning("Thumbnail kolase xstack gagal (exit %s): %s", proc.returncode, tail)
+        return False
+    return _is_nonempty_file(dest)
+
+
+def _cover_single_frame(video: Path, times: Sequence[float], duration: float, dest: Path) -> bool:
+    """
+    Fallback: SATU frame cover-crop penuh 1280x720 (tanpa pilar hitam).
+    Dipakai bila kolase 3x2 gagal — lebih baik daripada thumbnail otomatis
+    YouTube yang menampilkan video vertikal dengan pilar hitam di kiri/kanan.
+    """
+    dest.unlink(missing_ok=True)
+    candidates: List[float] = []
+    for t in list(times) + [1.0, 0.1, 5.0]:
+        if t not in candidates:
+            candidates.append(t)
+    vf = (
+        f"scale={THUMB_WIDTH}:{THUMB_HEIGHT}:force_original_aspect_ratio=increase,"
+        f"crop={THUMB_WIDTH}:{THUMB_HEIGHT},setsar=1,format=yuv420p"
+    )
+    for t in candidates:
+        if duration > 0 and t >= duration:
+            continue
+        cmd = [
+            "ffmpeg", "-y", "-v", "error",
+            "-ss", f"{t:.2f}", "-i", str(video),
+            "-frames:v", "1",
+            "-vf", vf,
+            "-q:v", "3",
+            str(dest),
+        ]
+        try:
+            proc = _run(cmd, timeout=30)
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+        if proc.returncode == 0 and _is_nonempty_file(dest):
+            logger.warning(
+                "Thumbnail kolase 3x2 tidak terbentuk — memakai fallback 1 frame @%.2fs.",
+                t,
+            )
+            return True
+    return False
 
 
 def build_collage(
@@ -138,28 +279,36 @@ def build_collage(
     except OSError as exc:
         logger.warning("Thumbnail kolase dilewati: folder %s (%s)", out.parent, exc)
         return None
+
     duration = get_duration_seconds(src)
     times = pick_sample_times(duration)
-    cmd: list = ["ffmpeg", "-y", "-v", "error"]
-    for t in times:
-        cmd += ["-ss", f"{t:.2f}", "-i", str(src)]
-    cmd += [
-        "-filter_complex", build_xstack_filter(),
-        "-frames:v", "1",
-        "-q:v", "3",
-        str(out),
-    ]
+
+    # Folder kerja terpisah supaya frame parsial tidak bocor ke folder download
+    # dan aman bila dua upload jalan bersamaan (stem file bisa sama).
     try:
-        proc = _run(cmd, timeout=timeout_per_frame * COLLAGE_COUNT)
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        logger.warning("Thumbnail kolase gagal (ffmpeg error): %s", exc)
+        work = Path(tempfile.mkdtemp(prefix="thumb_", dir=str(out.parent)))
+    except OSError as exc:
+        logger.warning("Thumbnail kolase dilewati: tak bisa buat folder kerja (%s)", exc)
+        work = None
+
+    try:
+        frames = _extract_frames(src, times, duration, work) if work else []
+        if len(frames) >= COLLAGE_COUNT:
+            if _combine_frames(frames, out, timeout=timeout_per_frame * COLLAGE_COUNT):
+                logger.info(
+                    "Thumbnail kolase 3x2 dibuat: %s (video %.1fs)",
+                    out, duration,
+                )
+                return out
+            logger.warning("Thumbnail kolase: xstack gagal — mencoba fallback 1 frame.")
+
+        # Fallback frame tunggal cover 1280x720 (tanpa pilar hitam).
+        if _cover_single_frame(src, times, duration, out):
+            logger.info("Thumbnail fallback 1-frame dibuat: %s (video %.1fs)", out, duration)
+            return out
+
+        logger.warning("Thumbnail kolase gagal: tidak ada frame yang bisa diekstrak.")
         return None
-    if proc.returncode != 0:
-        tail = proc.stderr.decode("utf-8", errors="replace")[-500:]
-        logger.warning("Thumbnail kolase gagal (exit %s): %s", proc.returncode, tail)
-        return None
-    if not out.exists() or out.stat().st_size == 0:
-        logger.warning("Thumbnail kolase gagal: output tak terbentuk.")
-        return None
-    logger.info("Thumbnail kolase 3x2 dibuat: %s (video %.1fs)", out, duration)
-    return out
+    finally:
+        if work is not None:
+            shutil.rmtree(work, ignore_errors=True)

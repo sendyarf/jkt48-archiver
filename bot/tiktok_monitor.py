@@ -500,7 +500,11 @@ class TikTokMonitor:
             if Config.THUMBNAIL_COLLAGE_ENABLED:
                 thumb_path = build_collage(media.video_path)
                 if thumb_path is not None:
-                    pool.set_thumbnail(video_id, thumb_path, channel_label=channel_label)
+                    if not pool.set_thumbnail(video_id, thumb_path, channel_label=channel_label):
+                        logger.warning(
+                            "Thumbnail TikTok gagal terpasang ke YouTube %s.",
+                            video_id,
+                        )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Thumbnail TikTok dilewati (%s): %s", item.id, exc)
         finally:

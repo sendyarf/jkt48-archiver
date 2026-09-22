@@ -462,3 +462,30 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
     disentuh. Fail-open bila `shutil.disk_usage` error (FS aneh jangan blokir).
     Jangan pindahkan pemeriksaan ke dalam task — guard harus mencegah spawn,
     bukan membatalkan di tengah jalan.
+
+26. **Thumbnail kolase 3x2: ekstrak frame PER-INTAN + fallback 1-frame (insiden
+    22 Sep 2026).** Gejala: sebagian video menampilkan thumbnail otomatis YouTube
+    (video vertikal dengan pilar hitam) padahal `THUMBNAIL_COLLAGE_ENABLED=true`.
+    Akar masalah dua lapis:
+    a) Perintah lama membuka file 6× sekaligus (`-ss t -i` ×6 → satu xstack).
+       Satu seek gagal/empty (segmen merge, timestamp non-monotonic) → seluruh
+       kolase gagal → `set_thumbnail` tidak dipanggil → YouTube pakai auto-thumb.
+    b) Pixel format bisa beda antar segmen live (yuv420p vs yuvj420p) → xstack
+       menolak input tidak seragam.
+    Perbaikan di `bot/thumbnail_collage.py`:
+    - `_extract_frames()`: ekstrak 6 frame SATU PER SATU ke JPEG (retry
+      ±0.75/1.5/3 dtk via `_candidate_times`); frame yang gagal DILEWATI, bukan
+      membatalkan kolase.
+    - `format=yuv420p` di akhir tiap rantai scale+crop sebelum xstack.
+    - Frame kerja di `tempfile.mkdtemp` (aman bila dua upload paralel).
+    - **Fallback wajib**: bila <6 frame atau xstack gagal → `_cover_single_frame()`
+      menghasilkan SATU frame cover-crop **persis 1280x720** (tanpa pilar hitam).
+      Lebih baik daripada menyerah dan membiarkan YouTube auto-thumb.
+    - `set_thumbnail` di `youtube_uploader.py`: `MediaFileUpload` dibuat **per
+      percobaan channel** (stream bisa ter-consume saat request pertama gagal →
+      channel berikutnya menerima body kosong).
+    - `main.py` / `tiktok_monitor.py` mencatat warning bila `set_thumbnail`
+      mengembalikan False.
+    Verifikasi nyata: kolase & fallback (termasuk video 2 dtk) → **1280x720**;
+    **424 test Python** hijau termasuk `test_set_thumbnail_fresh_media_per_channel`,
+    `test_cover_single_frame_fallback…`, `test_xstack_filter…format=yuv420p`.

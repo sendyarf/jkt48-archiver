@@ -376,18 +376,25 @@ class JKT48LiveBot:
                     )
                     logger.info("Successfully uploaded to YouTube (%s). Video ID: %s", channel_label, video_id)
 
-                    # Thumbnail kolase 3x2 (video BARU saja): dibuat dari file
-                    # lokal via ffmpeg lalu dipasang ke YouTube (~50 kuota).
-                    # Best-effort: gagal -> warning saja, upload tetap sukses.
+                    # Thumbnail untuk video BARU: kolase 3x2 bila bisa, atau
+                    # fallback 1 frame cover (lihat build_collage). Best-effort:
+                    # gagal -> warning saja, upload tetap sukses.
                     thumb_path = None
                     try:
                         if Config.THUMBNAIL_COLLAGE_ENABLED:
                             thumb_path = build_collage(path)
                             if thumb_path is not None:
-                                self.yt_pool.set_thumbnail(
+                                ok_thumb = self.yt_pool.set_thumbnail(
                                     video_id, thumb_path,
                                     channel_label=channel_label,
                                 )
+                                if not ok_thumb:
+                                    logger.warning(
+                                        "Thumbnail gagal terpasang ke YouTube %s "
+                                        "(file lokal tetap dihapus; video memakai "
+                                        "thumbnail otomatis).",
+                                        video_id,
+                                    )
                     except Exception as exc:
                         logger.warning("Thumbnail kolase dilewati (%s): %s", live_id, exc)
                     finally:

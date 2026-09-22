@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +14,9 @@ from bot.thumbnail_collage import (
     COLUMN_WIDTHS,
     THUMB_HEIGHT,
     THUMB_WIDTH,
+    _candidate_times,
+    _cover_single_frame,
+    _extract_frame_at,
     build_collage,
     build_xstack_filter,
     pick_sample_times,
@@ -127,9 +131,46 @@ class TestThumbnailCollage(unittest.TestCase):
         self.assertIn("crop=426:360", filt)
         self.assertIn("crop=428:360", filt)
         self.assertIn("xstack=inputs=6", filt)
+        # Pixel format disterilkan: segmen live bisa campur yuv420p/yuvj420p
+        # dan xstack menolak input yang tidak seragam (insiden kolase gagal
+        # intermiten → YouTube pakai thumbnail otomatis berpilar hitam).
+        self.assertIn("format=yuv420p", filt)
         # Posisi grid: kolom 0/426/852, baris 0/360.
         for x, y in [(0, 0), (426, 0), (852, 0), (0, 360), (426, 360), (852, 360)]:
             self.assertIn(f"{x}_{y}", filt)
+
+    def test_candidate_times_retries_near_primary(self):
+        cands = _candidate_times(10.0, 100.0)
+        self.assertEqual(cands[0], 10.0)
+        self.assertGreater(len(cands), 1)
+        self.assertTrue(all(t >= 0.5 for t in cands))
+        # Tidak melampaui durasi ke atas bila durasi diketahui.
+        self.assertTrue(all(t < 100.0 for t in cands))
+
+    def test_extract_frame_failure_returns_false(self):
+        with (
+            patch("bot.thumbnail_collage.shutil.which", return_value="/usr/bin/ffmpeg"),
+            patch("bot.thumbnail_collage._run") as run,
+        ):
+            failed = MagicMock()
+            failed.returncode = 1
+            failed.stderr = b"seek boom"
+            run.return_value = failed
+            with tempfile.TemporaryDirectory() as td:
+                dest = Path(td) / "f.jpg"
+                self.assertFalse(_extract_frame_at(Path(__file__), 1.0, dest))
+
+    def test_cover_single_frame_fallback_when_xstack_unusable(self):
+        """Bila kolase tak bisa dibuat, fallback 1 frame tetap 1280x720 cover."""
+        with (
+            patch("bot.thumbnail_collage.shutil.which", return_value="/usr/bin/ffmpeg"),
+            patch("bot.thumbnail_collage.get_duration_seconds", return_value=30.0),
+            patch("bot.thumbnail_collage._extract_frames", return_value=[]),
+            patch("bot.thumbnail_collage._cover_single_frame", return_value=True) as cover,
+        ):
+            out = build_collage(Path(__file__), Path(tempfile.gettempdir()) / "thumb_fb.jpg")
+            self.assertIsNotNone(out)
+            cover.assert_called_once()
 
     def test_build_collage_missing_file_returns_none(self):
         self.assertIsNone(build_collage(Path("tidak-ada.mp4")))
@@ -161,6 +202,40 @@ class TestThumbnailCollage(unittest.TestCase):
             self.assertFalse(pool.set_thumbnail("vid123", empty))
         finally:
             empty.unlink(missing_ok=True)
+
+    def test_set_thumbnail_fresh_media_per_channel(self):
+        """MediaFileUpload dibuat ulang per channel — stream pertama tidak boleh
+        dikonsumsi saat request channel pertama gagal (thumbnail tidak pernah
+        terpasang di channel berikut)."""
+        pool = YouTubeChannelPool.__new__(YouTubeChannelPool)
+        pool._services = {}
+        ch_a = MagicMock(label="a", token_file="ta", secret_file="sa")
+        ch_b = MagicMock(label="b", token_file="tb", secret_file="sb")
+        media_calls = []
+        service_a = MagicMock()
+        service_a.thumbnails.return_value.set.return_value.execute.side_effect = RuntimeError("quota")
+        service_b = MagicMock()
+
+        def fake_media(*args, **kwargs):
+            m = MagicMock(name=f"media{len(media_calls)}")
+            media_calls.append(m)
+            return m
+
+        with (
+            patch("bot.youtube_uploader.Config.load_youtube_channels", return_value=[ch_a, ch_b]),
+            patch("bot.youtube_uploader.MediaFileUpload", side_effect=fake_media),
+            patch.object(pool, "_get_service_for_channel", side_effect=[service_a, service_b]),
+        ):
+            thumb = Path(__file__).with_name("tmp_set_thumb.jpg")
+            try:
+                thumb.write_bytes(b"\xff\xd8\xff\xd9")  # JPEG minimal
+                self.assertTrue(pool.set_thumbnail("vidOK", thumb))
+            finally:
+                thumb.unlink(missing_ok=True)
+
+        self.assertEqual(len(media_calls), 2, "harus ada MediaFileUpload baru per channel")
+        self.assertIsNot(media_calls[0], media_calls[1])
+        service_b.thumbnails.return_value.set.assert_called_once()
 
 
 if __name__ == "__main__":
