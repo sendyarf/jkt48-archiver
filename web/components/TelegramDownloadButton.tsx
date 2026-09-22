@@ -8,6 +8,8 @@ interface Props {
   title: string;
   /**
    * Payload deep-link bot Telegram. Default = YouTube video ID (jalur replay).
+   * Untuk arsip TG-first (YT belum ada) isi `content_uid` (merged_/live_id) —
+   * bot menerima keduanya (lihat bot/replay_bot.py `_valid_payload`).
    * Arsip TikTok memakai `tt_<post_id>` (lihat web/lib/tiktok.ts).
    */
   payload?: string;
@@ -37,6 +39,7 @@ export default function TelegramDownloadButton({
   const closeBtnRef = useRef<HTMLButtonElement>(null);
 
   const botUsername = (process.env.NEXT_PUBLIC_REPLAY_BOT_USERNAME || '').replace(/^@/, '');
+  // Prioritaskan payload eksplisit (content_uid / tt_); fallback YouTube ID.
   const startPayload = payload || youtubeVideoId;
   const deepLink = botUsername
     ? `https://t.me/${botUsername}?start=${encodeURIComponent(startPayload)}`

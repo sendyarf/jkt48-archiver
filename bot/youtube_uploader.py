@@ -168,7 +168,13 @@ class YouTubeChannelPool:
             except HttpError as exc:
                 reason = str(exc)
                 if "quotaExceeded" in reason or "uploadLimitExceeded" in reason or exc.resp.status in (403, 429):
-                    logger.warning("Quota exceeded for channel '%s'. Trying next channel...", label)
+                    logger.warning(
+                        "Quota exceeded for channel '%s' (uploads_today=%d, "
+                        "quota_or_limit_in_response=%s). Trying next channel...",
+                        label,
+                        ch.get("uploads_today", 0),
+                        "uploadLimitExceeded" in reason or "quotaExceeded" in reason,
+                    )
                     continue
                 else:
                     logger.error("HTTP error uploading to channel '%s': %s", label, exc)
@@ -180,7 +186,19 @@ class YouTubeChannelPool:
                 continue
 
         if all_quota_exceeded:
-            raise YouTubeQuotaExceeded("All configured YouTube channels have exceeded their quota!")
+            labels = ", ".join(
+                f"{c.get('channel_label', '?')}({c.get('uploads_today', '?')})"
+                for c in channels
+            )
+            logger.error(
+                "All YouTube channels exhausted quota/upload limit — no channel left to try. "
+                "Channels: %s",
+                labels,
+            )
+            raise YouTubeQuotaExceeded(
+                f"All configured YouTube channels have exceeded their quota! "
+                f"Channels tried: {labels}"
+            )
 
         return None, None
 

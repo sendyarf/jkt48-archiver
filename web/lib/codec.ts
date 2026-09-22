@@ -29,11 +29,31 @@ export function encodeWatchId(youtubeId: string): string {
 /**
  * Decode token URL → YouTube ID mentah.
  * Menerima: token Base64URL ATAU ID mentah (backward-compat untuk link lama).
+ * Token non-YouTube (content_uid / live_id) dikembalikan apa adanya — jangan
+ * dipaksa di-decode karena hasil base64 semu bisa merusak lookup.
  */
 export function decodeWatchId(token: string): string {
   const t = (token || '').trim();
   if (!t) return '';
   if (YT_ID_RE.test(t)) return t; // sudah mentah
+  // Bukan pola YouTube: content_uid (merged_… / user_… / sr_…) atau live_id
+  // lain — pakai langsung sebagai kunci lookup.
+  if (!/^[A-Za-z0-9_-]{11}$/.test(t)) {
+    // Coba decode HANYA bila tampak seperti Base64URL tersamar yang menghasilkan
+    // YouTube ID valid; selain itu kembalikan token asli.
+    try {
+      const b64 = t.replace(/-/g, '+').replace(/_/g, '/');
+      const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+      const decoded =
+        typeof Buffer !== 'undefined'
+          ? Buffer.from(b64 + pad, 'base64').toString('utf8')
+          : atob(b64 + pad);
+      if (YT_ID_RE.test(decoded)) return decoded;
+    } catch {
+      // bukan base64 valid
+    }
+    return t;
+  }
   try {
     const b64 = t.replace(/-/g, '+').replace(/_/g, '/');
     const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
@@ -41,8 +61,9 @@ export function decodeWatchId(token: string): string {
       typeof Buffer !== 'undefined'
         ? Buffer.from(b64 + pad, 'base64').toString('utf8')
         : atob(b64 + pad);
-    return YT_ID_RE.test(decoded) ? decoded : decoded;
+    return YT_ID_RE.test(decoded) ? decoded : t;
   } catch {
-    return t; // bukan base64 valid → kembalikan apa adanya (biarkan lookup gagal → 404)
+    return t; // bukan base64 valid → kembalikan apa adanya (biar lookup gagal → 404)
   }
 }
+

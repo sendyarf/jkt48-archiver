@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS live_sessions (
     telegram_message_id INTEGER,
     telegram_message_ids TEXT,
     youtube_video_id    TEXT,
+    content_uid         TEXT,
     error_message       TEXT,
     merge_group_id      INTEGER,
     created_at          TEXT    DEFAULT (datetime('now'))
@@ -163,6 +164,7 @@ def _get_conn() -> Generator[sqlite3.Connection, None, None]:
 CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_live_sessions_status ON live_sessions(status)",
     "CREATE INDEX IF NOT EXISTS idx_live_sessions_youtube ON live_sessions(youtube_video_id)",
+    "CREATE INDEX IF NOT EXISTS idx_live_sessions_content_uid ON live_sessions(content_uid)",
     "CREATE INDEX IF NOT EXISTS idx_live_sessions_hls ON live_sessions(hls_url)",
     "CREATE INDEX IF NOT EXISTS idx_live_sessions_member ON live_sessions(member_username)",
     "CREATE INDEX IF NOT EXISTS idx_live_sessions_created ON live_sessions(created_at)",
@@ -208,6 +210,34 @@ def init_db() -> None:
             # dipakai untuk pesan notifikasi teks.
             conn.execute("ALTER TABLE live_sessions ADD COLUMN telegram_message_ids TEXT")
             logger.info("Schema migration: added telegram_message_ids column to live_sessions")
+        if "content_uid" not in cols:
+            # content_uid: kunci konten unik (bukan YouTube ID).
+            # Multi-segmen = merged_<group_id>; single-segmen = live_id.
+            conn.execute("ALTER TABLE live_sessions ADD COLUMN content_uid TEXT")
+            logger.info("Schema migration: added content_uid column to live_sessions")
+            # Backfill: baris dengan merge_group yang sudah done → merged_live_id;
+            # sisanya → live_id sendiri.
+            conn.execute(
+                """
+                UPDATE live_sessions
+                   SET content_uid = (
+                       SELECT mg.merged_live_id
+                     FROM merge_groups mg
+                    WHERE mg.id = live_sessions.merge_group_id
+                      AND mg.merged_live_id IS NOT NULL
+                      AND mg.merged_live_id != ''
+                   )
+                 WHERE content_uid IS NULL
+                   AND merge_group_id IS NOT NULL
+                """
+            )
+            conn.execute(
+                """
+                UPDATE live_sessions
+                   SET content_uid = live_id
+                 WHERE content_uid IS NULL
+                """
+            )
 
         # Migrate merge_groups columns if missing
         mg_cols = [r[1] for r in conn.execute("PRAGMA table_info(merge_groups)")]
@@ -370,24 +400,100 @@ def insert_live(
         )
 
 
+_SESSION_FIELD_COLS = {
+    "file_path",
+    "file_size_bytes",
+    "telegram_message_id",
+    "telegram_message_ids",
+    "youtube_video_id",
+    "content_uid",
+    "download_started_at",
+    "download_ended_at",
+    "error_message",
+}
+
+
 def update_status(live_id: str, status: str, **kwargs) -> None:
     """Update the status (and any extra columns) for a live session."""
-    allowed_cols = {
-        "file_path",
-        "file_size_bytes",
-        "telegram_message_id",
-        "telegram_message_ids",
-        "youtube_video_id",
-        "download_started_at",
-        "download_ended_at",
-        "error_message",
-    }
-    extra = {k: v for k, v in kwargs.items() if k in allowed_cols}
+    extra = {k: v for k, v in kwargs.items() if k in _SESSION_FIELD_COLS}
     set_clause = ", ".join([f"{col} = ?" for col in extra])
     values = list(extra.values()) + [status, live_id]
     sql = f"UPDATE live_sessions SET {set_clause + ', ' if set_clause else ''}status = ? WHERE live_id = ?"
     with _get_conn() as conn:
         conn.execute(sql, values)
+
+
+def set_session_fields(
+    live_id: Optional[str] = None,
+    group_id: Optional[int] = None,
+    **fields,
+) -> None:
+    """
+    Perbarui kolom tertentu TANPA mengubah `status`.
+
+    Dipakai alur upload dual (YouTube + arsip Telegram) agar penyelesaian
+    sebagian (mis. arsip TG sukses, YouTube masih pending) tidak salah
+    menyetel status akhir. Bila `group_id` diisi, semua baris segmen dalam
+    merge group ikut diperbarui.
+    """
+    allowed = {k: v for k, v in fields.items() if k in _SESSION_FIELD_COLS}
+    if not allowed:
+        return
+    set_clause = ", ".join(f"{col} = ?" for col in allowed)
+    values = list(allowed.values())
+    with _get_conn() as conn:
+        if group_id is not None:
+            conn.execute(
+                f"UPDATE live_sessions SET {set_clause} WHERE merge_group_id = ?",
+                values + [group_id],
+            )
+        elif live_id and not live_id.startswith("merged_"):
+            conn.execute(
+                f"UPDATE live_sessions SET {set_clause} WHERE live_id = ?",
+                values + [live_id],
+            )
+
+
+def get_group_upload_state(
+    live_id: str = "",
+    group_id: Optional[int] = None,
+) -> dict:
+    """
+    Status penyelesaian upload untuk satu live / merge group:
+    `youtube_video_id`, `telegram_message_ids` (arsip channel), dan
+    `telegram_message_id` (notifikasi chat).
+
+    Dipakai retry supaya tidak meng-upload ulang tujuan yang sudah selesai.
+    """
+    empty = {
+        "youtube_video_id": "",
+        "telegram_message_ids": "",
+        "telegram_message_id": 0,
+    }
+    with _get_conn() as conn:
+        if group_id is not None:
+            row = conn.execute(
+                """SELECT MAX(COALESCE(youtube_video_id, ''))     AS youtube_video_id,
+                          MAX(COALESCE(telegram_message_ids, '')) AS telegram_message_ids,
+                          MAX(COALESCE(telegram_message_id, 0))   AS telegram_message_id
+                   FROM live_sessions
+                   WHERE merge_group_id = ?""",
+                (group_id,),
+            ).fetchone()
+        elif live_id and not live_id.startswith("merged_"):
+            row = conn.execute(
+                """SELECT COALESCE(youtube_video_id, '')     AS youtube_video_id,
+                          COALESCE(telegram_message_ids, '') AS telegram_message_ids,
+                          COALESCE(telegram_message_id, 0)   AS telegram_message_id
+                   FROM live_sessions
+                   WHERE live_id = ?""",
+                (live_id,),
+            ).fetchone()
+        else:
+            return dict(empty)
+    if not row:
+        return dict(empty)
+    return dict(row)
 
 
 def get_archived_session_by_youtube_id(youtube_video_id: str) -> Optional[dict]:
@@ -412,6 +518,29 @@ def get_archived_session_by_youtube_id(youtube_video_id: str) -> Optional[dict]:
                  AND telegram_message_ids != ''
                ORDER BY id ASC LIMIT 1""",
             (yt,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_archived_session_by_content_uid(content_uid: str) -> Optional[dict]:
+    """
+    Sesi yang sudah punya arsip di channel Telegram privat, dicari lewat
+    content_uid (kunci konten unik: merged_<gid> atau live_id).
+    Dipakai replay bot ketika YouTube belum/ada ter-upload.
+    """
+    uid = (content_uid or "").strip()
+    if not uid:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            """SELECT live_id, member_username, member_name, started_at,
+                      telegram_message_ids, file_size_bytes
+               FROM live_sessions
+               WHERE content_uid = ?
+                 AND telegram_message_ids IS NOT NULL
+                 AND telegram_message_ids != ''
+               ORDER BY id ASC LIMIT 1""",
+            (uid,),
         ).fetchone()
     return dict(row) if row else None
 
@@ -1066,12 +1195,36 @@ def increment_channel_uploads(channel_id: int) -> None:
 # ─── Pending Upload Queue ────────────────────────────────────────────────────
 
 def get_pending_uploads_youtube() -> list[dict]:
-    """Return sessions marked as pending_upload (e.g. waiting for quota reset)."""
+    """
+    Return sessions marked as pending_upload (e.g. waiting for quota reset).
+
+    Hasil DI-DUPE per `file_path`: setelah merge, SEMUA baris segmen berbagi
+    path file hasil merge dan status `pending_upload` — tanpa dedupe, retry
+    meng-upload video yang sama sekali per segmen. Concat gagal menghasilkan
+    path berbeda per segmen sehingga tetap masing-masing satu entri.
+    """
     with _get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM live_sessions WHERE status = 'pending_upload' ORDER BY created_at ASC"
         ).fetchall()
-    return [dict(r) for r in rows]
+
+    seen_paths: set[str] = set()
+    seen_no_path: set[str] = set()
+    out: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        fp = d.get("file_path") or ""
+        if fp:
+            if fp in seen_paths:
+                continue
+            seen_paths.add(fp)
+        else:
+            lid = d.get("live_id") or ""
+            if lid in seen_no_path:
+                continue
+            seen_no_path.add(lid)
+        out.append(d)
+    return out
 
 
 def get_all_pending_videos() -> list[dict]:
@@ -1079,6 +1232,10 @@ def get_all_pending_videos() -> list[dict]:
     Return all sessions that have a recorded file on disk ready to upload.
     Only returns 'pending_upload' and 'download_complete' — not 'failed',
     since failed means permanently failed and should not be auto-retried.
+
+    Entri dengan `file_path` sama di-dedupe (satu antrean per file), supaya
+    retry tidak mengirim video hasil merge berkali-kali. Path berbeda
+    (mis. hasil concat gagal) tetap masing-masing satu entri.
     """
     with _get_conn() as conn:
         rows = conn.execute(
@@ -1087,7 +1244,17 @@ def get_all_pending_videos() -> list[dict]:
                  AND file_path IS NOT NULL AND file_path != ''
                ORDER BY created_at ASC"""
         ).fetchall()
-    return [dict(r) for r in rows]
+
+    seen_paths: set[str] = set()
+    out: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        fp = d.get("file_path") or ""
+        if fp in seen_paths:
+            continue
+        seen_paths.add(fp)
+        out.append(d)
+    return out
 
 
 def mark_session_pending_upload(live_id: str, error_message: str = "") -> None:

@@ -91,6 +91,20 @@ class TestDatabaseLookup(ReplayBotTestCase):
         self.assertIsNone(database.get_archived_session_by_youtube_id("nope123"))
         self.assertIsNone(database.get_archived_session_by_youtube_id(""))
 
+    def test_finds_session_by_content_uid(self):
+        self._insert_session("live_4", YT_ID, "202")
+        database.update_status("live_4", "done_youtube", content_uid="live_4")
+        row = database.get_archived_session_by_content_uid("live_4")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["live_id"], "live_4")
+        self.assertEqual(row["telegram_message_ids"], "202")
+
+    def test_content_uid_none_when_no_archive(self):
+        database.insert_live("live_5", "jkt48_lulu", "Lulu", "2026-09-19T10:00:00")
+        database.update_status("live_5", "done_youtube", content_uid="live_5")
+        self.assertIsNone(database.get_archived_session_by_content_uid("live_5"))
+        self.assertIsNone(database.get_archived_session_by_content_uid(""))
+
 
 class TestSendReplay(ReplayBotTestCase):
     def test_single_part_copies_from_archive_channel(self):
@@ -126,6 +140,24 @@ class TestSendReplay(ReplayBotTestCase):
         self.assertIn("masa tunggu", self.sent[0].lower())
         self.assertEqual(self.copied, [])
 
+    def test_content_uid_payload_copies_without_youtube(self):
+        """Arsip TG sudah ada, YouTube belum → deep-link content_uid tetap jalan."""
+        database.insert_live("jkt48_lulu_1700000000", "jkt48_lulu", "Lulu", "2026-09-19T10:00:00")
+        database.update_status(
+            "jkt48_lulu_1700000000", "done_youtube",
+            content_uid="jkt48_lulu_1700000000", telegram_message_ids="301",
+        )
+        asyncio.run(self.bot._send_replay(CHAT_ID, "jkt48_lulu_1700000000"))
+        self.assertEqual(self.copied, [(CHAT_ID, ARCHIVE_CHANNEL, 301)])
+        self.assertEqual(self.sent, [])
+
+    def test_merged_content_uid_payload_copies(self):
+        database.insert_live("michie_a", "jkt48_michie", "Michie", "2026-09-19T10:00:00")
+        database.update_status("michie_a", "done_youtube", content_uid="merged_7", telegram_message_ids="401,402")
+        asyncio.run(self.bot._send_replay(CHAT_ID, "merged_7"))
+        self.assertEqual(self.copied, [(CHAT_ID, ARCHIVE_CHANNEL, 401), (CHAT_ID, ARCHIVE_CHANNEL, 402)])
+        self.assertEqual(self.sent, [])
+
 
 class TestDispatch(ReplayBotTestCase):
     def _send(self, text: str) -> None:
@@ -154,6 +186,12 @@ class TestPayloadValidation(unittest.TestCase):
     def test_valid_youtube_id(self):
         self.assertTrue(_valid_payload("gJ8G0PnE_1x"))
         self.assertTrue(_valid_payload("abcdefghijk"))
+
+    def test_valid_content_uid(self):
+        self.assertTrue(_valid_payload("merged_1"))
+        self.assertTrue(_valid_payload("jkt48_lulu_1700000000"))
+        self.assertTrue(_valid_payload("sr_JKT48_Olla_1700000000"))
+        self.assertTrue(_valid_payload("sr_JKT48_Olla_1700000000_r1"))
 
     def test_invalid_youtube_ids(self):
         self.assertFalse(_valid_payload("short"))

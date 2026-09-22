@@ -43,7 +43,9 @@ export default function HeroSpotlight({ video, watchUrl }: { video: VideoItem; w
             className="hero-feature-img"
             onError={() => { if (src !== fallback) setSrc(fallback); }}
           />
-        ) : null}
+        ) : (
+          <span className="video-thumbnail-placeholder" aria-hidden="true" />
+        )}
         <span className="hero-feature-scrim" aria-hidden="true" />
       </div>
 

@@ -78,7 +78,7 @@ export default async function MemberDetailPage({ params }: Props) {
       {videos.length ? (
         <div className="video-grid" id="member-replays">
           {videos.map((video) => (
-            <VideoCard key={video.youtube_video_id} video={video} />
+            <VideoCard key={video.content_uid || video.youtube_video_id || video.id} video={video} />
           ))}
         </div>
       ) : (

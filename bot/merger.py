@@ -45,6 +45,7 @@ from bot.database import (
     get_waiting_merge_groups,
     get_orphaned_segments,
     close_merge_group,
+    set_session_fields,
     fail_merge_group,
     update_merge_group_last_segment,
     update_merge_group_slug,
@@ -535,6 +536,7 @@ class MergeManager:
             if not merged_path:
                 logger.error("%s: concat failed, dispatching segments individually", member_username)
                 for seg in segments:
+                    set_session_fields(live_id=seg["live_id"], content_uid=seg["live_id"])
                     if self._on_upload_ready:
                         await self._on_upload_ready(
                             live_id=seg["live_id"],
@@ -552,6 +554,7 @@ class MergeManager:
             merged_live_id = f"merged_{group_id}"
 
         close_merge_group(group_id, merged_path, merged_live_id)
+        set_session_fields(group_id=group_id, content_uid=merged_live_id)
 
         if self._on_upload_ready:
             await self._on_upload_ready(

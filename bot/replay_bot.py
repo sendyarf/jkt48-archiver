@@ -39,6 +39,9 @@ POLL_TIMEOUT = 25
 _YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _NOTIFY_RE = re.compile(r"^notify_[A-Za-z0-9_-]{11}$")
 _TIKTOK_RE = re.compile(r"^tt_[A-Za-z0-9_-]{1,64}$")
+# content_uid: merged_<gid> atau live_id (IDN: user_<epoch>, Showroom: sr_..._<epoch>)
+_MERGED_RE = re.compile(r"^merged_\d{1,12}$")
+_LIVE_ID_RE = re.compile(r"^(?:sr_)?[A-Za-z0-9][A-Za-z0-9_-]{0,63}_\d{6,14}(?:(?:_pt|_rc|_r)\d+)?$")
 
 # Rate-limit per chat: lindungi Telegram Bot API & DB dari spam deep-link.
 # Bucket: chat_id -> daftar timestamp (epoch detik, window 60 dtk, max 10).
@@ -61,10 +64,14 @@ def _rate_limited(chat_id: int, now: Optional[float] = None) -> bool:
 
 
 def _valid_payload(payload: str) -> bool:
-    """True bila payload deep-link berformat sah (yt / notify_ / tt_)."""
+    """True bila payload deep-link berformat sah (yt / notify_ / tt_ / content_uid)."""
     if _NOTIFY_RE.match(payload):
         return True
     if _TIKTOK_RE.match(payload):
+        return True
+    if _MERGED_RE.match(payload):
+        return True
+    if _LIVE_ID_RE.match(payload):
         return True
     return bool(_YT_ID_RE.match(payload))
 
@@ -341,7 +348,12 @@ class ReplayBot:
             await self._send_tiktok(chat_id, payload[3:])
             return
 
-        session = database.get_archived_session_by_youtube_id(payload)
+        # Lookup: content_uid dulu (merged_ / live_id), fallback YouTube ID.
+        session = None
+        if _MERGED_RE.match(payload) or _LIVE_ID_RE.match(payload):
+            session = database.get_archived_session_by_content_uid(payload)
+        if not session:
+            session = database.get_archived_session_by_youtube_id(payload)
         if not session:
             logger.info("Payload tidak dikenal / belum diarsipkan: %r", payload)
             await self.send_message(chat_id, NOT_FOUND_TEXT)

@@ -32,7 +32,7 @@ export default async function PublicCatalog({ searchParams }: { searchParams: Pr
   // Judul hero sekaligus jadi h1 halaman; saat hero tidak ada, h1 diambil alih
   // judul section katalog.
   const hero = !filtered && result.page === 1 ? result.videos[0] : undefined;
-  const heroWatchUrl = hero ? `/watch/${hero.watch_id || hero.youtube_video_id || hero.id}` : '/#catalog';
+  const heroWatchUrl = hero ? `/watch/${hero.watch_id || hero.content_uid || hero.youtube_video_id || hero.id}` : '/#catalog';
   const catalogHeading = filtered ? 'Hasil pencarian' : 'Replay terbaru';
   return <div className="public-catalog">
     {hero ? <section className="container catalog-hero-block"><HeroSpotlight video={hero} watchUrl={heroWatchUrl} /></section> : null}
@@ -40,7 +40,7 @@ export default async function PublicCatalog({ searchParams }: { searchParams: Pr
     <section className="container page-section" id="catalog"><header className="section-heading"><div><p className="eyebrow">REPLAY</p>{hero ? <h2>{catalogHeading}</h2> : <h1>{catalogHeading}</h1>}</div><p>Terbaru dulu</p></header>
       <CatalogFilterForm q={q} member={member} platform={platform} members={members} />
       <p className="result-summary">{result.total} replay siap ditonton{upcoming.length > 0 ? ` (+${upcoming.length} segera hadir)` : ''}{q && <> untuk “{q}”</>}</p>
-      {merged.length ? <div className="video-grid" id="main-video-grid">{merged.map(video => <VideoCard key={video.youtube_video_id} video={video} />)}</div> : <div className="empty-state"><PlayCircle size={40} aria-hidden="true" /><h2>{filtered ? 'Belum ada replay yang cocok' : 'Arsipnya masih kosong'}</h2><p>{filtered ? 'Coba kata kunci lain atau ubah filternya.' : 'Replay yang sudah tayang bakal muncul di sini.'}</p>{(filtered || result.page > 1) && <Link className="secondary-button" href="/#catalog">Lihat semua replay</Link>}</div>}
+      {merged.length ? <div className="video-grid" id="main-video-grid">{merged.map(video => <VideoCard key={video.content_uid || video.youtube_video_id || video.id} video={video} />)}</div> : <div className="empty-state"><PlayCircle size={40} aria-hidden="true" /><h2>{filtered ? 'Belum ada replay yang cocok' : 'Arsipnya masih kosong'}</h2><p>{filtered ? 'Coba kata kunci lain atau ubah filternya.' : 'Replay yang sudah tayang bakal muncul di sini.'}</p>{(filtered || result.page > 1) && <Link className="secondary-button" href="/#catalog">Lihat semua replay</Link>}</div>}
       {(result.totalPages > 1 || result.page > 1) && <nav className="pagination" aria-label="Halaman katalog">{result.page > 1 ? <Link className="secondary-button" href={pageUrl(result.page - 1)}>← Sebelumnya</Link> : <span /> }<span>Halaman {result.page} / {result.totalPages}</span>{result.page < result.totalPages ? <Link className="secondary-button" href={pageUrl(result.page + 1)}>Berikutnya →</Link> : <span />}</nav>}
     </section>
   </div>;

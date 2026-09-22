@@ -295,6 +295,21 @@ class JKT48LiveBot:
                 group_id = int(live_id.split("_")[1])
             except (IndexError, ValueError):
                 pass
+        else:
+            # Retry memakai live_id asli segmen (bukan `merged_<gid>`), tapi
+            # status/upload id harus menempel ke SELURUH merge group — kalau
+            # tidak, hanya satu baris yang berubah dan baris lain tetap
+            # pending_upload → di-upload ulang pada siklus retry berikutnya.
+            # Hanya saat status sudah pending_upload (retry). Concat gagal
+            # dispatch per-segmen dengan status segment_done — update-nya
+            # harus tetap per-baris, jangan digabung via merge_group_id.
+            row = database.get_session(live_id)
+            if (
+                row is not None
+                and row["merge_group_id"] is not None
+                and (row["status"] or "") == "pending_upload"
+            ):
+                group_id = int(row["merge_group_id"])
 
         # Platform untuk judul/deskripsi: dari merger bila ada, lalu prefix
         # live_id (`sr_`), lalu database (live_sessions → merge_groups).
@@ -332,9 +347,13 @@ class JKT48LiveBot:
                 )
 
                 if msg_ids:
+                    # Simpan SEMUA message_id (plural) agar web `telegram_archived`
+                    # dan replay bot bisa copy multi-part — sama dengan alur dual.
+                    joined = ",".join(str(m) for m in msg_ids)
                     set_status(
                         "done_telegram",
                         telegram_message_id=msg_ids[0],
+                        telegram_message_ids=joined,
                     )
                     logger.info("Successfully uploaded to Telegram (%s). Message IDs: %s", live_id, msg_ids)
 
@@ -351,72 +370,138 @@ class JKT48LiveBot:
 
         else:
             # ─── YouTube Upload Flow (preserved) ─────────────────────────
-            set_status(
-                "uploading_youtube",
-                file_path=str(path),
-                file_size_bytes=file_size,
-            )
+            # Progress per tujuan disimpan terpisah (youtube_video_id vs
+            # telegram_message_ids) supaya retry hanya mengerjakan yang belum
+            # selesai — kunci dual-upload saat kuota YouTube habis.
+            prior = database.get_group_upload_state(live_id, group_id)
+            already_on_youtube = bool((prior.get("youtube_video_id") or "").strip())
+            already_archived = bool((prior.get("telegram_message_ids") or "").strip())
+            already_notified = bool(prior.get("telegram_message_id"))
 
-            title = self.yt_pool.build_title(
-                member_name or member_username, started_at, plat
-            )
-            desc = self.yt_pool.build_description(
-                member_name or member_username, member_username, started_at, plat
-            )
+            # Arsip ke channel TG privat INDEPENDEN dari keberhasilan YouTube.
+            # Dulu dipanggil hanya setelah YouTube sukses → kuota habis = channel
+            # arsip tidak pernah terisi.
+            archive_ok = True
+            if not already_archived:
+                archive_ok = await self._archive_to_telegram(
+                    path=path,
+                    member_name=member_name or member_username,
+                    member_username=member_username,
+                    started_at=started_at,
+                    live_title=live_title,
+                    live_id=live_id,
+                    group_id=group_id,
+                    set_status=set_status,
+                    platform=plat,
+                )
+            else:
+                logger.info(
+                    "Telegram archive already done for %s (youtube=%s); skipping archive.",
+                    live_id, prior.get("youtube_video_id") or "-",
+                )
 
-            logger.info("Uploading video to YouTube for %s (%s): %s", member_name, live_id, title)
+            video_id = (prior.get("youtube_video_id") or "").strip()
+            yt_ok = already_on_youtube
 
-            try:
-                video_id, channel_label = self.yt_pool.upload_video(path, title=title, description=desc)
+            if already_on_youtube:
+                logger.info(
+                    "YouTube already uploaded for %s (video_id=%s); skipping YouTube upload.",
+                    live_id, video_id,
+                )
+                set_status(
+                    "uploading_youtube",
+                    file_path=str(path),
+                    file_size_bytes=file_size,
+                    youtube_video_id=video_id,
+                )
+            else:
+                set_status(
+                    "uploading_youtube",
+                    file_path=str(path),
+                    file_size_bytes=file_size,
+                )
 
-                if video_id:
-                    set_status(
-                        "done_youtube",
-                        youtube_video_id=video_id,
-                    )
-                    logger.info("Successfully uploaded to YouTube (%s). Video ID: %s", channel_label, video_id)
+                title = self.yt_pool.build_title(
+                    member_name or member_username, started_at, plat
+                )
+                desc = self.yt_pool.build_description(
+                    member_name or member_username, member_username, started_at, plat
+                )
 
-                    # Thumbnail untuk video BARU: kolase 3x2 bila bisa, atau
-                    # fallback 1 frame cover (lihat build_collage). Best-effort:
-                    # gagal -> warning saja, upload tetap sukses.
-                    thumb_path = None
-                    try:
-                        if Config.THUMBNAIL_COLLAGE_ENABLED:
-                            thumb_path = build_collage(path)
-                            if thumb_path is not None:
-                                ok_thumb = self.yt_pool.set_thumbnail(
-                                    video_id, thumb_path,
-                                    channel_label=channel_label,
-                                )
-                                if not ok_thumb:
-                                    logger.warning(
-                                        "Thumbnail gagal terpasang ke YouTube %s "
-                                        "(file lokal tetap dihapus; video memakai "
-                                        "thumbnail otomatis).",
-                                        video_id,
+                logger.info("Uploading video to YouTube for %s (%s): %s", member_name, live_id, title)
+
+                try:
+                    video_id, channel_label = self.yt_pool.upload_video(path, title=title, description=desc)
+
+                    if video_id:
+                        yt_ok = True
+                        set_status(
+                            "uploading_youtube",
+                            youtube_video_id=video_id,
+                        )
+                        logger.info("Successfully uploaded to YouTube (%s). Video ID: %s", channel_label, video_id)
+
+                        # Thumbnail untuk video BARU: kolase 3x2 bila bisa, atau
+                        # fallback 1 frame cover (lihat build_collage). Best-effort:
+                        # gagal -> warning saja, upload tetap sukses.
+                        thumb_path = None
+                        try:
+                            if Config.THUMBNAIL_COLLAGE_ENABLED:
+                                thumb_path = build_collage(path)
+                                if thumb_path is not None:
+                                    ok_thumb = self.yt_pool.set_thumbnail(
+                                        video_id, thumb_path,
+                                        channel_label=channel_label,
                                     )
-                    except Exception as exc:
-                        logger.warning("Thumbnail kolase dilewati (%s): %s", live_id, exc)
-                    finally:
-                        if thumb_path is not None:
-                            try:
-                                thumb_path.unlink(missing_ok=True)
-                            except OSError:
-                                pass
+                                    if not ok_thumb:
+                                        logger.warning(
+                                            "Thumbnail gagal terpasang ke YouTube %s "
+                                            "(file lokal tetap dihapus; video memakai "
+                                            "thumbnail otomatis).",
+                                            video_id,
+                                        )
+                        except Exception as exc:
+                            logger.warning("Thumbnail kolase dilewati (%s): %s", live_id, exc)
+                        finally:
+                            if thumb_path is not None:
+                                try:
+                                    thumb_path.unlink(missing_ok=True)
+                                except OSError:
+                                    pass
+                    else:
+                        logger.error("YouTube upload returned no video ID for %s", live_id)
+                        set_status("pending_upload", error_message="YouTube upload failed")
 
-                    # Arsipkan juga ke channel Telegram privat (database replay)
-                    archive_ok = await self._archive_to_telegram(
-                        path=path,
-                        member_name=member_name or member_username,
-                        member_username=member_username,
-                        started_at=started_at,
-                        live_title=live_title,
-                        live_id=live_id,
-                        set_status=set_status,
-                        platform=plat,
+                except YouTubeQuotaExceeded as q_exc:
+                    logger.warning(
+                        "YouTube quota limit exceeded across all channels for %s: %s",
+                        live_id, q_exc,
                     )
+                    set_status("pending_upload", error_message=str(q_exc))
+                    # File stays on disk; notify admin if configured
+                    if Config.ADMIN_CHAT_ID:
+                        await self.tg.send_message(
+                            f"⚠️ <b>YouTube Quota Alert</b>\n"
+                            f"Semua channel YouTube mencapai limit upload harian.\n"
+                            f"Video untuk <b>{member_name}</b> disimpan di VPS dan masuk antrian upload.",
+                            channel_id=Config.ADMIN_CHAT_ID,
+                        )
+                except Exception as exc:
+                    # Error non-kuota (network, OAuth, dsb.) juga retryable —
+                    # tandai pending_upload agar file TIDAK stuck permanen sebagai
+                    # `failed` tanpa pernah dicoba lagi (get_pending_uploads_youtube
+                    # hanya memilih pending_upload).
+                    logger.exception("Unexpected error uploading %s to YouTube: %s", live_id, exc)
+                    set_status("pending_upload", error_message=str(exc))
 
-                    # Send Telegram notification
+            # Finalisasi hanya bila KEDUA tujuan selesai (YouTube + arsip TG).
+            # YouTube gagal/kuota → status sudah pending_upload; file tetap di
+            # disk. Arsip TG gagal → pending_upload supaya di-retry tanpa
+            # mengulang YouTube (youtube_video_id sudah terisi).
+            if yt_ok and archive_ok:
+                set_status("done_youtube", youtube_video_id=video_id)
+
+                if not already_notified:
                     msg_text = build_youtube_notification(
                         member_name=member_name or member_username,
                         member_username=member_username,
@@ -427,33 +512,17 @@ class JKT48LiveBot:
                     )
                     msg_id = await self.tg.send_message(msg_text)
                     if msg_id:
-                        set_status("done_youtube", telegram_message_id=msg_id)
+                        set_status("done_youtube", youtube_video_id=video_id, telegram_message_id=msg_id)
 
-                    # Auto delete local file only if EVERYTHING succeeded
-                    if Config.AUTO_DELETE_AFTER_UPLOAD and archive_ok:
-                        delete_file(path)
-                else:
-                    logger.error("YouTube upload returned no video ID for %s", live_id)
-                    set_status("failed", error_message="YouTube upload failed")
-
-            except YouTubeQuotaExceeded as q_exc:
-                logger.warning("YouTube quota limit exceeded across all channels for %s: %s", live_id, q_exc)
-                set_status("pending_upload", error_message=str(q_exc))
-                # File stays on disk; notify admin if configured
-                if Config.ADMIN_CHAT_ID:
-                    await self.tg.send_message(
-                        f"⚠️ <b>YouTube Quota Alert</b>\n"
-                        f"Semua channel YouTube mencapai limit upload harian.\n"
-                        f"Video untuk <b>{member_name}</b> disimpan di VPS dan masuk antrian upload.",
-                        channel_id=Config.ADMIN_CHAT_ID,
-                    )
-            except Exception as exc:
-                # Error non-kuota (network, OAuth, dsb.) juga retryable —
-                # tandai pending_upload agar file TIDAK stuck permanen sebagai
-                # `failed` tanpa pernah dicoba lagi (get_pending_uploads_youtube
-                # hanya memilih pending_upload).
-                logger.exception("Unexpected error uploading %s to YouTube: %s", live_id, exc)
-                set_status("pending_upload", error_message=str(exc))
+                if Config.AUTO_DELETE_AFTER_UPLOAD:
+                    delete_file(path)
+            elif yt_ok and not archive_ok:
+                # YouTube sudah ada; arsip TG belum — jangan dianggap done.
+                set_status(
+                    "pending_upload",
+                    youtube_video_id=video_id,
+                    error_message="Telegram archive pending",
+                )
 
     async def _archive_to_telegram(
         self,
@@ -464,6 +533,7 @@ class JKT48LiveBot:
         started_at: str,
         live_title: str,
         live_id: str,
+        group_id: Optional[int] = None,
         set_status,
         platform: str = "",
     ) -> bool:
@@ -474,9 +544,11 @@ class JKT48LiveBot:
         `platform` diteruskan ke caption arsip supaya header memakai label yang
         benar (IDN vs SHOWROOM).
 
-        Mengembalikan True bila arsip sukses (atau fitur dimatikan); False bila
-        gagal — dalam hal ini sesi ditandai pending_upload agar file lokal TIDAK
-        dihapus dan bisa di-retry. Dipanggil hanya pada alur YouTube.
+        Dipanggil INDEPENDEN dari keberhasilan YouTube (bukan hanya setelah
+        YouTube sukses). Sukses → hanya menulis `telegram_message_ids` tanpa
+        mengubah status (penentu status akhir ada di `handle_upload_ready`).
+        Gagal → sesi ditandai pending_upload agar file lokal TIDAK dihapus
+        dan arsip bisa di-retry tanpa mengulang YouTube.
         """
         if not Config.TELEGRAM_ARCHIVE_UPLOAD_ENABLED:
             return True
@@ -504,7 +576,13 @@ class JKT48LiveBot:
             )
             if msg_ids:
                 joined = ",".join(str(m) for m in msg_ids)
-                set_status("done_youtube", telegram_message_ids=joined)
+                # Hanya catat message_id — status akhir (done vs pending)
+                # ditentukan setelah YouTube juga dievaluasi.
+                database.set_session_fields(
+                    live_id=live_id,
+                    group_id=group_id,
+                    telegram_message_ids=joined,
+                )
                 logger.info(
                     "Archived to Telegram (%s). Message IDs: %s", live_id, msg_ids,
                 )
@@ -959,6 +1037,9 @@ class JKT48LiveBot:
             len(pending),
             Config.UPLOAD_TARGET,
         )
+        # Dedupe per file_path: baris merge group berbagi path yang sama;
+        # tanpa ini, satu video hasil merge di-upload sekali per baris segmen.
+        seen_files: set[str] = set()
         for sess in pending:
             live_id = sess["live_id"]
             file_path = sess["file_path"]
@@ -966,6 +1047,15 @@ class JKT48LiveBot:
                 logger.warning("Pending upload file missing on disk: %s. Marking failed.", file_path)
                 database.update_status(live_id, "failed", error_message="File missing on disk")
                 continue
+
+            resolved = str(Path(file_path).resolve())
+            if resolved in seen_files:
+                logger.debug(
+                    "Skipping duplicate pending upload for %s (same file already queued: %s)",
+                    live_id, file_path,
+                )
+                continue
+            seen_files.add(resolved)
 
             username = sess["member_username"]
             name = sess["member_name"] or username

@@ -54,22 +54,26 @@ export default async function WatchPage({ params }: WatchPageProps) {
     redirect(`/watch/${encodeWatchId(id)}`);
   }
 
+  // Kunci konten: YouTube ID bila ada; selain itu content_uid (arsip TG-first).
+  const contentKey = video.youtube_video_id || video.content_uid || '';
+
   // Related: same member first, pad with recent other-member videos if <6.
   const { videos: memberVideos } = getAllVideos({
     member: video.streamer_username,
     limit: 6,
   });
+  const relKey = (v: typeof video) => v.content_uid || v.youtube_video_id || String(v.id);
   let filteredRelated = memberVideos.filter(
-    (v) => v.youtube_video_id !== video.youtube_video_id
+    (v) => relKey(v) !== relKey(video)
   );
   if (filteredRelated.length < 6) {
     const { videos: recent } = getAllVideos({ limit: 24 });
-    const seen = new Set(filteredRelated.map((v) => v.youtube_video_id));
-    seen.add(video.youtube_video_id);
+    const seen = new Set(filteredRelated.map(relKey));
+    seen.add(relKey(video));
     for (const v of recent) {
       if (filteredRelated.length >= 6) break;
-      if (seen.has(v.youtube_video_id)) continue;
-      seen.add(v.youtube_video_id);
+      if (seen.has(relKey(v))) continue;
+      seen.add(relKey(v));
       filteredRelated = [...filteredRelated, v];
     }
   }
@@ -94,18 +98,28 @@ export default async function WatchPage({ params }: WatchPageProps) {
                 publishAt={video.publish_at || ''}
                 title={video.title}
               />
-            ) : (
+            ) : video.youtube_video_id ? (
               <VideoPlayer
                 youtubeId={video.youtube_video_id}
                 title={video.title}
                 poster={video.thumbnail_url}
                 platform={video.platform}
               />
+            ) : (
+              /* Arsip TG-first: YouTube belum ada — panel placeholder + unduh. */
+              <div className="countdown-panel" role="status">
+                <p className="countdown-label">Arsip Telegram siap</p>
+                <h2 className="countdown-title">{video.title}</h2>
+                <p className="countdown-sub">
+                  Pemutar YouTube sedang disiapkan. Sementara itu, unduh lewat bot
+                  Telegram di bawah — atau tunggu permukaan terbit otomatis.
+                </p>
+              </div>
             )}
           </div>
-          {!isPrerelease && (
+          {!isPrerelease && video.youtube_video_id && (
             <WatchTracker
-              watchId={`/watch/${video.watch_id || video.youtube_video_id || video.id}`}
+              watchId={`/watch/${video.watch_id || contentKey}`}
               title={video.title}
               thumbnailUrl={video.thumbnail_url}
               streamerName={video.streamer_name}
@@ -134,10 +148,11 @@ export default async function WatchPage({ params }: WatchPageProps) {
               </div>
             </div>
 
-            {!isPrerelease && video.telegram_archived && (
+            {video.telegram_archived && (
               <div style={{ marginTop: '14px' }}>
                 <TelegramDownloadButton
                   youtubeVideoId={video.youtube_video_id}
+                  payload={contentKey}
                   title={video.title}
                 />
               </div>
@@ -162,18 +177,22 @@ export default async function WatchPage({ params }: WatchPageProps) {
             <div className="related-list">
               {filteredRelated.map((rel) => (
                 <Link
-                  key={rel.youtube_video_id || rel.id}
-                  href={`/watch/${rel.watch_id || rel.youtube_video_id || rel.id}`}
+                  key={rel.content_uid || rel.youtube_video_id || rel.id}
+                  href={`/watch/${rel.watch_id || rel.content_uid || rel.youtube_video_id || rel.id}`}
                   className="related-card"
                 >
                   <div className="related-thumb-box">
-                    <Image
-                      src={rel.thumbnail_url}
-                      alt={rel.title}
-                      fill
-                      sizes="(max-width: 900px) 82vw, 120px"
-                      className="related-thumb"
-                    />
+                    {rel.thumbnail_url ? (
+                      <Image
+                        src={rel.thumbnail_url}
+                        alt={rel.title}
+                        fill
+                        sizes="(max-width: 900px) 82vw, 120px"
+                        className="related-thumb"
+                      />
+                    ) : (
+                      <span className="video-thumbnail-placeholder" aria-hidden="true" />
+                    )}
                   </div>
                   <div className="related-info">
                     <h4 className="related-title">{rel.title}</h4>

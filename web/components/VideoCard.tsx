@@ -8,7 +8,7 @@ import type { VideoItem } from '@/lib/db';
 import MiniCountdown from '@/components/MiniCountdown';
 
 export default function VideoCard({ video }: { video: VideoItem }) {
-  const watchUrl = `/watch/${video.watch_id || video.youtube_video_id || video.id}`;
+  const watchUrl = `/watch/${video.watch_id || video.content_uid || video.youtube_video_id || video.id}`;
 
   // Tanggal sudah dikonversi ke WIB di server (lib/wib.ts via VideoItem
   // date_display) — kartu tidak boleh memformat sendiri di browser viewer,
@@ -21,17 +21,23 @@ export default function VideoCard({ video }: { video: VideoItem }) {
   return (
     <div className="video-card">
       <Link href={watchUrl} className="video-thumbnail-box">
-        <Image
-          src={thumbSrc}
-          alt={video.title}
-          fill
-          sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-          className="video-thumbnail"
-          onError={() => {
-            const fb = `https://img.youtube.com/vi/${video.youtube_video_id}/hqdefault.jpg`;
-            if (thumbSrc !== fb) setThumbSrc(fb);
-          }}
-        />
+        {thumbSrc ? (
+          <Image
+            src={thumbSrc}
+            alt={video.title}
+            fill
+            sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+            className="video-thumbnail"
+            onError={() => {
+              if (!video.youtube_video_id) return;
+              const fb = `https://img.youtube.com/vi/${video.youtube_video_id}/hqdefault.jpg`;
+              if (thumbSrc !== fb) setThumbSrc(fb);
+            }}
+          />
+        ) : (
+          // Arsip TG-first: belum ada YouTube → tanpa thumbnail remote.
+          <span className="video-thumbnail-placeholder" aria-hidden="true" />
+        )}
         <span className={`platform-badge ${video.platform}`}>
           {video.platform === 'idn' ? 'IDN' : 'Showroom'}
         </span>

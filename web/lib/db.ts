@@ -143,6 +143,9 @@ export function getDb(): DatabaseSync {
         if (!existing.has('telegram_message_ids')) {
           _db.exec('ALTER TABLE live_sessions ADD COLUMN telegram_message_ids TEXT');
         }
+        if (!existing.has('content_uid')) {
+          _db.exec('ALTER TABLE live_sessions ADD COLUMN content_uid TEXT');
+        }
       }
     } catch {
       // Tabel live_sessions belum ada (mis. database baru) — biarkan query
@@ -238,6 +241,11 @@ export interface VideoItem {
   duration_seconds: number;
   duration_formatted: string;
   youtube_video_id: string;
+  /**
+   * Kunci konten unik bot (`merged_<gid>` / `live_id`). Dipakai deep-link
+   * replay bot & /watch bila YouTube belum ter-upload (arsip TG first).
+   */
+  content_uid?: string;
   /** ID tersamar (Base64URL) untuk URL /watch publik. */
   watch_id?: string;
   thumbnail_url: string;
@@ -315,9 +323,19 @@ interface VideoRow {
   started_at: string | null;
   created_at: string | null;
   youtube_video_id: string;
+  content_uid: string | null;
+  telegram_message_ids: string | null;
+  has_tg?: number;
   dur_start: string | null;
   dur_end: string | null;
 }
+
+/**
+ * Kunci pengelompokan konten di katalog: YouTube ID bila sudah ada (prioritas
+ * lama & web_publications), selain itu `content_uid` (arsip TG-first, YT belum).
+ * Baris tanpa keduanya tidak lolos WHERE — aman untuk GROUP BY.
+ */
+const CONTENT_KEY_SQL = `COALESCE(NULLIF(ls.youtube_video_id, ''), ls.content_uid)`;
 
 export function getAllVideos(options: {
   search?: string;
@@ -342,13 +360,20 @@ export function getAllVideos(options: {
       MIN(ls.started_at) as started_at,
       MAX(ls.created_at) as created_at,
       ls.youtube_video_id,
+      ${CONTENT_KEY_SQL} as content_uid,
+      MAX(CASE WHEN ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != '' THEN 1 ELSE 0 END) as has_tg,
       MIN(ls.download_started_at) as dur_start,
       MAX(ls.download_ended_at) as dur_end
     FROM live_sessions ls
     LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id
     LEFT JOIN member_hls mh ON ls.member_username = mh.username
-    WHERE ls.youtube_video_id IS NOT NULL
-      AND ls.youtube_video_id != ''
+    WHERE (
+      (ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != '')
+      OR (
+        ls.content_uid IS NOT NULL AND ls.content_uid != ''
+        AND ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != ''
+      )
+    )
       AND ${publicVisibilitySql('ls')}
   `;
 
@@ -395,7 +420,7 @@ export function getAllVideos(options: {
     for (let i = 0; i < 4; i++) params.push(...dateKeys);
   }
 
-  baseQuery += ` GROUP BY ls.youtube_video_id`;
+  baseQuery += ` GROUP BY ${CONTENT_KEY_SQL}`;
 
   // Count total distinct
   const countSql = `SELECT COUNT(*) as total FROM (${baseQuery})`;
@@ -413,10 +438,12 @@ export function getAllVideos(options: {
     const startedAt = r.started_at || r.created_at || '';
     const platform = normalizePlatform(r.platform);
     const title = buildDisplayTitle(platform, dispName, startedAt);
-    const ytId = r.youtube_video_id;
+    const ytId = (r.youtube_video_id || '').trim();
+    const contentUid = (r.content_uid || '').trim();
     const durSec = durationFromRange(r.dur_start, r.dur_end);
+    const watchKey = ytId || contentUid;
     return {
-      id: ytId,
+      id: ytId || contentUid,
       platform: platform,
       streamer_username: r.member_username,
       streamer_name: dispName,
@@ -426,9 +453,13 @@ export function getAllVideos(options: {
       duration_seconds: durSec,
       duration_formatted: durSec > 0 ? formatDuration(durSec) : '',
       youtube_video_id: ytId,
-      watch_id: ytId ? encodeWatchId(ytId) : '',
-      thumbnail_url: `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`,
+      content_uid: contentUid,
+      watch_id: ytId ? encodeWatchId(ytId) : watchKey,
+      thumbnail_url: ytId
+        ? `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`
+        : '',
       created_at: r.created_at || '',
+      telegram_archived: !!r.has_tg,
       is_new: isRecent(startedAt, 24),
     };
   });
@@ -477,7 +508,15 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
   if (wantedPlatform === 'showroom' && showroomHours <= 0) return [];
 
   const conditions = [
-    `ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != ''`,
+    // Pra-rilis: YT sudah ada ATAU arsip TG siap (content_uid terisi) — konten
+    // TG-first tetap bisa tampil sebagai "Segera" sebelum YouTube ready.
+    `(
+      (ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != '')
+      OR (
+        ls.content_uid IS NOT NULL AND ls.content_uid != ''
+        AND ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != ''
+      )
+    )`,
     // Ditahan admin (published = 0) / terbit manual (published = 1) bukan pra-rilis.
     `NOT EXISTS (SELECT 1 FROM web_publications pw WHERE pw.youtube_video_id = ls.youtube_video_id AND pw.published = 0)`,
     `NOT EXISTS (SELECT 1 FROM web_publications po WHERE po.youtube_video_id = ls.youtube_video_id AND po.published = 1)`,
@@ -510,6 +549,8 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
       MIN(ls.started_at) as started_at,
       MAX(ls.created_at) as created_at,
       ls.youtube_video_id,
+      ${CONTENT_KEY_SQL} as content_uid,
+      MAX(CASE WHEN ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != '' THEN 1 ELSE 0 END) as has_tg,
       MAX(COALESCE(ls.download_ended_at, ls.created_at)) as last_end,
       CASE
         WHEN COALESCE(ls.platform, 'idn') = 'showroom'
@@ -520,7 +561,7 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
     LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id
     LEFT JOIN member_hls mh ON ls.member_username = mh.username
     WHERE ${conditions.join('\n      AND ')}
-    GROUP BY ls.youtube_video_id
+    GROUP BY ${CONTENT_KEY_SQL}
     HAVING (julianday('now') - julianday(MAX(COALESCE(ls.download_ended_at, ls.created_at)))) * 24
       < CASE WHEN COALESCE(ls.platform, 'idn') = 'showroom' THEN ${showroomHours} ELSE ${hours} END
     ORDER BY last_end DESC
@@ -532,9 +573,11 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
     const startedAt = r.started_at || r.created_at || '';
     const platform = normalizePlatform(r.platform);
     const title = buildDisplayTitle(platform, dispName, startedAt);
-    const ytId = r.youtube_video_id;
+    const ytId = (r.youtube_video_id || '').trim();
+    const contentUid = (r.content_uid || '').trim();
+    const watchKey = ytId || contentUid;
     return {
-      id: ytId,
+      id: ytId || contentUid,
       platform,
       streamer_username: r.member_username,
       streamer_name: dispName,
@@ -544,9 +587,13 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
       duration_seconds: 0,
       duration_formatted: '',
       youtube_video_id: ytId,
-      watch_id: ytId ? encodeWatchId(ytId) : '',
-      thumbnail_url: `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`,
+      content_uid: contentUid,
+      watch_id: ytId ? encodeWatchId(ytId) : watchKey,
+      thumbnail_url: ytId
+        ? `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`
+        : '',
       created_at: r.created_at || '',
+      telegram_archived: !!r.has_tg,
       is_visible: false,
       publish_at: r.publish_at ? r.publish_at.replace(' ', 'T') + 'Z' : '',
     };
@@ -563,6 +610,7 @@ interface VideoDetailRow {
   download_started_at: string | null;
   download_ended_at: string | null;
   youtube_video_id: string | null;
+  content_uid: string | null;
   telegram_message_ids: string | null;
   is_visible: number;
   publish_at: string | null;
@@ -593,6 +641,7 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
       ls.download_started_at,
       ls.download_ended_at,
       ls.youtube_video_id,
+      ls.content_uid,
       ls.telegram_message_ids,
       (${publicVisibilitySql('ls')}) as is_visible,
       CASE
@@ -603,7 +652,7 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     FROM live_sessions ls
     LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id
     LEFT JOIN member_hls mh ON ls.member_username = mh.username
-    WHERE (ls.youtube_video_id = ? OR ls.live_id = ? OR ls.id = ?)
+    WHERE (ls.youtube_video_id = ? OR ls.live_id = ? OR ls.id = ? OR ls.content_uid = ?)
       AND NOT EXISTS (
         SELECT 1 FROM web_publications pw
         WHERE pw.youtube_video_id = ls.youtube_video_id AND pw.published = 0
@@ -612,14 +661,15 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     LIMIT 1
   `;
   const stmt = db.prepare(sql);
-  const r = stmt.get(lookupId, videoIdOrLiveId, videoIdOrLiveId) as unknown as VideoDetailRow | undefined;
+  const r = stmt.get(lookupId, videoIdOrLiveId, videoIdOrLiveId, lookupId) as unknown as VideoDetailRow | undefined;
   if (!r) return null;
 
   const dispName = cleanDisplayName(r.member_username, r.streamer_name || undefined);
   const startedAt = r.started_at || r.created_at || '';
   const platform = normalizePlatform(r.platform);
   const title = buildDisplayTitle(platform, dispName, startedAt);
-  const ytId = r.youtube_video_id || '';
+  const ytId = (r.youtube_video_id || '').trim();
+  const contentUid = (r.content_uid || '').trim();
   const durSec = durationFromRange(r.download_started_at, r.download_ended_at);
 
   // publish_at dari datetime() berbentuk "YYYY-MM-DD HH:MM:SS" (UTC) — tambahkan 'Z'
@@ -627,7 +677,7 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   const publishAt = r.publish_at ? r.publish_at.replace(' ', 'T') + 'Z' : '';
 
   return {
-    id: ytId,
+    id: ytId || contentUid,
     platform: platform,
     streamer_username: r.member_username,
     streamer_name: dispName,
@@ -637,7 +687,8 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     duration_seconds: durSec,
     duration_formatted: durSec > 0 ? formatDuration(durSec) : '',
     youtube_video_id: ytId,
-    watch_id: ytId ? encodeWatchId(ytId) : '',
+    content_uid: contentUid,
+    watch_id: ytId ? encodeWatchId(ytId) : contentUid,
     thumbnail_url: ytId ? `https://img.youtube.com/vi/${ytId}/maxresdefault.jpg` : '',
     created_at: r.created_at || '',
     telegram_archived: !!(r.telegram_message_ids && r.telegram_message_ids.trim()),
@@ -675,12 +726,18 @@ function withAvatar(row: PublicMemberRow): PublicMember {
 export function getPublicMembers(): PublicMember[] {
   const rows = getDb().prepare(`SELECT ls.member_username AS username,
     COALESCE(NULLIF(mh.display_name, ''), ls.member_username) AS display_name,
-    COUNT(DISTINCT ls.youtube_video_id) AS video_count,
+    COUNT(DISTINCT ${CONTENT_KEY_SQL}) AS video_count,
     NULLIF(ta.avatar_url, '') AS avatar_url
     FROM live_sessions ls
     LEFT JOIN member_hls mh ON mh.username = ls.member_username
     LEFT JOIN tiktok_accounts ta ON ta.member_username = ls.member_username AND ta.enabled = 1
-    WHERE ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != ''
+    WHERE (
+      (ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != '')
+      OR (
+        ls.content_uid IS NOT NULL AND ls.content_uid != ''
+        AND ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != ''
+      )
+    )
       AND ${publicVisibilitySql('ls')}
     GROUP BY ls.member_username ORDER BY display_name COLLATE NOCASE`).all() as unknown as PublicMemberRow[];
   return rows.map(withAvatar);
