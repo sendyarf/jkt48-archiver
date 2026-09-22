@@ -1,8 +1,8 @@
 'use client';
 
 import Image from 'next/image';
-import { useCallback, useMemo, useState } from 'react';
-import { ExternalLink, Images, Music2, Play, Search } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp, ExternalLink, Images, Music2, Play, Search } from 'lucide-react';
 import VideoPlayer from './VideoPlayer';
 import TelegramDownloadButton from './TelegramDownloadButton';
 import type { TikTokAccount, TikTokPost } from '@/lib/tiktok';
@@ -95,6 +95,115 @@ export default function TikTokArchive({
     () => accounts.find((a) => a.unique_id === account)?.display_name || '',
     [accounts, account]
   );
+
+  // ── Navigasi feed ala Shorts/TikTok ───────────────────────────────────────
+  // Ganti arsip tanpa menyentuh sidebar: tombol ↑/↓ di tepi kanan video,
+  // roda mouse di area video (desktop), geser vertikal (sentuh), dan panah
+  // keyboard saat area video fokus. Daftar yang dilalui = `visiblePosts`
+  // (mengikuti kata kunci pencarian yang sedang aktif).
+  const selectedIndex = useMemo(
+    () => visiblePosts.findIndex((p) => p.id === selectedId),
+    [visiblePosts, selectedId]
+  );
+  const canPrev = selectedIndex > 0;
+  // selectedIndex -1 = arsip terpilih terfilter keluar daftar → "berikutnya"
+  // berarti "pilih yang pertama".
+  const canNext = visiblePosts.length > 0 && selectedIndex < visiblePosts.length - 1;
+
+  const navPrev = useCallback(() => {
+    if (!canPrev) return;
+    setSelectedId(visiblePosts[selectedIndex - 1].id);
+  }, [canPrev, selectedIndex, visiblePosts]);
+
+  const navNext = useCallback(() => {
+    if (!visiblePosts.length) return;
+    const next = selectedIndex < 0 ? 0 : selectedIndex + 1;
+    if (next < visiblePosts.length) setSelectedId(visiblePosts[next].id);
+  }, [selectedIndex, visiblePosts]);
+
+  // Listener non-React (wheel/touchmove butuh passive:false untuk preventDefault).
+  const playerAreaRef = useRef<HTMLDivElement | null>(null);
+  const navRef = useRef({ prev: navPrev, next: navNext, canPrev, canNext });
+  // Ref hanya boleh ditulis di effect/event, bukan saat render (react-hooks/refs).
+  useEffect(() => {
+    navRef.current = { prev: navPrev, next: navNext, canPrev, canNext };
+  });
+
+  useEffect(() => {
+    const el = playerAreaRef.current;
+    if (!el) return;
+
+    // Roda mouse: kumpulkan delta kecil (trackpad halus), navigasi sekali per
+    // ambang + cooldown. Di ujung daftar halaman tetap bisa scroll normal.
+    let acc = 0;
+    let lastNav = 0;
+    const onWheel = (e: WheelEvent) => {
+      if (visiblePosts.length < 2) return;
+      const dir = e.deltaY > 0 ? 1 : e.deltaY < 0 ? -1 : 0;
+      if (!dir) return;
+      const canMove = dir > 0 ? navRef.current.canNext : navRef.current.canPrev;
+      if (!canMove) return;
+      e.preventDefault();
+      const now = Date.now();
+      if (now - lastNav < 400) return;
+      if (Math.sign(e.deltaY) !== Math.sign(acc)) acc = 0;
+      acc += e.deltaY;
+      if (Math.abs(acc) >= 50) {
+        acc = 0;
+        lastNav = now;
+        if (dir > 0) navRef.current.next(); else navRef.current.prev();
+      }
+    };
+
+    // Sentuh: hanya gestur yang JELAS vertikal yang dibajak (|dy| > 2×|dx|)
+    // supaya scroll halaman biasa tidak terganggu. Geser atas = berikutnya.
+    let startX = 0;
+    let startY = 0;
+    let hijack = false;
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.touches[0];
+      startX = t.clientX;
+      startY = t.clientY;
+      hijack = false;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (visiblePosts.length < 2) return;
+      const t = e.touches[0];
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      if (!hijack && Math.abs(dy) > 24 && Math.abs(dy) > Math.abs(dx) * 2) {
+        hijack = true;
+      }
+      if (hijack) e.preventDefault();
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (!hijack) return;
+      hijack = false;
+      const dy = e.changedTouches[0].clientY - startY;
+      if (dy <= -60 && navRef.current.canNext) navRef.current.next();
+      else if (dy >= 60 && navRef.current.canPrev) navRef.current.prev();
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+    };
+  }, [visiblePosts.length]);
+
+  // Kartu aktif di sidebar kanan ikut terlihat saat ganti arsip lewat navigasi.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!selectedId) return;
+    listRef.current
+      ?.querySelector('.tiktok-post-item.active')
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [selectedId]);
 
   const pickAccount = useCallback(
     async (uniqueId: string) => {
@@ -196,7 +305,17 @@ export default function TikTokArchive({
 
         {selected ? (
           <>
-            <div id="tiktok-player-container">
+            <div
+              id="tiktok-player-container"
+              ref={playerAreaRef}
+              tabIndex={0}
+              role="region"
+              aria-label="Pemutar arsip — roda mouse, geser vertikal, atau tombol panah untuk ganti arsip"
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowDown') { e.preventDefault(); navNext(); }
+                if (e.key === 'ArrowUp') { e.preventDefault(); navPrev(); }
+              }}
+            >
               {selected.youtube_video_id ? (
                 <VideoPlayer
                   youtubeId={selected.youtube_video_id}
@@ -215,6 +334,30 @@ export default function TikTokArchive({
                       ? ' Ambil lewat bot Telegram di bawah ya.'
                       : ' Coba cek lagi sebentar lagi.'}
                   </p>
+                </div>
+              )}
+              {visiblePosts.length > 1 && (
+                <div className="tiktok-nav">
+                  <button
+                    type="button"
+                    className="tiktok-nav-btn"
+                    onClick={navPrev}
+                    disabled={!canPrev}
+                    aria-label="Arsip sebelumnya"
+                    title="Arsip sebelumnya (↑)"
+                  >
+                    <ChevronUp size={20} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="tiktok-nav-btn"
+                    onClick={navNext}
+                    disabled={!canNext}
+                    aria-label="Arsip berikutnya"
+                    title="Arsip berikutnya (↓)"
+                  >
+                    <ChevronDown size={20} aria-hidden="true" />
+                  </button>
                 </div>
               )}
             </div>
@@ -295,7 +438,7 @@ export default function TikTokArchive({
               : 'Belum ada arsip yang cocok. Coba kata kunci lain ya.'}
           </p>
         ) : (
-          <div className="tiktok-post-list">
+          <div className="tiktok-post-list" ref={listRef}>
             {visiblePosts.map((post) => (
               <button
                 key={post.id}

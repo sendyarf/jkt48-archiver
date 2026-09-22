@@ -19,6 +19,8 @@
  *      YouTube), bukan terbaru yang hanya bisa diunduh via bot.
  *  10. Kartu tanpa YouTube diberi penanda "Unduh via bot"; ringkasan header
  *      memecah "bisa diputar" vs "unduh via bot"; sidebar akun punya pencarian.
+ *  11. Navigasi feed: tombol ↑/↓ melayang di area pemutar (plus roda mouse,
+ *      geser vertikal, panah keyboard di sisi klien) dengan label aksesibel.
  *
  * Port 3115 (3107 = public-private-check, 3108 = player-check,
  * 3110 = player-trial-check, 3111/3112 = auto-publish-check,
@@ -270,6 +272,14 @@ try {
   assert.match(html, /5 arsip dari 2 akun — 3 bisa diputar · 2 unduh via bot/,
     'Ringkasan header memecah arsip bisa diputar vs unduh via bot');
   assert.match(html, /Cari member/, 'Sidebar akun wajib punya kolom pencarian');
+
+  // ── Navigasi feed (↑/↓) di area pemutar ──────────────────────────────────
+  const nav = html.match(/<div class="tiktok-nav">[\s\S]*?<\/div>/)?.[0] || '';
+  assert.ok(nav, 'Wadah tombol navigasi wajib ada di area pemutar');
+  assert.match(nav, /aria-label="Arsip sebelumnya"/, 'Tombol arsip sebelumnya wajib ada');
+  assert.match(nav, /aria-label="Arsip berikutnya"/, 'Tombol arsip berikutnya wajib ada');
+  // Fixture: terpilih = 'twinnie' (urutan ke-2 dari 5) → dua tombol aktif.
+  assert.ok(!nav.includes('disabled'), 'Di tengah daftar kedua tombol harus aktif');
 
   // ── Postingan foto: label jumlah foto + story berlabel ──────────────────
   assert.match(html, /12 foto/, 'Postingan foto harus menampilkan jumlah fotonya');
