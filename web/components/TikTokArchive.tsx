@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, ExternalLink, Images, Music2, Play, Search } from 'lucide-react';
 import VideoPlayer from './VideoPlayer';
 import TelegramDownloadButton from './TelegramDownloadButton';
+import PhotoCarousel from './PhotoCarousel';
 import type { TikTokAccount, TikTokPost } from '@/lib/tiktok';
 
 interface Props {
@@ -50,6 +51,29 @@ export default function TikTokArchive({
   const [selectedId, setSelectedId] = useState(initialSelectedId || initialPosts[0]?.id || '');
   const [keyword, setKeyword] = useState('');
   const [accountKeyword, setAccountKeyword] = useState('');
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    setError('');
+    try {
+      const params = new URLSearchParams({ limit: '24', offset: String(posts.length) });
+      if (account) params.set('account', account);
+      const res = await fetch(`/api/tiktok/posts?${params.toString()}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (!data?.success) throw new Error(data?.message || 'gagal');
+      setPosts((prev) => {
+        const seen = new Set(prev.map((p) => p.id));
+        return [...prev, ...(data.posts || []).filter((p: TikTokPost) => !seen.has(p.id))];
+      });
+      setTotal(Number(data.total || 0));
+    } catch {
+      setError('Gagal memuat arsip berikutnya. Coba lagi ya.');
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [account, loadingMore, posts.length]);
 
   // Arsip pertama yang dipilih saat daftar berganti = yang terbaru DAN bisa
   // diputar (punya video YouTube), supaya pengunjung tidak disambut placeholder
@@ -289,7 +313,9 @@ export default function TikTokArchive({
                 if (e.key === 'ArrowUp') { e.preventDefault(); navPrev(); }
               }}
             >
-              {selected.youtube_video_id ? (
+              {selected.kind === 'photo' && selected.images.length > 0 ? (
+                <PhotoCarousel images={selected.images} title={selected.display_title} />
+              ) : selected.youtube_video_id ? (
                 <VideoPlayer
                   youtubeId={selected.youtube_video_id}
                   title={selected.display_title}
@@ -411,6 +437,7 @@ export default function TikTokArchive({
               : 'Belum ada arsip yang cocok. Coba kata kunci lain ya.'}
           </p>
         ) : (
+          <>
           <div className="tiktok-post-list" ref={listRef}>
             {visiblePosts.map((post) => (
               <button
@@ -452,7 +479,18 @@ export default function TikTokArchive({
                 </span>
               </button>
             ))}
-          </div>
+            </div>
+            {posts.length < total && (
+              <button
+                type="button"
+                className="secondary-button tiktok-load-more"
+                disabled={loadingMore}
+                onClick={loadMore}
+              >
+                {loadingMore ? 'Memuat…' : 'Muat lebih banyak'}
+              </button>
+            )}
+          </>
         )}
       </aside>
     </div>

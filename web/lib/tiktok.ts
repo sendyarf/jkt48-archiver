@@ -46,6 +46,8 @@ export interface TikTokPost {
   telegram_archived: boolean;
   /** Payload deep-link bot Telegram untuk arsip TikTok ini. */
   download_payload: string;
+  /** URL foto publik (https) untuk postingan foto — [] bila tidak ada. */
+  images: string[];
 }
 
 interface AccountRow {
@@ -71,6 +73,7 @@ interface PostRow {
   source_url: string | null;
   youtube_video_id: string | null;
   telegram_message_ids: string | null;
+  images_json: string | null;
   account_name: string | null;
   member_username: string | null;
   member_display_name: string | null;
@@ -135,14 +138,30 @@ function mapPost(row: PostRow): TikTokPost {
     source_url: row.source_url || '',
     telegram_archived: Boolean((row.telegram_message_ids || '').trim()),
     download_payload: `tt_${row.id}`,
+    images: parseImages(row.images_json),
   };
+}
+
+/** Parse kolom images_json → hanya URL http(s) publik (local_images_json diabaikan). */
+function parseImages(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is string =>
+        typeof item === 'string' && /^https?:\/\//.test(item)
+    );
+  } catch {
+    return [];
+  }
 }
 
 const POST_SELECT = `
   SELECT
     p.id, p.unique_id, p.kind, p.is_story, p.title, p.created_at,
     p.duration_seconds, p.image_count, p.cover_url, p.source_url,
-    p.youtube_video_id, p.telegram_message_ids,
+    p.youtube_video_id, p.telegram_message_ids, p.images_json,
     a.display_name as account_name,
     a.member_username as member_username,
     mh.display_name as member_display_name

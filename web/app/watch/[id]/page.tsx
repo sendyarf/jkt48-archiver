@@ -8,6 +8,8 @@ import { formatWibLong } from '@/lib/wib';
 import VideoPlayer from '@/components/VideoPlayer';
 import TelegramDownloadButton from '@/components/TelegramDownloadButton';
 import CountdownTimer from '@/components/CountdownTimer';
+import ShareButton from '@/components/ShareButton';
+import WatchTracker from '@/components/WatchTracker';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,16 +54,25 @@ export default async function WatchPage({ params }: WatchPageProps) {
     redirect(`/watch/${encodeWatchId(id)}`);
   }
 
-  // Fetch related videos from the same member or recent
-  const { videos: relatedVideos } = getAllVideos({
+  // Related: same member first, pad with recent other-member videos if <6.
+  const { videos: memberVideos } = getAllVideos({
     member: video.streamer_username,
     limit: 6,
   });
-
-  // Filter out the current video from related
-  const filteredRelated = relatedVideos.filter(
+  let filteredRelated = memberVideos.filter(
     (v) => v.youtube_video_id !== video.youtube_video_id
   );
+  if (filteredRelated.length < 6) {
+    const { videos: recent } = getAllVideos({ limit: 24 });
+    const seen = new Set(filteredRelated.map((v) => v.youtube_video_id));
+    seen.add(video.youtube_video_id);
+    for (const v of recent) {
+      if (filteredRelated.length >= 6) break;
+      if (seen.has(v.youtube_video_id)) continue;
+      seen.add(v.youtube_video_id);
+      filteredRelated = [...filteredRelated, v];
+    }
+  }
 
   // Satu sumber konversi WIB (lib/wib.ts) — sama seperti yang membentuk judul,
   // sehingga baris detail tidak lagi berbeda 1 jam dari judul.
@@ -92,6 +103,14 @@ export default async function WatchPage({ params }: WatchPageProps) {
               />
             )}
           </div>
+          {!isPrerelease && (
+            <WatchTracker
+              watchId={`/watch/${video.watch_id || video.youtube_video_id || video.id}`}
+              title={video.title}
+              thumbnailUrl={video.thumbnail_url}
+              streamerName={video.streamer_name}
+            />
+          )}
 
           <div className="watch-details-card">
             <h1 className="watch-title">{video.title}</h1>
@@ -107,9 +126,12 @@ export default async function WatchPage({ params }: WatchPageProps) {
                 </div>
               </Link>
 
-              <span className={`platform-badge ${video.platform}`} style={{ position: 'static' }}>
-                {video.platform === 'idn' ? 'IDN' : 'Showroom'}
-              </span>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <span className={`platform-badge ${video.platform}`} style={{ position: 'static' }}>
+                  {video.platform === 'idn' ? 'IDN' : 'Showroom'}
+                </span>
+                <ShareButton title={video.title} text={`Nonton ${video.title} di JKT48 Replay`} />
+              </div>
             </div>
 
             {!isPrerelease && video.telegram_archived && (
@@ -128,6 +150,9 @@ export default async function WatchPage({ params }: WatchPageProps) {
           <h2 className="sidebar-title">
             Replay lain dari {video.streamer_name}
           </h2>
+          <Link href={`/members/${encodeURIComponent(video.streamer_username)}`} className="text-button" style={{ marginBottom: '8px', display: 'inline-flex' }}>
+            Semua dari {video.streamer_name} →
+          </Link>
 
           {filteredRelated.length === 0 ? (
             <p style={{ color: 'var(--text-tertiary)', fontSize: '0.88rem' }}>

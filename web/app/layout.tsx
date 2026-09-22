@@ -5,6 +5,7 @@ import './portal.css';
 import './admin-studio.css';
 import Navbar from '@/components/PublicNavbar';
 import Footer from '@/components/Footer';
+import BottomNav from '@/components/BottomNav';
 
 /** Display font (judul/hero): ekspresif, playful — vibe idol/fandom.
  * next/font menyuntik nilainya langsung ke variabel --font-display di bawah. */
@@ -58,6 +59,7 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: 'JKT48 Replay' }],
   icons: { icon: '/icon.svg', apple: '/icon.svg' },
+  manifest: '/manifest.webmanifest',
 };
 
 export default function RootLayout({
@@ -73,6 +75,7 @@ export default function RootLayout({
           <Navbar />
           <main id="main-content" style={{ flexGrow: 1 }}>{children}</main>
           <Footer />
+          <BottomNav />
         </div>
       </body>
     </html>

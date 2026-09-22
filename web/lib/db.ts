@@ -626,18 +626,54 @@ export interface PublicMember {
   username: string;
   display_name: string;
   video_count: number;
+  /** Foto member (roster jkt48.com / kolom bot); null bila belum ada. */
+  avatar_url: string | null;
+}
+
+interface PublicMemberRow {
+  username: string;
+  display_name: string;
+  video_count: number;
+  avatar_url: string | null;
+}
+
+// Foto roster di-load lewat lib/member-photos (fallback bila bot belum menautkan
+// akun TikTok). Impor di sini agar modul db tetap satu pintu untuk halaman publik.
+import { rosterPhotoFor } from './member-photos';
+
+function withAvatar(row: PublicMemberRow): PublicMember {
+  const display_name = cleanDisplayName(row.username, row.display_name);
+  const avatar_url = (row.avatar_url || '').trim() || rosterPhotoFor(row.username, display_name);
+  return { username: row.username, display_name, video_count: row.video_count, avatar_url: avatar_url || null };
 }
 
 export function getPublicMembers(): PublicMember[] {
   const rows = getDb().prepare(`SELECT ls.member_username AS username,
     COALESCE(NULLIF(mh.display_name, ''), ls.member_username) AS display_name,
-    COUNT(DISTINCT ls.youtube_video_id) AS video_count
+    COUNT(DISTINCT ls.youtube_video_id) AS video_count,
+    NULLIF(ta.avatar_url, '') AS avatar_url
     FROM live_sessions ls
     LEFT JOIN member_hls mh ON mh.username = ls.member_username
+    LEFT JOIN tiktok_accounts ta ON ta.member_username = ls.member_username AND ta.enabled = 1
     WHERE ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != ''
       AND ${publicVisibilitySql('ls')}
-    GROUP BY ls.member_username ORDER BY display_name COLLATE NOCASE`).all() as unknown as PublicMember[];
-  return rows.map(r => ({ ...r, display_name: cleanDisplayName(r.username, r.display_name) }));
+    GROUP BY ls.member_username ORDER BY display_name COLLATE NOCASE`).all() as unknown as PublicMemberRow[];
+  return rows.map(withAvatar);
+}
+
+/** Satu member publik berdasarkan username (null bila tidak ada di arsip). */
+export function getPublicMember(username: string): PublicMember | null {
+  const wanted = (username || '').trim().toLowerCase();
+  if (!wanted) return null;
+  const hit = getPublicMembers().find((m) => m.username.toLowerCase() === wanted);
+  if (hit) return hit;
+  // Member yang saat ini hanya punya rekaman pra-rilis (belum lolos ambang)
+  // tidak ikut getPublicMembers — cek lewat upcoming agar halaman detail tetap 200.
+  const upcoming = getUpcomingVideos({ member: wanted });
+  if (!upcoming.length) return null;
+  const display_name = upcoming[0].streamer_name;
+  const avatar_url = rosterPhotoFor(wanted, display_name);
+  return { username: upcoming[0].streamer_username, display_name, video_count: 0, avatar_url };
 }
 
 export interface Publication {

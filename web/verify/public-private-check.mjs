@@ -37,8 +37,9 @@ try {
   assert.equal((await call('/status')).headers.get('location'), '/admin/status');
   assert.equal((await call('/watch/R8pnx79dyDQ')).status, 404);
   // Hanya rekaman Showroom yang tampil otomatis; IDN masih tersembunyi.
+  // avatar_url selalu ikut DTO publik (null bila member belum punya foto roster).
   assert.deepEqual((await (await call('/api/members')).json()).members, [
-    { username: 'jkt48_test', display_name: 'Test Member', video_count: 1 },
+    { username: 'jkt48_test', display_name: 'Test Member', video_count: 1, avatar_url: null },
   ]);
   assert.equal((await post('/api/auth', { secret }, '', 'https://untrusted.invalid')).status, 403);
   assert.equal((await post('/api/auth', { secret: 'incorrect' })).status, 401);
@@ -52,7 +53,7 @@ try {
   assert.equal((await call('/watch/R8pnx79dyDQ')).status, 200);
   assert.equal((await call('/watch/abcdefghijk')).status, 404);
   const members = (await (await call('/api/members')).json()).members;
-  assert.deepEqual(Object.keys(members[0]).sort(), ['display_name', 'username', 'video_count']); assert.equal(members[0].video_count, 2);
+  assert.deepEqual(Object.keys(members[0]).sort(), ['avatar_url', 'display_name', 'username', 'video_count']); assert.equal(members[0].video_count, 2);
   assert.doesNotMatch(await (await call('/?platform=showroom')).text(), /LIVE IDN TEST MEMBER/);
   assert.equal((await call('/?page=invalid')).status, 200);
   // Filter platform: rekaman Showroom hanya muncul di filternya sendiri, dan

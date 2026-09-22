@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { Play, Calendar } from 'lucide-react';
 import type { VideoItem } from '@/lib/db';
+import MiniCountdown from '@/components/MiniCountdown';
 
 export default function VideoCard({ video }: { video: VideoItem }) {
   const watchUrl = `/watch/${video.watch_id || video.youtube_video_id || video.id}`;
@@ -35,7 +36,14 @@ export default function VideoCard({ video }: { video: VideoItem }) {
           {video.platform === 'idn' ? 'IDN' : 'Showroom'}
         </span>
         {video.is_visible === false ? (
-          <span className="upcoming-badge">Segera</span>
+          <>
+            <span className="upcoming-badge">Segera</span>
+            {video.publish_at ? (
+              <span className="upcoming-countdown">
+                <MiniCountdown publishAt={video.publish_at} />
+              </span>
+            ) : null}
+          </>
         ) : video.is_new ? (
           <span className="new-badge">Baru</span>
         ) : null}

@@ -11,6 +11,7 @@ export default function Footer() {
         <nav className="footer-links" aria-label="Navigasi footer">
           <Link href="/" className="footer-link">Replay</Link>
           <Link href="/members" className="footer-link">Member</Link>
+          <Link href="/tiktok" className="footer-link">TikTok</Link>
           <Link href="/about" className="footer-link">Tentang & privasi</Link>
         </nav>
       </div>

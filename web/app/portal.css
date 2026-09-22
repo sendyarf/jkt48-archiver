@@ -48,6 +48,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .catalog-search { flex: 1 1 240px; min-width: 0; }
 .catalog-select { flex: 0 1 190px; min-width: 150px; }
 .catalog-filters .filter-actions { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+.filter-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.filter-chip { display: inline-flex; align-items: center; gap: 6px; font-size: .74rem; font-weight: 600; color: #fda4af; background: #2b1520; border: 1px solid #4c2333; border-radius: 9999px; padding: 4px 10px; text-decoration: none; }
 /* Gaya form ini TIDAK boleh mengenai <input type="range"> milik pemutar video:
    min-height 44px + border + padding akan membengkakkan bilah progres. */
 .catalog-filters input:not([type="range"]), .catalog-filters select, .admin-shell input:not([type="range"]), .admin-shell select, .login-panel input:not([type="range"]) { width: 100%; max-width: 100%; min-width: 0; min-height: 42px; background: #090e17; color: #f8fafc; border: 1px solid #374151; border-radius: 10px; padding: 8px 12px; transition: border-color .2s ease, box-shadow .2s ease; }

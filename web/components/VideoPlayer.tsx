@@ -692,7 +692,7 @@ export default function VideoPlayer({
         </div>
 
         {/* Toast Inside Player */}
-        <div className={`player-toast ${showToast ? 'show' : ''}`}>
+        <div className={`player-toast ${showToast ? 'show' : ''}`} role="status" aria-live="polite">
           {toastMsg}
         </div>
       </div>

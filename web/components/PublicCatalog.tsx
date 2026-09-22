@@ -2,7 +2,9 @@ import Link from 'next/link';
 import { getAllVideos, getPublicMembers, getUpcomingVideos } from '@/lib/db';
 import VideoCard from '@/components/VideoCard';
 import HeroSpotlight from '@/components/HeroSpotlight';
-import { MonitorPlay, PlayCircle, Search, User } from 'lucide-react';
+import CatalogFilterForm from '@/components/CatalogFilterForm';
+import ContinueWatching from '@/components/ContinueWatching';
+import { PlayCircle } from 'lucide-react';
 export default async function PublicCatalog({ searchParams }: { searchParams: Promise<{ q?: string; member?: string; platform?: string; page?: string }> }) {
   const params = await searchParams;
   const q = (params.q || '').slice(0, 100);
@@ -34,8 +36,9 @@ export default async function PublicCatalog({ searchParams }: { searchParams: Pr
   const catalogHeading = filtered ? 'Hasil pencarian' : 'Replay terbaru';
   return <div className="public-catalog">
     {hero ? <section className="container catalog-hero-block"><HeroSpotlight video={hero} watchUrl={heroWatchUrl} /></section> : null}
+    <ContinueWatching />
     <section className="container page-section" id="catalog"><header className="section-heading"><div><p className="eyebrow">REPLAY</p>{hero ? <h2>{catalogHeading}</h2> : <h1>{catalogHeading}</h1>}</div><p>Terbaru dulu</p></header>
-      <form action="/#catalog" method="GET" className="catalog-filters"><label className="catalog-search">Cari replay<span className="input-with-icon"><Search size={18} aria-hidden="true" /><input name="q" type="search" id="catalog-search-input" defaultValue={q} maxLength={100} placeholder="Judul, member, atau tanggal" /></span></label><label className="catalog-select">Member<span className="select-with-icon"><User size={18} aria-hidden="true" /><select name="member" defaultValue={member}><option value="">Semua member</option>{member && !members.some(m => m.username === member) && <option value={member}>{member}</option>}{members.map(m => <option value={m.username} key={m.username}>{m.display_name}</option>)}</select></span></label><label className="catalog-select">Platform<span className="select-with-icon"><MonitorPlay size={18} aria-hidden="true" /><select name="platform" defaultValue={platform}><option value="">Semua platform</option><option value="idn">IDN Live</option><option value="showroom">Showroom</option></select></span></label><div className="filter-actions"><button className="primary-button">Cari</button>{filtered && <Link href="/#catalog" className="text-button">Reset</Link>}</div></form>
+      <CatalogFilterForm q={q} member={member} platform={platform} members={members} />
       <p className="result-summary">{result.total} replay siap ditonton{upcoming.length > 0 ? ` (+${upcoming.length} segera hadir)` : ''}{q && <> untuk “{q}”</>}</p>
       {merged.length ? <div className="video-grid" id="main-video-grid">{merged.map(video => <VideoCard key={video.youtube_video_id} video={video} />)}</div> : <div className="empty-state"><PlayCircle size={40} aria-hidden="true" /><h2>{filtered ? 'Belum ada replay yang cocok' : 'Arsipnya masih kosong'}</h2><p>{filtered ? 'Coba kata kunci lain atau ubah filternya.' : 'Replay yang sudah tayang bakal muncul di sini.'}</p>{(filtered || result.page > 1) && <Link className="secondary-button" href="/#catalog">Lihat semua replay</Link>}</div>}
       {(result.totalPages > 1 || result.page > 1) && <nav className="pagination" aria-label="Halaman katalog">{result.page > 1 ? <Link className="secondary-button" href={pageUrl(result.page - 1)}>← Sebelumnya</Link> : <span /> }<span>Halaman {result.page} / {result.totalPages}</span>{result.page < result.totalPages ? <Link className="secondary-button" href={pageUrl(result.page + 1)}>Berikutnya →</Link> : <span />}</nav>}
