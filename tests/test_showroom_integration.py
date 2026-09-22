@@ -206,7 +206,16 @@ class TestRecordShowroomTask(ShowroomIntegrationTestCase):
         async def fake_room_offline(room_id):
             return False
 
+        # Deteksi ganti sesi broadcast memanggil fetch_state — stub dengan
+        # live_id yang SAMA (99) agar tidak dianggap sesi baru.
+        async def fake_same_broadcast(room_id):
+            return RoomState(
+                room_id="318222", is_onlive=True, live_id=99,
+                room_url_key="JKT48_Olla",
+            )
+
         bot.showroom.is_room_live = fake_room_offline
+        bot.showroom.fetch_state = fake_same_broadcast
 
         room = {
             "username": "jkt48_feri",
@@ -324,6 +333,145 @@ class TestRecordShowroomTask(ShowroomIntegrationTestCase):
         self.assertEqual(row1["status"], "segment_done")
         # Bagian resume memakai URL HLS segar dari API Showroom.
         self.assertEqual(row1["hls_url"], "https://cdn.showroom.example/fresh.m3u8")
+        self.assertNotIn("jkt48_feri", bot.active_showroom)
+
+    def test_download_membawa_url_refresher_segar(self):
+        """
+        download_stream wajib menerima `url_refresher` yang meminta URL HLS
+        segar ke API Showroom — penggantian URL di tengah retry adalah kunci
+        lepas dari URL sesi broadcast yang sudah mati (insiden 22 Sep 2026).
+        """
+        bot = self._make_bot()
+        video = Path(self._tmp.name) / "seg_refresh.mp4"
+        video.write_bytes(b"\x00" * 1024)
+        captured = {}
+
+        async def fake_download(hls_url, member_username, live_id, **kwargs):
+            captured.update(kwargs)
+            return video
+
+        async def fake_add_segment(**kwargs):
+            pass
+
+        async def fake_room_offline(room_id):
+            return False
+
+        async def fake_fresh_url(room_id):
+            return "https://cdn.showroom.example/fresh-refresher.m3u8"
+
+        bot.merge_mgr.add_segment = fake_add_segment
+        bot.showroom.is_room_live = fake_room_offline
+        bot.showroom.scraper.get_live_streaming_url = fake_fresh_url
+
+        room = {
+            "username": "jkt48_feri",
+            "display_name": "Feri",
+            "room_id": "318222",
+            "hls_url": "https://cdn.showroom.example/room.m3u8",
+        }
+
+        with patch("bot.main.download_stream", side_effect=fake_download):
+            asyncio.run(bot._record_showroom_task(room, "sr_JKT48_Olla_9"))
+
+        refresher = captured.get("url_refresher")
+        self.assertIsNotNone(refresher, "download_stream harus diberi url_refresher")
+        self.assertEqual(
+            asyncio.run(refresher()),
+            "https://cdn.showroom.example/fresh-refresher.m3u8",
+        )
+
+    def test_broadcast_berganti_sesi_mengakhiri_task_tanpa_resume(self):
+        """
+        Room masih live TETAPI sesi broadcast-nya sudah berganti (live_id API
+        berbeda) → task berhenti TANPA resume. URL sesi lama digantung CDN
+        selamanya; loop utama yang akan memulai rekaman sesi baru dengan URL
+        segar (insiden 22 Sep 2026: ±1 jam retry sia-sia di URL mati).
+        """
+        bot = self._make_bot()
+        downloads = {"count": 0}
+
+        async def fake_download(hls_url, member_username, live_id, **kwargs):
+            downloads["count"] += 1
+            raise bot_main.DownloadError("URL mati digantung CDN")
+
+        async def fake_new_broadcast(room_id):
+            return RoomState(
+                room_id="318222", is_onlive=True, live_id=222,
+                room_url_key="JKT48_Olla",
+            )
+
+        bot.showroom.fetch_state = fake_new_broadcast
+
+        room = {
+            "username": "jkt48_feri",
+            "display_name": "Feri",
+            "room_id": "318222",
+            "hls_url": "https://cdn.showroom.example/lama.m3u8",
+            "showroom_live_id": 111,
+        }
+        live_id = "sr_JKT48_Olla_111"
+
+        with patch("bot.main.download_stream", side_effect=fake_download):
+            asyncio.run(bot._record_showroom_task(room, live_id))
+
+        self.assertEqual(
+            downloads["count"], 1,
+            "tidak boleh ada resume pada sesi broadcast yang sudah digantikan",
+        )
+        self.assertIsNone(
+            database.get_session(f"{live_id}_r1"),
+            "bagian resume tidak boleh dibuat untuk sesi broadcast lama",
+        )
+        row = database.get_session(live_id)
+        assert row is not None
+        self.assertEqual(row["status"], "failed")
+        self.assertNotIn("jkt48_feri", bot.active_showroom)
+
+    def test_broadcast_berganti_setelah_bagian_selesai(self):
+        """
+        Bagian selesai bersih, tetapi API menunjukkan sesi broadcast BARU →
+        segmen tetap masuk merge manager, lalu task berhenti (tidak lanjut
+        bagian _r1 pada sesi lama).
+        """
+        bot = self._make_bot()
+        video = Path(self._tmp.name) / "seg_replaced.mp4"
+        video.write_bytes(b"\x00" * 1024)
+        segmented = []
+        downloads = {"count": 0}
+
+        async def fake_download(hls_url, member_username, live_id, **kwargs):
+            downloads["count"] += 1
+            return video
+
+        async def fake_add_segment(**kwargs):
+            segmented.append(kwargs)
+
+        async def fake_new_broadcast(room_id):
+            return RoomState(
+                room_id="318222", is_onlive=True, live_id=222,
+                room_url_key="JKT48_Olla",
+            )
+
+        bot.merge_mgr.add_segment = fake_add_segment
+        bot.showroom.fetch_state = fake_new_broadcast
+
+        room = {
+            "username": "jkt48_feri",
+            "display_name": "Feri",
+            "room_id": "318222",
+            "hls_url": "https://cdn.showroom.example/lama.m3u8",
+            "showroom_live_id": 111,
+        }
+        live_id = "sr_JKT48_Olla_222"
+
+        with patch("bot.main.download_stream", side_effect=fake_download):
+            asyncio.run(bot._record_showroom_task(room, live_id))
+
+        self.assertEqual(downloads["count"], 1)
+        self.assertEqual([s["live_id"] for s in segmented], [live_id])
+        row = database.get_session(live_id)
+        assert row is not None
+        self.assertEqual(row["status"], "segment_done")
         self.assertNotIn("jkt48_feri", bot.active_showroom)
 
     def test_kandidat_hanya_member_showroom_aktif(self):

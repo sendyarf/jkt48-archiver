@@ -611,11 +611,22 @@ class JKT48LiveBot:
             resume jadi live_id `_r<N>` tersendiri dan tetap masuk satu merge
             group. Latar: insiden 18 Sep 2026 (Sona) — bot kehilangan ±8-10
             menit awal live karena task gagal cepat saat HLS belum siap.
+          * URL HLS diminta ulang ke API di SETIAP retry download
+            (`url_refresher`). URL sesi broadcast yang sudah mati digantung
+            CDN selamanya (bukan 404), jadi retry pada URL yang sama sia-sia —
+            insiden 22 Sep 2026 (Nayla): ±1 jam terbuang pada URL mati dan
+            video ter-upload terpotong.
+          * Bila API menunjukkan sesi broadcast BARU (live_id berubah), task
+            diakhiri: loop utama akan memulai rekaman sesi baru dengan URL
+            yang benar dalam satu siklus polling.
         """
         username = (room.get("username") or "").lower()
         display_name = room.get("display_name") or username
         hls_url = room.get("hls_url") or ""
         room_id = str(room.get("room_id") or "")
+        # ID sesi broadcast Showroom saat rekaman dimulai — dipakai untuk
+        # mendeteksi broadcast yang berganti sesi di tengah jalan.
+        broadcast_id = int(room.get("showroom_live_id") or 0)
         started_at = room.get("started_at") or utc_now_iso()
         room_name = room.get("room_name") or ""
         thumb = room.get("cover_image") or ""
@@ -649,6 +660,21 @@ class JKT48LiveBot:
         )
         self.merge_mgr.download_started(username, "showroom")
 
+        # Holder URL HLS: downloader bisa mengganti URL di tengah retry lewat
+        # `url_refresher`; holder memastikan bagian resume berikutnya melanjutkan
+        # dari URL TERAKHIR yang benar-benar dipakai, bukan URL awal yang basi.
+        hls_holder = {"url": hls_url}
+
+        async def _url_refresher() -> Optional[str]:
+            try:
+                fresh = await self.showroom.scraper.get_live_streaming_url(room_id)
+            except Exception as exc:
+                logger.debug("Showroom %s: refresh URL HLS gagal: %r", username, exc)
+                return None
+            if fresh:
+                hls_holder["url"] = fresh
+            return fresh
+
         resumes_done = 0
         try:
             while True:
@@ -665,9 +691,17 @@ class JKT48LiveBot:
                         member_username=username,
                         live_id=part_id,
                         max_empty_retries=Config.SHOWROOM_EMPTY_RETRIES,
+                        url_refresher=_url_refresher,
                     )
                 except DownloadError as exc:
                     database.update_status(part_id, "failed", error_message=str(exc))
+                    if await self._showroom_broadcast_replaced(room_id, broadcast_id):
+                        logger.info(
+                            "Showroom %s: broadcast berganti sesi — akhiri task; "
+                            "loop utama akan memulai rekaman sesi baru",
+                            username,
+                        )
+                        break
                     if not should_resume_showroom(
                         resumes_done,
                         Config.SHOWROOM_MAX_RESUMES,
@@ -682,10 +716,10 @@ class JKT48LiveBot:
                     )
                     await asyncio.sleep(Config.SHOWROOM_RESUME_DELAY_SECONDS)
                     part_id = f"{live_id}_r{resumes_done}"
-                    hls_url = (
-                        await self.showroom.scraper.get_live_streaming_url(room_id)
-                        or hls_url
+                    hls_url = await self._refresh_showroom_hls(
+                        room_id, hls_holder["url"]
                     )
+                    hls_holder["url"] = hls_url
                     database.insert_live(
                         live_id=part_id,
                         member_username=username,
@@ -725,6 +759,13 @@ class JKT48LiveBot:
 
                 # yt-dlp keluar "bersih" padahal live masih jalan (mis. playlist
                 # berhenti diperbarui sesaat) → lanjut bagian berikutnya.
+                if await self._showroom_broadcast_replaced(room_id, broadcast_id):
+                    logger.info(
+                        "Showroom %s: broadcast berganti sesi — akhiri task; "
+                        "loop utama akan memulai rekaman sesi baru",
+                        username,
+                    )
+                    break
                 if not should_resume_showroom(
                     resumes_done,
                     Config.SHOWROOM_MAX_RESUMES,
@@ -739,10 +780,10 @@ class JKT48LiveBot:
                 )
                 await asyncio.sleep(Config.SHOWROOM_RESUME_DELAY_SECONDS)
                 part_id = f"{live_id}_r{resumes_done}"
-                hls_url = (
-                    await self.showroom.scraper.get_live_streaming_url(room_id)
-                    or hls_url
+                hls_url = await self._refresh_showroom_hls(
+                    room_id, hls_holder["url"]
                 )
+                hls_holder["url"] = hls_url
                 database.insert_live(
                     live_id=part_id,
                     member_username=username,
@@ -779,6 +820,54 @@ class JKT48LiveBot:
         except Exception as exc:  # pragma: no cover - jalur jaringan
             logger.debug("Probe liveness Showroom %s gagal: %s", room_id, exc)
             return None
+
+    async def _showroom_broadcast_replaced(
+        self, room_id: str, broadcast_id: int
+    ) -> bool:
+        """
+        True bila room masih live TETAPI sesi broadcast-nya sudah berganti
+        (`live_id` API berbeda dari saat rekaman ini dimulai).
+
+        URL HLS sesi lama mati total begitu broadcast berganti — CDN
+        (showroom-txlive.com) menggantung koneksi tanpa respons, bukan 404
+        (terverifikasi 22 Sep 2026). Melanjutkan resume pada sesi ini sia-sia;
+        task sebaiknya diakhiri agar loop utama memulai rekaman sesi baru.
+
+        Bacaan gagal / room offline → False: kasus itu sudah ditangani debounce
+        offline di `should_resume_showroom`.
+        """
+        if not broadcast_id or not str(room_id or "").strip():
+            return False
+        try:
+            state = await self.showroom.fetch_state(room_id)
+        except Exception as exc:  # pragma: no cover - jalur jaringan
+            logger.debug("Probe sesi broadcast Showroom %s gagal: %r", room_id, exc)
+            return False
+        if state is None or not state.is_onlive or not state.live_id:
+            return False
+        return state.live_id != broadcast_id
+
+    async def _refresh_showroom_hls(self, room_id: str, current_url: str) -> str:
+        """
+        Ambil URL HLS segar untuk bagian resume; jatuh ke URL lama bila API
+        gagal/kosong. Fallback DICATAT agar jelas kapan bot masih memakai URL
+        yang berpotensi mati (insiden 22 Sep 2026: fallback diam-diam membuat
+        retry berputar ±1 jam pada URL mati tanpa jejak di log).
+        """
+        try:
+            fresh = await self.showroom.scraper.get_live_streaming_url(room_id)
+        except Exception as exc:
+            logger.debug("Showroom room %s: refresh URL HLS gagal: %r", room_id, exc)
+            fresh = None
+        if fresh:
+            return fresh
+        if current_url:
+            logger.warning(
+                "Showroom room %s: URL HLS segar tidak tersedia — resume tetap "
+                "memakai URL lama (bisa jadi sudah mati bila broadcast berganti sesi)",
+                room_id,
+            )
+        return current_url
 
     async def _check_showroom(self) -> None:
         """

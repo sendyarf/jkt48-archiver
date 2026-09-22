@@ -16,7 +16,7 @@ import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 import httpx
 
@@ -115,8 +115,11 @@ async def _wait_for_hls_url(
                     max_attempts,
                 )
             except Exception as exc:
+                # %r, bukan %s: httpx.ReadTimeout dkk. punya pesan KOSONG, jadi
+                # %s mencetak ": " tanpa keterangan apa pun (kasus URL Showroom
+                # mati — CDN menggantung koneksi sampai timeout).
                 logger.warning(
-                    "Error checking HLS URL on attempt %d/%d: %s",
+                    "Error checking HLS URL on attempt %d/%d: %r",
                     attempt,
                     max_attempts,
                     exc,
@@ -196,6 +199,7 @@ async def download_stream(
     auth_token: Optional[str] = None,
     max_empty_retries: int = 5,
     empty_retry_delay: float = 10,
+    url_refresher: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
 ) -> Path:
     """
     Download a live HLS stream to a local .mp4 file using yt-dlp.
@@ -206,6 +210,11 @@ async def download_stream(
         live_id:          Unique live session ID (used in filename + DB).
         on_progress:      Optional callback(line_str) for progress updates.
         auth_token:       Optional Bearer token for IDN authenticated streams.
+        url_refresher:  Optional async callback yang diminta URL HLS segar di
+                          awal SETIAP retry. Bila mengembalikan URL baru, retry
+                          memakai URL itu. Penting untuk Showroom: URL lama mati
+                          total (CDN menggantung koneksi) begitu sesi broadcast
+                          berganti, jadi retry pada URL yang sama sia-sia.
 
     Returns:
         Path to the recorded video file (.mp4).
@@ -236,6 +245,21 @@ async def download_stream(
 
     last_error: Optional[str] = None
     for attempt in range(1, MAX_EMPTY_RETRIES + 1):
+        # Minta URL segar sebelum retry: sesi broadcast yang berganti mematikan
+        # URL lama, sehingga menunggu URL lama aktif kembali tidak akan pernah
+        # berhasil (insiden 22 Sep 2026: ~1 jam terbuang pada URL mati).
+        if attempt > 1 and url_refresher is not None:
+            try:
+                fresh_url = await url_refresher()
+            except Exception as exc:
+                logger.debug("[%s] url_refresher gagal: %r", live_id, exc)
+                fresh_url = None
+            if fresh_url and fresh_url != hls_url:
+                logger.info(
+                    "[%s] URL HLS diganti dengan URL segar pada retry %d/%d",
+                    live_id, attempt, MAX_EMPTY_RETRIES,
+                )
+                hls_url = fresh_url
         # Wait for the HLS stream to become available (avoid 404 during startup)
         hls_active = await _wait_for_hls_url(hls_url, auth_token)
         if not hls_active:

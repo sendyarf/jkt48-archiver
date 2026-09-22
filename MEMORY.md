@@ -429,3 +429,17 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
     thumbnail yang tidak persis 1280x720. Diperbaiki dengan lebar per kolom
     `[426, 426, 428]` (kolom kanan menyerap sisa) dan diverifikasi nyata lewat ffmpeg
     (`tmp/check-collage.py`, sumber 1080x1920 → output 1280x720).
+13. **Video Showroom terpotong setelah broadcast ganti sesi (insiden 22 Sep 2026,
+    Nayla)** — URL HLS sesi broadcast yang mati DIGANTUNG CDN `showroom-txlive.com`
+    tanpa respons (bukan 404): httpx timeout dengan pesan kosong, yt-dlp gagal
+    "Remote end closed connection without response". `download_stream` me-retry 30×
+    (±1 jam) pada URL mati yang sama karena refresh URL hanya terjadi di luar loop
+    retry; saat menyerah live sudah selesai → upload terpotong. Diperbaiki dengan:
+    (a) parameter `url_refresher` di `download_stream` — URL HLS diminta ulang ke
+    API di awal setiap retry; (b) deteksi broadcast ganti sesi
+    (`_showroom_broadcast_replaced`, membandingkan `live_id` API dengan saat rekaman
+    dimulai) → task diakhiri agar loop utama memulai rekaman sesi baru; (c) fallback
+    ke URL lama kini DICATAT (warning), tidak lagi diam-diam; (d) log cek HLS memakai
+    `%r` supaya timeout berpesan kosong tetap menampakkan tipe exception-nya.
+    Perilaku CDN diverifikasi langsung: URL mati dari log insiden → timeout 8 dtk,
+    URL live → HTTP 200 dalam 400 ms.
