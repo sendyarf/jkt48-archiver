@@ -384,7 +384,7 @@ def normalize_tikwm_item(item: dict, unique_id: str, is_story: bool = False) -> 
 
     tikwm memakai `video_id`/`id` untuk ID, `create_time` (epoch) untuk waktu,
     `images` untuk postingan foto (tanpa `images` = video), dan
-    `play`/`hdplay`/`wmplay`/`download_url` untuk URL video.
+    `play`/`hdplay`/`download_url` untuk URL video.
     """
     video_id = str(item.get("video_id") or item.get("id") or item.get("aweme_id") or "").strip()
     images = [u for u in (item.get("images") or []) if u]
@@ -394,7 +394,10 @@ def normalize_tikwm_item(item: dict, unique_id: str, is_story: bool = False) -> 
         title = " ".join(desc) if isinstance(desc, list) else (desc or "")
     author = item.get("author") or {}
     video_url = ""
-    for key in ("hdplay", "play", "video_url", "download_url", "wmplay"):
+    # `wmplay` sengaja DIKECUALIKAN: itu varian berwatermark TikTok.
+    # Bila hanya `wmplay` yang tersedia, `video_url` dibiarkan kosong →
+    # downloader naik ke rung embed (playAddr tanpa watermark).
+    for key in ("hdplay", "play", "video_url", "download_url"):
         candidate = item.get(key)
         if isinstance(candidate, str) and candidate.startswith("http"):
             video_url = candidate

@@ -102,6 +102,26 @@ class TestNormalizeTikwm(unittest.TestCase):
         self.assertEqual(normalize_tikwm_item({"aweme_id": "abc"}, "u").id, "abc")
         self.assertEqual(normalize_tikwm_item({}, "u").id, "")
 
+    def test_wmplay_is_never_used_as_video_url(self):
+        """`wmplay` = varian berwatermark; tidak boleh jadi sumber unduhan."""
+        item = normalize_tikwm_item(
+            {"video_id": "1", "duration": 5, "wmplay": "https://cdn.invalid/wm.mp4"},
+            "u",
+        )
+        self.assertEqual(item.video_url, "")
+
+    def test_wmplay_ignored_when_other_keys_present(self):
+        item = normalize_tikwm_item(
+            {
+                "video_id": "1",
+                "duration": 5,
+                "play": "https://cdn.invalid/clean.mp4",
+                "wmplay": "https://cdn.invalid/wm.mp4",
+            },
+            "u",
+        )
+        self.assertEqual(item.video_url, "https://cdn.invalid/clean.mp4")
+
 
 class TestNormalizeYtDlp(unittest.TestCase):
     def test_video_entry(self):

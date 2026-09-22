@@ -333,6 +333,35 @@ class TestFailureAndRetry(TikTokMonitorTestCase):
         self.assertEqual(row["status"], "done")
         self.assertFalse(Path(row["media_path"]).exists())
 
+    def test_auto_delete_removes_media_after_successful_youtube(self):
+        Config.AUTO_DELETE_AFTER_UPLOAD = True
+        Config.TIKTOK_YT_UPLOAD_ENABLED = True
+        self._write_fixture("indahjkt48", [self._video_fixture_item("v1")], [])
+        database.upsert_tiktok_account("indahjkt48")
+        monitor = TikTokMonitor(telegram=FakeTelegram(), youtube_pool=FakeYouTubePool())
+
+        asyncio.run(monitor.run_once())
+        row = database.get_tiktok_post("v1")
+        self.assertEqual(row["youtube_video_id"], "yt-uji-1")
+        self.assertFalse(Path(row["media_path"]).exists())
+
+    def test_auto_delete_keeps_media_when_youtube_fails(self):
+        """Regresi 22 Sep 2026: file dihapus saat YT gagal → backlog unduh
+        ulang bisa mengambil varian berwatermark sehingga website beda
+        dengan arsip Telegram. Media WAJIB tetap ada sampai YT sukses."""
+        Config.AUTO_DELETE_AFTER_UPLOAD = True
+        Config.TIKTOK_YT_UPLOAD_ENABLED = True
+        self._write_fixture("indahjkt48", [self._video_fixture_item("v1")], [])
+        database.upsert_tiktok_account("indahjkt48")
+        monitor = TikTokMonitor(telegram=FakeTelegram(), youtube_pool=FailingYouTubePool())
+
+        asyncio.run(monitor.run_once())
+        row = database.get_tiktok_post("v1")
+        self.assertEqual(row["status"], "done")
+        self.assertTrue(row["telegram_message_ids"])
+        self.assertFalse(row["youtube_video_id"])
+        self.assertTrue(Path(row["media_path"]).exists())
+
 
 class FailingYouTubePool(FakeYouTubePool):
     """Pool YouTube yang selalu gagal upload (mis. kuota harian habis)."""

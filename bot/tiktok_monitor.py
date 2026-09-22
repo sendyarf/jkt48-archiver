@@ -435,7 +435,14 @@ class TikTokMonitor:
             item.unique_id, post_id, youtube_id or "dilewati",
         )
 
-        if Config.AUTO_DELETE_AFTER_UPLOAD:
+        # Hapus media hanya bila YouTube sukses ATAU fitur YT mati.
+        # Bila YT aktif tapi upload gagal (kuota dsb.), berkas HARUS tetap
+        # ada di disk: backlog akan memakai file yang SAMA dengan yang sudah
+        # dikirim ke Telegram — unduhan ulang bisa mengambil varian berwatermark
+        # dan membuat website beda dari arsip Telegram (anomali 22 Sep 2026).
+        if Config.AUTO_DELETE_AFTER_UPLOAD and (
+            youtube_id or not Config.TIKTOK_YT_UPLOAD_ENABLED
+        ):
             cleanup_media(media)
 
 

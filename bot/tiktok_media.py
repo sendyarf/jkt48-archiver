@@ -155,14 +155,24 @@ async def download_video(
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / f"{item.id}.mp4"
 
-    # 1) yt-dlp (juga menangani story & menghindari watermark).
+    # 1) yt-dlp (juga menangani story).
+    #    Format dipaksa MENGECUALIKAN varian berwatermark (format_id
+    #    download/download_addr, format_note ~watermark) — pilihan `best`
+    #    bisa jatuh ke downloadAddr bila playAddr gagal diuji/404, dan itu
+    #    membakar watermark TikTok ke file → beda dengan arsip Telegram.
+    #    Bila tidak ada format bersih, yt-dlp gagal → lanjut rung embed.
     if "://" in item.page_url:
+        clean_fmt = (
+            "bestvideo[format_id!~=download][format_note!~=watermark]"
+            "+bestaudio"
+            "/best[format_id!~=download][format_note!~=watermark]"
+        )
         cmd = [
             *ytdlp_command(),
             "--no-playlist",
             "--no-warnings",
             "--newline",
-            "--format", "bestvideo+bestaudio/best",
+            "--format", clean_fmt,
             "--merge-output-format", "mp4",
             "--retries", "5",
             "--retry-sleep", "5",
@@ -186,8 +196,10 @@ async def download_video(
         except FileNotFoundError as exc:
             logger.warning("yt-dlp tidak tersedia: %s", exc)
 
-    # 2) Unduh langsung dari CDN (tanpa watermark bila tersedia).
-    cdn_url = item.video_url or item.raw.get("wmplay") or ""
+    # 2) Unduh langsung dari CDN tanpa watermark.
+    #    JANGAN pakai `wmplay` (varian berwatermark) — bila `video_url` kosong
+    #    (tikwm hanya punya wmplay), lanjut ke rung embed di bawah.
+    cdn_url = item.video_url or ""
     if cdn_url:
         try:
             async with httpx.AsyncClient(
