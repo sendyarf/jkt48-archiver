@@ -206,9 +206,11 @@ export default function TikTokArchive({
                 />
               ) : (
                 <div className="tiktok-player-placeholder">
-                  <KindIcon post={selected} />
+                  <span className="tiktok-placeholder-icon">
+                    <KindIcon post={selected} />
+                  </span>
                   <p>
-                    Video YouTube-nya belum siap, tapi medianya sudah aman di arsip.
+                    Videonya belum siap diputar di sini, tapi arsipnya sudah aman.
                     {selected.telegram_archived
                       ? ' Ambil lewat bot Telegram di bawah ya.'
                       : ' Coba cek lagi sebentar lagi.'}
