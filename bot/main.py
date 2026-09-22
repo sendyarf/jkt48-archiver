@@ -1004,10 +1004,11 @@ class JKT48LiveBot:
         if self.tiktok is not None:
             accounts = database.get_tiktok_accounts()
             logger.info(
-                "Arsip TikTok AKTIF → %d akun aktif | siklus %ds (1 akun/siklus) | "
+                "Arsip TikTok AKTIF → %d akun aktif | siklus %ds (%d akun/siklus) | "
                 "provider=%s | story=%s | YouTube=%s",
                 len(accounts),
                 Config.TIKTOK_CHECK_INTERVAL_SECONDS,
+                max(1, Config.TIKTOK_ACCOUNTS_PER_CHECK),
                 Config.TIKTOK_PROVIDER,
                 "aktif" if Config.TIKTOK_STORIES_ENABLED else "nonaktif",
                 "aktif" if Config.TIKTOK_YT_UPLOAD_ENABLED else "nonaktif",
@@ -1025,7 +1026,8 @@ class JKT48LiveBot:
             round(Config.SHOWROOM_CHECK_INTERVAL_SECONDS / max(1, Config.HLS_CHECK_INTERVAL_SECONDS)),
         )
         # TikTok punya interval sendiri (default 300s) karena tiap siklus hanya
-        # memeriksa SATU akun (round-robin) demi menjaga batas request.
+        # memeriksa TIKTOK_ACCOUNTS_PER_CHECK akun (round-robin) demi menjaga
+        # batas request.
         tiktok_every = max(
             1,
             round(Config.TIKTOK_CHECK_INTERVAL_SECONDS / max(1, Config.HLS_CHECK_INTERVAL_SECONDS)),
@@ -1093,6 +1095,10 @@ class JKT48LiveBot:
                             await self.tiktok.retry_pending()
                         except Exception as exc:
                             logger.warning("Retry arsip TikTok gagal (diabaikan): %s", exc)
+                        try:
+                            await self.tiktok.retry_youtube_backlog()
+                        except Exception as exc:
+                            logger.warning("Retry backlog YouTube TikTok gagal (diabaikan): %s", exc)
 
                 # 6. Arsip TikTok (OPSIONAL): satu akun per siklus (round-robin),
                 #    dibungkus try/except sendiri supaya masalah TikTok tidak

@@ -1314,6 +1314,31 @@ def get_tiktok_pending_posts() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_tiktok_youtube_backlog(limit: int = 10) -> list[dict]:
+    """
+    Arsip yang SUDAH aman di channel Telegram tetapi belum punya video YouTube.
+
+    Ini terjadi saat upload YouTube pertama gagal/dilewati (mis. kuota harian
+    habis) — `_process_item` tetap menandai `done` karena arsip Telegram sudah
+    sah. Tanpa query ini arsip seperti itu tidak pernah diunggah ulang dan
+    halaman /tiktok hanya bisa menampilkan placeholder "belum siap".
+    Terbaru lebih dulu supaya arsip yang paling terlihat pengunjung cepat
+    bisa diputar.
+    """
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM tiktok_posts
+               WHERE COALESCE(telegram_message_ids, '') <> ''
+                 AND COALESCE(youtube_video_id, '') = ''
+                 AND status = 'done'
+                 AND visible = 1
+               ORDER BY COALESCE(NULLIF(created_at, ''), added_at) DESC
+               LIMIT ?""",
+            (max(1, int(limit)),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def tiktok_posts_for_replay(post_id: str) -> Optional[dict]:
     """
     Ambil satu postingan yang SIAP dikirim ulang oleh replay bot

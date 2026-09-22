@@ -12,9 +12,11 @@ Alur satu siklus (`run_once`):
     4. Status akhir `done`, atau `pending_upload` bila salah satu upload gagal
        (media tetap di disk; `retry_pending()` mencoba lagi di siklus berikut).
 
-Satu akun per siklus & jeda antar request (`TIKTOK_REQUEST_INTERVAL_SECONDS`)
-dipilih supaya bot tidak menabrak batas gratis tikwm (±1 request/detik) dan tidak
-dicap scraping oleh TikTok.
+Beberapa akun per siklus (`TIKTOK_ACCOUNTS_PER_CHECK`, round-robin) & jeda
+antar request (`TIKTOK_REQUEST_INTERVAL_SECONDS`) dipilih supaya bot tidak
+menabrak batas gratis tikwm (±1 request/detik) dan tidak dicap scraping oleh
+TikTok, tetapi rotasi tetap cukup rapat untuk menangkap story (kedaluwarsa
+±24 jam).
 
 Jalankan mandiri (untuk uji di VPS tanpa menunggu loop utama)::
 
@@ -107,7 +109,8 @@ class TikTokMonitor:
     # ── siklus pemantauan ───────────────────────────────────────────────────
     async def run_once(self, only_account: str = "") -> int:
         """
-        Periksa satu akun (round-robin) dan proses postingan barunya.
+        Periksa TIKTOK_ACCOUNTS_PER_CHECK akun (round-robin) dan proses
+        postingan barunya.
 
         Returns:
             Jumlah postingan baru yang diproses pada siklus ini.
@@ -119,10 +122,23 @@ class TikTokMonitor:
             logger.debug("Tidak ada akun TikTok aktif untuk diperiksa.")
             return 0
 
-        account = accounts[self._cursor % len(accounts)]
-        if not only_account:
-            self._cursor = (self._cursor + 1) % len(accounts)
+        if only_account:
+            return await self._check_account(accounts[0])
 
+        total = 0
+        batch = min(max(1, Config.TIKTOK_ACCOUNTS_PER_CHECK), len(accounts))
+        for index in range(batch):
+            account = accounts[self._cursor % len(accounts)]
+            self._cursor = (self._cursor + 1) % len(accounts)
+            total += await self._check_account(account)
+            # Jeda sopan antar akun dalam satu siklus (jeda per-request penyedia
+            # sudah diatur RateLimiter; ini jarak antar akun).
+            if index < batch - 1:
+                await asyncio.sleep(max(0.0, Config.TIKTOK_REQUEST_INTERVAL_SECONDS))
+        return total
+
+    async def _check_account(self, account: dict) -> int:
+        """Periksa SATU akun dan proses postingan barunya (dipakai run_once)."""
         try:
             items = await self._fetch_items(account)
         except ProviderError as exc:
@@ -512,6 +528,69 @@ class TikTokMonitor:
                 done += 1
         return done
 
+    # ── backlog YouTube ─────────────────────────────────────────────────────
+    async def retry_youtube_backlog(self, limit: int = 0) -> int:
+        """
+        Kejar arsip yang sudah aman di Telegram tetapi belum punya video
+        YouTube (upload pertama gagal/dilewati, mis. kuota harian habis).
+
+        Media dipakai ulang dari disk bila masih ada, kalau tidak diunduh
+        ulang; Telegram TIDAK dikirim ulang. Berhenti lebih awal begitu satu
+        upload gagal (hampir pasti kuota habis) supaya tidak membakar unduhan
+        untuk sisa antrian — dilanjutkan pada siklus berikutnya.
+
+        Returns:
+            Jumlah arsip yang kini punya video YouTube.
+        """
+        if not Config.TIKTOK_YT_UPLOAD_ENABLED:
+            return 0
+        if self._yt_pool() is None:
+            return 0
+        cap = limit or max(1, Config.TIKTOK_YT_BACKLOG_PER_CHECK)
+        rows = database.get_tiktok_youtube_backlog(limit=cap)
+        if not rows:
+            return 0
+        logger.info("Backlog YouTube TikTok: %d arsip dicoba.", len(rows))
+        uploaded = 0
+        for row in rows:
+            post_id = str(row.get("id") or "")
+            account = database.get_tiktok_account(row.get("unique_id") or "") or {
+                "unique_id": row.get("unique_id") or "",
+                "display_name": "",
+            }
+            try:
+                media = media_from_disk(row) or await prepare_post_media(
+                    item_from_db_row(row), build_slideshow_video=True
+                )
+            except MediaError as exc:
+                # Postingan dihapus / story kedaluwarsa → memang tidak bisa
+                # dikejar; lewati tanpa menghentikan antrian.
+                logger.info("Backlog YouTube %s dilewati: %s", post_id, exc)
+                continue
+            except Exception as exc:  # noqa: BLE001 - penyedia diblokir dsb.
+                logger.warning("Backlog YouTube dihentikan sementara: %s", exc)
+                break
+            youtube_id = await self._upload_to_youtube(
+                item_from_db_row(row), row, account, media
+            )
+            if youtube_id:
+                database.update_tiktok_post(
+                    post_id, youtube_video_id=youtube_id,
+                    status="done", error_message="",
+                )
+                uploaded += 1
+                logger.info("Backlog YouTube %s terunggah: %s", post_id, youtube_id)
+                if Config.AUTO_DELETE_AFTER_UPLOAD:
+                    cleanup_media(media)
+            else:
+                # Pulihkan status semula lalu berhenti — sisa antrian dicoba
+                # lagi pada siklus berikutnya.
+                database.update_tiktok_post(
+                    post_id, status=str(row.get("status") or "done")
+                )
+                break
+        return uploaded
+
 
 
 # ─── Runner mandiri (uji/operasi manual di VPS) ─────────────────────────────
@@ -546,6 +625,8 @@ async def _run_cli(account: str, dry_run: bool, retry: bool) -> None:
         if retry and not dry_run:
             done = await monitor.retry_pending()
             logger.info("Retry selesai: %d postingan kini berstatus 'done'.", done)
+            yt = await monitor.retry_youtube_backlog()
+            logger.info("Backlog YouTube: %d arsip kini punya video YouTube.", yt)
     finally:
         await monitor.close()
         await monitor.tg.disconnect()

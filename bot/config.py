@@ -273,10 +273,18 @@ class Config:
     )
 
     # Interval satu siklus pemantauan TikTok (detik). Satu siklus memeriksa
-    # SATU akun saja (round-robin) supaya tidak menabrak batas request.
+    # TIKTOK_ACCOUNTS_PER_CHECK akun (round-robin) supaya tidak menabrak batas
+    # request.
     TIKTOK_CHECK_INTERVAL_SECONDS: int = int(
         os.getenv("TIKTOK_CHECK_INTERVAL_SECONDS", "300")
     )
+
+    # Berapa akun diperiksa per siklus (round-robin). Lama kelamaan 1
+    # akun/siklus × 300 dtk membuat satu akun baru dicek tiap ±4,25 jam (51
+    # akun) — postingan telat masuk arsip dan story (kedaluwarsa 24 jam) mudah
+    # terlewat. 3 akun/siklus ≈ tiap akun dicek tiap ±85 menit; bebannya tetap
+    # kecil (±2-4 request per akun, diatur TIKTOK_REQUEST_INTERVAL_SECONDS).
+    TIKTOK_ACCOUNTS_PER_CHECK: int = int(os.getenv("TIKTOK_ACCOUNTS_PER_CHECK", "3"))
 
     # Jeda minimum antar request ke sumber data (detik).
     # tikwm.com gratis dibatasi ±1 request/detik; 1.1 detik = aman.
@@ -334,6 +342,13 @@ class Config:
     TIKTOK_STORY_MAX_AGE_HOURS: int = int(
         os.getenv("TIKTOK_STORY_MAX_AGE_HOURS", "24")
     )
+
+    # Berapa backlog YouTube (arsip yang sudah masuk Telegram tetapi belum punya
+    # video YouTube — mis. karena kuota harian habis saat pertama diarsipkan)
+    # yang dikejar per siklus retry (~30 menit di loop utama). Kecil supaya
+    # kuota harian tidak habis sekaligus; retry berhenti begitu upload gagal
+    # (tanda kuota habis) dan berlanjut di siklus berikutnya.
+    TIKTOK_YT_BACKLOG_PER_CHECK: int = int(os.getenv("TIKTOK_YT_BACKLOG_PER_CHECK", "2"))
 
     @classmethod
     def load_youtube_channels(cls) -> list[ChannelConfig]:
