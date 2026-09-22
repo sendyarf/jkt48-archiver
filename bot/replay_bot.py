@@ -19,7 +19,9 @@ hanya merespons deep-link /start dengan payload YouTube video ID yang valid.
 """
 import asyncio
 import logging
+import re
 import signal
+import time
 from typing import Optional
 
 import httpx
@@ -31,6 +33,40 @@ logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.telegram.org/bot{token}/{method}"
 POLL_TIMEOUT = 25
+
+# Validasi payload deep-link sebelum query DB / copyMessage.
+# YouTube video ID: 11 karakter [A-Za-z0-9_-].
+_YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_NOTIFY_RE = re.compile(r"^notify_[A-Za-z0-9_-]{11}$")
+_TIKTOK_RE = re.compile(r"^tt_[A-Za-z0-9_-]{1,64}$")
+
+# Rate-limit per chat: lindungi Telegram Bot API & DB dari spam deep-link.
+# Bucket: chat_id -> daftar timestamp (epoch detik, window 60 dtk, max 10).
+_RATE_WINDOW_S = 60
+_RATE_MAX = 10
+_rate_buckets: dict[int, list[float]] = {}
+
+
+def _rate_limited(chat_id: int, now: Optional[float] = None) -> bool:
+    """True bila chat_id melebihi _RATE_MAX request dalam _RATE_WINDOW_S dtk."""
+    now = time.monotonic() if now is None else now
+    bucket = _rate_buckets.setdefault(chat_id, [])
+    # Buang entri yang sudah keluar window.
+    cutoff = now - _RATE_WINDOW_S
+    bucket[:] = [t for t in bucket if t > cutoff]
+    if len(bucket) >= _RATE_MAX:
+        return True
+    bucket.append(now)
+    return False
+
+
+def _valid_payload(payload: str) -> bool:
+    """True bila payload deep-link berformat sah (yt / notify_ / tt_)."""
+    if _NOTIFY_RE.match(payload):
+        return True
+    if _TIKTOK_RE.match(payload):
+        return True
+    return bool(_YT_ID_RE.match(payload))
 
 WELCOME_TEXT = (
     "👋 <b>JKT48 Replay Bot</b>\n\n"
@@ -252,6 +288,11 @@ class ReplayBot:
         if not text:
             return
 
+        # Rate-limit per chat sebelum proses apa pun (termasuk pesan non-command).
+        if _rate_limited(int(chat_id)):
+            logger.info("Rate-limit tercapai untuk chat %s — diabaikan.", chat_id)
+            return
+
         try:
             await self._dispatch(int(chat_id), text)
         except Exception as exc:
@@ -282,6 +323,12 @@ class ReplayBot:
 
     async def _send_replay(self, chat_id: int, payload: str) -> None:
         """Tangani payload deep-link: 'notify_<id>' (pra-rilis) atau download."""
+        # Tolak payload yang tidak cocok format sebelum query DB.
+        if not _valid_payload(payload):
+            logger.info("Payload tidak valid format: %r", payload)
+            await self.send_message(chat_id, NOT_FOUND_TEXT)
+            return
+
         # Payload "notify_" = user menekan "Ingatkan" pada video yang BELUM rilis.
         # Jangan coba kirim video (memang belum ada) — cukup konfirmasi.
         if payload.startswith("notify_"):

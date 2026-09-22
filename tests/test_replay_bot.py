@@ -12,7 +12,7 @@ from pathlib import Path
 
 from bot import database
 from bot.config import Config
-from bot.replay_bot import ReplayBot, _parse_message_ids
+from bot.replay_bot import ReplayBot, _parse_message_ids, _rate_limited, _valid_payload
 
 CHAT_ID = 12345
 ARCHIVE_CHANNEL = -1003972547638
@@ -21,6 +21,8 @@ YT_ID = "gJ8G0PnE_1x"
 
 class ReplayBotTestCase(unittest.TestCase):
     def setUp(self):
+        from bot import replay_bot
+        replay_bot._rate_buckets.clear()
         self._tmp = tempfile.TemporaryDirectory()
         base = Path(self._tmp.name)
         self._old_db = Config.DB_PATH
@@ -146,6 +148,74 @@ class TestDispatch(ReplayBotTestCase):
         self._insert_session("live_1", YT_ID, "777")
         self._send(f"/start {YT_ID}")
         self.assertEqual(self.copied, [(CHAT_ID, ARCHIVE_CHANNEL, 777)])
+
+
+class TestPayloadValidation(unittest.TestCase):
+    def test_valid_youtube_id(self):
+        self.assertTrue(_valid_payload("gJ8G0PnE_1x"))
+        self.assertTrue(_valid_payload("abcdefghijk"))
+
+    def test_invalid_youtube_ids(self):
+        self.assertFalse(_valid_payload("short"))
+        self.assertFalse(_valid_payload("waytoolongvideoid123"))
+        self.assertFalse(_valid_payload("bad!chars<>"))
+        self.assertFalse(_valid_payload(""))
+
+    def test_valid_notify(self):
+        self.assertTrue(_valid_payload(f"notify_{'a' * 11}"))
+
+    def test_valid_tiktok(self):
+        self.assertTrue(_valid_payload("tt_abc123XYZ"))
+        self.assertFalse(_valid_payload("tt_"))
+        self.assertFalse(_valid_payload("tt_" + "x" * 100))
+
+    def test_send_replay_rejects_invalid_before_db(self):
+        """Payload format salah tidak boleh menyentuh DB / copyMessage."""
+        bot = ReplayBot()
+        sent: list[str] = []
+
+        async def fake_send(chat_id, text, parse_mode=None):
+            sent.append(text)
+            return 1
+
+        bot.send_message = fake_send  # type: ignore[assignment]
+        bot.copy_message = None  # type: ignore[assignment]
+        asyncio.run(bot._send_replay(CHAT_ID, "not-valid!!"))
+        self.assertEqual(len(sent), 1)
+        self.assertIn("tidak ditemukan", sent[0].lower())
+
+
+class TestRateLimit(unittest.TestCase):
+    def setUp(self):
+        from bot import replay_bot
+        self._old = dict(replay_bot._rate_buckets)
+        replay_bot._rate_buckets.clear()
+
+    def tearDown(self):
+        from bot import replay_bot
+        replay_bot._rate_buckets.clear()
+        replay_bot._rate_buckets.update(self._old)
+
+    def test_allows_under_limit(self):
+        for i in range(9):
+            self.assertFalse(_rate_limited(CHAT_ID, now=float(i)))
+
+    def test_blocks_at_limit(self):
+        for i in range(10):
+            self.assertFalse(_rate_limited(CHAT_ID, now=float(i)))
+        self.assertTrue(_rate_limited(CHAT_ID, now=10.0))
+
+    def test_window_expires(self):
+        for i in range(10):
+            _rate_limited(CHAT_ID, now=float(i))
+        # Lewati window 60 dtk → boleh lagi.
+        self.assertFalse(_rate_limited(CHAT_ID, now=70.0))
+
+    def test_per_chat_isolated(self):
+        for i in range(10):
+            _rate_limited(CHAT_ID, now=float(i))
+        other = CHAT_ID + 1
+        self.assertFalse(_rate_limited(other, now=10.0))
 
 
 class TestStartGate(ReplayBotTestCase):

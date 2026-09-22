@@ -414,8 +414,8 @@ class Config:
         """
         Chat IDs allowed to control the admin bot.
         ADMIN_CHAT_ID is always included, plus any IDs in TELEGRAM_ADMIN_IDS
-        (comma separated). An empty list means "no restriction" — the caller
-        should warn about that.
+        (comma separated). An empty list means the bot must not start
+        (fail-closed — no chat is allowed to run commands).
         """
         ids: list[int] = []
         if cls.ADMIN_CHAT_ID:

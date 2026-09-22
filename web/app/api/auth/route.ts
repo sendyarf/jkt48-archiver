@@ -8,7 +8,7 @@ export async function GET() { return json({ success: await isAdmin() }); }
 export async function POST(request: Request) {
   if (!sameOrigin(request)) return json({ success: false, message: 'Permintaan tidak diizinkan.' }, 403);
   if (!configuredSecret()) return json({ success: false, message: 'Login admin belum dikonfigurasi.' }, 503);
-  if (!allowLogin()) return json({ success: false, message: 'Terlalu banyak percobaan. Coba lagi dalam 15 menit.' }, 429);
+  if (!allowLogin(request)) return json({ success: false, message: 'Terlalu banyak percobaan. Coba lagi dalam 15 menit.' }, 429);
   try {
     const body = await request.json();
     if (!validSecret(body?.secret)) return json({ success: false, message: 'Kredensial tidak valid.' }, 401);

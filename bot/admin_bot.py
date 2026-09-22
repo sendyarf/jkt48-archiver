@@ -190,6 +190,12 @@ class AdminBot:
                 "TELEGRAM_BOT_TOKEN belum diisi — Telegram admin bot tidak dijalankan."
             )
             return None
+        if not self._admin_ids:
+            logger.error(
+                "ADMIN_CHAT_ID / TELEGRAM_ADMIN_IDS kosong — admin bot TIDAK "
+                "dijalankan (fail-closed). Isi ADMIN_CHAT_ID di .env lalu restart."
+            )
+            return None
         self._running = True
         self._task = asyncio.create_task(self.run(), name="admin-bot")
         return self._task
@@ -198,10 +204,12 @@ class AdminBot:
         """Long-polling loop until stopped."""
         self._running = True
         if not self._admin_ids:
-            logger.warning(
-                "ADMIN_CHAT_ID / TELEGRAM_ADMIN_IDS kosong — SEMUA chat bisa "
-                "mengirim command. Isi ADMIN_CHAT_ID untuk membatasi akses!"
+            logger.error(
+                "ADMIN_CHAT_ID / TELEGRAM_ADMIN_IDS kosong — menutup admin bot "
+                "(fail-closed). Isi ADMIN_CHAT_ID di .env lalu restart."
             )
+            self._running = False
+            return
 
         try:
             me = await self._api("getMe")
@@ -210,7 +218,7 @@ class AdminBot:
             logger.info(
                 "Telegram admin bot aktif sebagai @%s (admins: %s)",
                 self._bot_username or "?",
-                self._admin_ids or "TANPA BATASAN",
+                self._admin_ids,
             )
         except Exception as exc:
             logger.error("Gagal verifikasi TELEGRAM_BOT_TOKEN: %s", exc)
@@ -267,7 +275,7 @@ class AdminBot:
         if not text:
             return
 
-        if self._admin_ids and int(chat_id) not in self._admin_ids:
+        if not self._admin_ids or int(chat_id) not in self._admin_ids:
             logger.warning("Command ditolak dari chat_id=%s", chat_id)
             await self.send_message(
                 chat_id,

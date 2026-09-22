@@ -64,6 +64,17 @@ class TestAdminBotCommands(MemberManagerTestCase):
         self.assertIn("Akses ditolak", reply)
         self.assertIn("12345", reply)
 
+    def test_empty_allowlist_rejects_everyone(self):
+        self.bot._admin_ids = []
+        reply = self._send("/list", chat_id=ADMIN_ID)
+        self.assertIn("Akses ditolak", reply)
+        self.assertNotIn("jkt48", reply)
+
+    def test_empty_allowlist_does_not_start(self):
+        self.bot._admin_ids = []
+        self.assertIsNone(self.bot.start())
+        self.assertFalse(self.bot._running)
+
     def test_unknown_command(self):
         reply = self._send("/nope")
         self.assertIn("tidak dikenal", reply)
