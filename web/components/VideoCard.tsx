@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
-import { Play, Calendar } from 'lucide-react';
+import { Play, Calendar, Clock } from 'lucide-react';
 import type { VideoItem } from '@/lib/db';
 import MiniCountdown from '@/components/MiniCountdown';
 
@@ -40,6 +40,7 @@ export default function VideoCard({ video }: { video: VideoItem }) {
             <span className="upcoming-badge">Segera</span>
             {video.publish_at ? (
               <span className="upcoming-countdown">
+                <Clock size={11} style={{ display: 'inline', marginRight: '4px', verticalAlign: '-1px' }} />
                 <MiniCountdown publishAt={video.publish_at} />
               </span>
             ) : null}

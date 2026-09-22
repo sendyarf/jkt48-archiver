@@ -931,20 +931,24 @@ select:focus-visible {
   color: var(--text-secondary);
 }
 
-/* Mini countdown pada kartu pra-rilis — sejajar dengan badge, di atas durasi. */
+/* Mini countdown pada kartu pra-rilis — kiri-bawah, sejajar platform badge, tidak tabrakan dengan durasi. */
 .upcoming-countdown {
   position: absolute;
-  right: 8px;
-  bottom: 34px;
+  left: 8px;
+  bottom: 8px;
   font-size: 0.68rem;
   font-weight: 700;
   color: #fff;
   background: rgba(7, 9, 14, 0.85);
-  border: 1px solid rgba(244, 63, 94, 0.45);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(245, 158, 11, 0.55);
   border-radius: 9999px;
   padding: 2px 8px;
   z-index: 2;
   pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 /* Admin Dashboard */

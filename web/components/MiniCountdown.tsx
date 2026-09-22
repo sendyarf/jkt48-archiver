@@ -19,7 +19,13 @@ export default function MiniCountdown({ publishAt }: { publishAt: string }) {
   const hours = Math.floor(totalMin / 60);
   const mins = totalMin % 60;
 
-  if (hours > 0) return <span>{hours}j {mins}m</span>;
+  if (hours > 0) {
+    return (
+      <span>
+        {hours}j{mins > 0 ? ` ${mins}m` : ''}
+      </span>
+    );
+  }
   if (mins > 0) return <span>{mins}m</span>;
   return <span>Sebentar lagi</span>;
 }
