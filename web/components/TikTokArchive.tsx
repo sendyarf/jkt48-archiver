@@ -98,9 +98,10 @@ export default function TikTokArchive({
 
   // ── Navigasi feed ala Shorts/TikTok ───────────────────────────────────────
   // Ganti arsip tanpa menyentuh sidebar: tombol ↑/↓ di tepi kanan video,
-  // roda mouse di area video (desktop), geser vertikal (sentuh), dan panah
-  // keyboard saat area video fokus. Daftar yang dilalui = `visiblePosts`
-  // (mengikuti kata kunci pencarian yang sedang aktif).
+  // roda mouse di area video (desktop), dan panah keyboard saat area video
+  // fokus. Gestur jari TIDAK dipakai: di layar kecil halaman menumpuk satu
+  // kolom, berebut scroll dengan halaman hanya membuat tampilan berpindah.
+  // Daftar yang dilalui = `visiblePosts` (mengikuti kata kunci pencarian).
   const selectedIndex = useMemo(
     () => visiblePosts.findIndex((p) => p.id === selectedId),
     [visiblePosts, selectedId]
@@ -121,7 +122,7 @@ export default function TikTokArchive({
     if (next < visiblePosts.length) setSelectedId(visiblePosts[next].id);
   }, [selectedIndex, visiblePosts]);
 
-  // Listener non-React (wheel/touchmove butuh passive:false untuk preventDefault).
+  // Listener non-React (wheel butuh passive:false untuk preventDefault).
   const playerAreaRef = useRef<HTMLDivElement | null>(null);
   const navRef = useRef({ prev: navPrev, next: navNext, canPrev, canNext });
   // Ref hanya boleh ditulis di effect/event, bukan saat render (react-hooks/refs).
@@ -155,44 +156,9 @@ export default function TikTokArchive({
       }
     };
 
-    // Sentuh: hanya gestur yang JELAS vertikal yang dibajak (|dy| > 2×|dx|)
-    // supaya scroll halaman biasa tidak terganggu. Geser atas = berikutnya.
-    let startX = 0;
-    let startY = 0;
-    let hijack = false;
-    const onTouchStart = (e: TouchEvent) => {
-      const t = e.touches[0];
-      startX = t.clientX;
-      startY = t.clientY;
-      hijack = false;
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (visiblePosts.length < 2) return;
-      const t = e.touches[0];
-      const dx = t.clientX - startX;
-      const dy = t.clientY - startY;
-      if (!hijack && Math.abs(dy) > 24 && Math.abs(dy) > Math.abs(dx) * 2) {
-        hijack = true;
-      }
-      if (hijack) e.preventDefault();
-    };
-    const onTouchEnd = (e: TouchEvent) => {
-      if (!hijack) return;
-      hijack = false;
-      const dy = e.changedTouches[0].clientY - startY;
-      if (dy <= -60 && navRef.current.canNext) navRef.current.next();
-      else if (dy >= 60 && navRef.current.canPrev) navRef.current.prev();
-    };
-
     el.addEventListener('wheel', onWheel, { passive: false });
-    el.addEventListener('touchstart', onTouchStart, { passive: true });
-    el.addEventListener('touchmove', onTouchMove, { passive: false });
-    el.addEventListener('touchend', onTouchEnd, { passive: true });
     return () => {
       el.removeEventListener('wheel', onWheel);
-      el.removeEventListener('touchstart', onTouchStart);
-      el.removeEventListener('touchmove', onTouchMove);
-      el.removeEventListener('touchend', onTouchEnd);
     };
   }, [visiblePosts.length]);
 
@@ -317,7 +283,7 @@ export default function TikTokArchive({
               ref={playerAreaRef}
               tabIndex={0}
               role="region"
-              aria-label="Pemutar arsip — roda mouse, geser vertikal, atau tombol panah untuk ganti arsip"
+              aria-label="Pemutar arsip — roda mouse atau tombol panah untuk ganti arsip"
               onKeyDown={(e) => {
                 if (e.key === 'ArrowDown') { e.preventDefault(); navNext(); }
                 if (e.key === 'ArrowUp') { e.preventDefault(); navPrev(); }

@@ -20,7 +20,8 @@
  *  10. Kartu tanpa YouTube diberi penanda "Unduh via bot"; ringkasan header
  *      memecah "bisa diputar" vs "unduh via bot"; sidebar akun punya pencarian.
  *  11. Navigasi feed: tombol ↑/↓ melayang di area pemutar (plus roda mouse,
- *      geser vertikal, panah keyboard di sisi klien) dengan label aksesibel.
+ *      panah keyboard di sisi klien) dengan label aksesibel — gestur jari
+ *      sengaja tidak dipakai agar tidak berebut scroll dengan halaman.
  *
  * Port 3115 (3107 = public-private-check, 3108 = player-check,
  * 3110 = player-trial-check, 3111/3112 = auto-publish-check,

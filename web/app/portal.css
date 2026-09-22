@@ -113,9 +113,10 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 #tiktok-player-container:focus-visible { outline: 2px solid var(--rose-500); outline-offset: 2px; }
 /* Navigasi feed ala Shorts: tombol bulat melayang di tepi kanan area video.
    Melayang (bukan kolom sendiri) supaya tidak memakan ruang di layar kecil;
-   ukurannya menyusut di ponsel dan dilengkapi gestur geser vertikal. */
+   ukurannya menyusut di ponsel. Latar sengaja dibuat transparan supaya tidak
+   menutupi video dan terasa menempel ringan, bukan "keras". */
 .tiktok-nav { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; z-index: 5; }
-.tiktok-nav-btn { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; border: 1px solid #374151; background: rgba(9, 14, 23, .78); color: #f8fafc; backdrop-filter: blur(6px); cursor: pointer; transition: background .15s ease, border-color .15s ease, transform .15s ease; }
+.tiktok-nav-btn { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; border: 1px solid rgba(55, 65, 81, .65); background: rgba(9, 14, 23, .45); color: #f8fafc; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); cursor: pointer; transition: background .15s ease, border-color .15s ease, transform .15s ease; }
 .tiktok-nav-btn:hover:not(:disabled) { background: #2b1520; border-color: #5b2440; color: #fda4af; transform: scale(1.06); }
 .tiktok-nav-btn:disabled { opacity: .35; cursor: default; }
 .tiktok-player-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: clamp(220px, 32vw, 380px); padding: 24px; text-align: center; background: radial-gradient(120% 140% at 50% 0%, #141b2c 0%, #0d1320 60%); border: 1px dashed #374151; border-radius: 14px; color: var(--text-secondary); }
@@ -175,9 +176,10 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .tiktok-post-thumb { width: 54px; }
   .tiktok-panel { padding: 12px; }
   /* Tombol navigasi menyusut di ponsel: tetap terjangkau jempol tanpa
-     menutupi terlalu banyak area video. */
+     menutupi terlalu banyak area video; satu-satunya cara ganti arsip di sini
+     (gestur jari dimatikan agar scroll halaman tidak berebut). */
   .tiktok-nav { right: 8px; gap: 8px; }
-  .tiktok-nav-btn { width: 38px; height: 38px; }
+  .tiktok-nav-btn { width: 38px; height: 38px; background: rgba(9, 14, 23, .5); }
 }
 
 /* Form filter: tumpuk rapi di layar kecil */
