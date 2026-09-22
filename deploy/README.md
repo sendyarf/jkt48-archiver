@@ -396,6 +396,7 @@ kerusakan.
 | Halaman publik kosong | Belum ada rekaman yang dipublikasikan di `/admin/publications` |
 | Rekaman tidak bertambah di web | `UPLOAD_TARGET=telegram` (web hanya membaca `youtube_video_id`) |
 | Web menampilkan data berbeda dari bot | `DB_PATH` di `web/.env` menunjuk berkas lain |
+| Checker melaporkan `DB_PATH menunjuk berkas yang TIDAK ada` | `DB_PATH` di `web/.env` relatif (cwd proses web adalah `web/`). Isi path **absolut** (`/home/USER/jkt48-live/jkt48_live.db`), lalu `pm2 restart jkt48-web` |
 | `database is locked` | Bot dan web menulis bersamaan; aktifkan WAL + `busy_timeout` |
 | `pip install` gagal: `error: externally-managed-environment` | PEP 668 mengunci `pip` sistem (Ubuntu 23.04+/Debian 12+); buat venv `.venv` lalu pasang di dalamnya |
 | Bot mati dengan `ModuleNotFoundError` setelah `pm2 restart` | PM2 tidak membaca ulang `script` dari config saat restart (issue #3742). Buat `.venv`, pasang `requirements.txt` di dalamnya, lalu `pm2 delete jkt48-archiver-bot && pm2 start deploy/ecosystem.config.js --only jkt48-archiver-bot`; interpreter manual bisa lewat `BOT_PYTHON` |

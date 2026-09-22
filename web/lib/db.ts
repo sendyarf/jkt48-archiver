@@ -26,6 +26,18 @@ export function getDb(): DatabaseSync {
       }
     }
 
+    // Peringatan salah-setel (terlihat di log server): DB_PATH diset tetapi
+    // berkasnya tidak ada (mis. path RELATIF padahal cwd proses web adalah
+    // folder web/) — web diam-diam jatuh ke kandidat lain, yang bisa jadi
+    // database BERBEDA dari yang ditulis bot. DB_PATH harus ABSOLUT dan sama
+    // persis dengan DB_PATH bot (lihat deploy/README.md).
+    if (process.env.DB_PATH && !existsSync(process.env.DB_PATH)) {
+      console.warn(
+        `[db] DB_PATH "${process.env.DB_PATH}" tidak ditemukan — memakai ` +
+        `"${dbPath}". Isi DB_PATH dengan path absolut yang sama dengan bot.`
+      );
+    }
+
     _db = new DatabaseSync(dbPath);
 
     // Initialize media_catalog table if not exists
