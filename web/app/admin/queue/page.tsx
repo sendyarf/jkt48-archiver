@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { QueueItem, QueueSummary } from '@/lib/db';
+import { platformLabel, StatusBadge } from '@/components/admin-status';
 
 const SOURCES = [
   { value: 'all', label: 'Semua sumber' },
@@ -18,31 +19,13 @@ const PLATFORMS = [
 
 const STATUS_OPTIONS = [
   { value: 'all', label: 'Semua status' },
-  { value: 'detected', label: 'Terdeteksi' },
+  { value: 'failed', label: 'Gagal' },
+  { value: 'pending_upload', label: 'Menunggu retry' },
   { value: 'downloading', label: 'Mengunduh' },
-  { value: 'segment_done', label: 'Segmen selesai' },
-  { value: 'download_complete', label: 'Unduhan selesai' },
   { value: 'merging', label: 'Merge' },
   { value: 'uploading_telegram', label: 'Upload Telegram' },
   { value: 'uploading_youtube', label: 'Upload YouTube' },
-  { value: 'pending_upload', label: 'Menunggu retry' },
-  { value: 'failed', label: 'Gagal' },
 ];
-
-const STATUS_LABEL: Record<string, string> = {
-  detected: 'Terdeteksi',
-  downloading: 'Mengunduh',
-  segment_done: 'Segmen selesai',
-  download_complete: 'Unduhan selesai',
-  merging: 'Merge',
-  uploading_telegram: 'Upload Telegram',
-  uploading_youtube: 'Upload YouTube',
-  done_telegram: 'Selesai (TG)',
-  done_youtube: 'Selesai (YT)',
-  done: 'Selesai',
-  pending_upload: 'Menunggu retry',
-  failed: 'Gagal',
-};
 
 const DEST_LABEL: Record<string, string> = {
   download: 'Unduh',
@@ -61,36 +44,6 @@ function formatSize(bytes: number): string {
     i += 1;
   }
   return `${n.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
-}
-
-function platformBadge(platform: string) {
-  const cls =
-    platform === 'showroom' ? 'showroom' : platform === 'tiktok' ? 'idn' : 'idn';
-  const label =
-    platform === 'showroom' ? 'Showroom' : platform === 'tiktok' ? 'TikTok' : 'IDN';
-  return (
-    <span className={`platform-badge ${cls}`}>{label}</span>
-  );
-}
-
-function statusBadge(status: string) {
-  const hidden = status === 'failed' || status === 'pending_upload';
-  const active =
-    status.startsWith('uploading') ||
-    status === 'downloading' ||
-    status === 'merging';
-  const cls = hidden ? '' : active ? 'published' : 'published';
-  const style: React.CSSProperties =
-    status === 'failed'
-      ? { background: '#4c0519', color: '#fecdd3' }
-      : status === 'pending_upload'
-        ? { background: '#3b2f0a', color: '#fde68a' }
-        : {};
-  return (
-    <span className={`visibility-badge ${cls}`} style={style}>
-      {STATUS_LABEL[status] || status}
-    </span>
-  );
 }
 
 export default function AdminQueuePage() {
@@ -132,36 +85,26 @@ export default function AdminQueuePage() {
         <div>
           <p className="eyebrow">OPERASIONAL · PRIVATE</p>
           <h1>Antrean upload</h1>
-          <p>
-            Satu tabel untuk semua yang sedang diproses atau menunggu: live IDN,
-            live Showroom, dan TikTok — dengan platform, tujuan (YouTube/Telegram),
-            status, dan error per baris.
-          </p>
+          <p>Satu tabel untuk live IDN, Showroom, dan TikTok — platform, tujuan, status, dan error per baris.</p>
         </div>
       </div>
 
       {summary && (
-        <div className="metric-grid">
-          <div className="panel">
-            <span>Antrean live</span>
+        <div className="stat-chips">
+          <div className="stat-chip static">
             <strong>{summary.live_total}</strong>
-            <p className="help-text">
-              IDN {summary.live_by_platform.idn || 0} · Showroom{' '}
-              {summary.live_by_platform.showroom || 0}
-            </p>
+            <span>Live</span>
+            <small>IDN {summary.live_by_platform.idn || 0} · SR {summary.live_by_platform.showroom || 0}</small>
           </div>
-          <div className="panel">
-            <span>Antrean TikTok</span>
+          <div className="stat-chip static">
             <strong>{summary.tiktok_total}</strong>
-            <p className="help-text">
-              Pending {summary.tiktok_by_status.pending_upload || 0} · Gagal{' '}
-              {summary.tiktok_by_status.failed || 0}
-            </p>
+            <span>TikTok</span>
+            <small>Pending {summary.tiktok_by_status.pending_upload || 0} · Gagal {summary.tiktok_by_status.failed || 0}</small>
           </div>
-          <div className="panel">
-            <span>Backlog TikTok → YT</span>
+          <div className="stat-chip static">
             <strong>{summary.tiktok_yt_backlog}</strong>
-            <p className="help-text">Arsip TG siap, belum terupload ke YouTube</p>
+            <span>TG → YT</span>
+            <small>Backlog TikTok ke YouTube</small>
           </div>
         </div>
       )}
@@ -169,9 +112,17 @@ export default function AdminQueuePage() {
       <div className="form-row">
         <label>
           Sumber
-          <select value={source} onChange={(e) => { setLoading(true); setSource(e.target.value); }}>
+          <select
+            value={source}
+            onChange={(e) => {
+              setLoading(true);
+              setSource(e.target.value);
+            }}
+          >
             {SOURCES.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
             ))}
           </select>
         </label>
@@ -187,19 +138,35 @@ export default function AdminQueuePage() {
             }}
           >
             {PLATFORMS.map((p) => (
-              <option key={p.value} value={p.value}>{p.label}</option>
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
             ))}
           </select>
         </label>
         <label>
           Status
-          <select value={status} onChange={(e) => { setLoading(true); setStatus(e.target.value); }}>
+          <select
+            value={status}
+            onChange={(e) => {
+              setLoading(true);
+              setStatus(e.target.value);
+            }}
+          >
             {STATUS_OPTIONS.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
             ))}
           </select>
         </label>
-        <button className="secondary-button" onClick={() => { setLoading(true); setRevision((r) => r + 1); }}>
+        <button
+          className="secondary-button"
+          onClick={() => {
+            setLoading(true);
+            setRevision((r) => r + 1);
+          }}
+        >
           Muat ulang
         </button>
       </div>
@@ -213,9 +180,7 @@ export default function AdminQueuePage() {
           <caption className="sr-only">Antrean upload terpadu</caption>
           <thead>
             <tr>
-              <th>Sumber</th>
-              <th>Platform</th>
-              <th>Member / judul</th>
+              <th>Konten</th>
               <th>Status</th>
               <th>Tujuan</th>
               <th>Ukuran</th>
@@ -228,18 +193,14 @@ export default function AdminQueuePage() {
               items.map((item) => (
                 <tr key={`${item.source}:${item.id}`}>
                   <td>
-                    <span className="help-text">{item.source === 'tiktok' ? 'TikTok' : 'Live'}</span>
-                    <br />
-                    <span className="help-text">{item.kind}</span>
-                  </td>
-                  <td>{platformBadge(item.platform)}</td>
-                  <td>
-                    <strong>{item.member_name}</strong>
-                    <br />
-                    <span className="help-text">{item.title}</span>
-                    {item.youtube_video_id && (
-                      <>
-                        <br />
+                    <div className="cell-title">{item.member_name}</div>
+                    <div className="cell-meta">
+                      <span className={`platform-badge inline-badge ${item.platform === 'showroom' ? 'showroom' : 'idn'}`}>
+                        {platformLabel(item.platform)}
+                      </span>
+                      <span>{item.source === 'tiktok' ? 'TikTok' : 'Live'}</span>
+                      <span className="truncate-meta">{item.title}</span>
+                      {item.youtube_video_id && (
                         <a
                           href={`https://www.youtube.com/watch?v=${item.youtube_video_id}`}
                           target="_blank"
@@ -247,10 +208,12 @@ export default function AdminQueuePage() {
                         >
                           YT ↗
                         </a>
-                      </>
-                    )}
+                      )}
+                    </div>
                   </td>
-                  <td>{statusBadge(item.status)}</td>
+                  <td>
+                    <StatusBadge status={item.status} />
+                  </td>
                   <td>{DEST_LABEL[item.destination] || item.destination}</td>
                   <td>{formatSize(item.file_size_bytes)}</td>
                   <td>

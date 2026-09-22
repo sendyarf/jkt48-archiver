@@ -40,7 +40,7 @@ export default function MemberManager() {
     } catch (e) { setMessage(e instanceof Error ? e.message : 'Koneksi gagal.'); return false; }
     finally { setBusy(false); }
   }
-  return <section><div className="section-heading"><div><p className="eyebrow">PENGELOLAAN</p><h1>Member</h1><p>Pengaturan pemantauan ini hanya terlihat oleh admin.</p></div>
+  return <section><div className="section-heading"><div><p className="eyebrow">KONTEN</p><h1>Member</h1><p>Atur akun mana yang dipantau bot. Hanya terlihat oleh admin.</p></div>
     <button className="secondary-button" disabled={busy} onClick={async () => {
       setBusy(true);
       try { const res = await fetch('/api/auth', { method: 'DELETE' }); if (!res.ok) throw new Error(); router.replace('/login'); router.refresh(); }

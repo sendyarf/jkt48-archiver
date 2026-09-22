@@ -802,30 +802,62 @@ export interface Publication {
   hours_since_end: number | null;
 }
 
-export function getPublications(search = '', page = 1) {
+export type PublicationStatusFilter = 'all' | 'waiting' | 'visible' | 'held';
+
+export interface PublicationSummary {
+  total: number;
+  waiting: number;
+  visible: number;
+  held: number;
+}
+
+const PUBLICATION_FILTER_SQL: Record<PublicationStatusFilter, string> = {
+  all: '',
+  // Alias kolom hasil GROUP BY hanya sah di HAVING (bukan WHERE).
+  waiting: 'HAVING decided = 0 AND visible = 0',
+  visible: 'HAVING visible = 1',
+  held: 'HAVING decided = 1 AND published = 0',
+};
+
+function publicationBaseSql(search: string): { sql: string; params: string[] } {
   const filter = `%${search.slice(0, 100)}%`;
-  const rows = getDb().prepare(`SELECT ls.youtube_video_id,
-    COALESCE(NULLIF(MAX(ls.member_name), ''), ls.member_username) AS member_name,
-    COALESCE(MAX(mh.display_name), '') AS display_name,
-    ls.member_username AS member_username,
-    COALESCE(NULLIF(MAX(ls.platform), ''), 'idn') AS platform,
-    MIN(ls.started_at) AS started_at,
-    COALESCE(MAX(p.published), 0) AS published,
-    CASE WHEN MAX(p.youtube_video_id) IS NULL THEN 0 ELSE 1 END AS decided,
-    MAX(${publicVisibilitySql('ls')}) AS visible,
-    MAX((julianday('now') - julianday(COALESCE(ls.download_ended_at, ls.created_at))) * 24) AS hours_since_end
-    FROM live_sessions ls
-    LEFT JOIN merge_groups mg ON mg.id = ls.merge_group_id
-    LEFT JOIN member_hls mh ON ls.member_username = mh.username
-    LEFT JOIN web_publications p ON p.youtube_video_id = ls.youtube_video_id
-    WHERE ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != ''
-    AND (ls.member_username LIKE ? OR ls.member_name LIKE ? OR mg.live_title LIKE ? OR mh.display_name LIKE ?)
-    GROUP BY ls.youtube_video_id ORDER BY MAX(ls.created_at) DESC LIMIT 51 OFFSET ?`)
-    .all(filter, filter, filter, filter, (page - 1) * 50) as unknown as (Publication & {
+  return {
+    sql: `SELECT ls.youtube_video_id,
+      COALESCE(NULLIF(MAX(ls.member_name), ''), ls.member_username) AS member_name,
+      COALESCE(MAX(mh.display_name), '') AS display_name,
+      ls.member_username AS member_username,
+      COALESCE(NULLIF(MAX(ls.platform), ''), 'idn') AS platform,
+      MIN(ls.started_at) AS started_at,
+      MAX(COALESCE(ls.created_at, ls.started_at)) AS sort_at,
+      COALESCE(MAX(p.published), 0) AS published,
+      CASE WHEN MAX(p.youtube_video_id) IS NULL THEN 0 ELSE 1 END AS decided,
+      MAX(${publicVisibilitySql('ls')}) AS visible,
+      MAX((julianday('now') - julianday(COALESCE(ls.download_ended_at, ls.created_at))) * 24) AS hours_since_end
+      FROM live_sessions ls
+      LEFT JOIN merge_groups mg ON mg.id = ls.merge_group_id
+      LEFT JOIN member_hls mh ON ls.member_username = mh.username
+      LEFT JOIN web_publications p ON p.youtube_video_id = ls.youtube_video_id
+      WHERE ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != ''
+      AND (ls.member_username LIKE ? OR ls.member_name LIKE ? OR mg.live_title LIKE ? OR mh.display_name LIKE ?)
+      GROUP BY ls.youtube_video_id`,
+    params: [filter, filter, filter, filter],
+  };
+}
+
+export function getPublications(
+  search = '',
+  page = 1,
+  status: PublicationStatusFilter = 'all',
+): { videos: Publication[]; hasMore: boolean; summary: PublicationSummary } {
+  const base = publicationBaseSql(search);
+  const where = PUBLICATION_FILTER_SQL[status] || '';
+  const rows = getDb().prepare(`${base.sql} ${where} ORDER BY sort_at DESC LIMIT 51 OFFSET ?`)
+    .all(...base.params, (page - 1) * 50) as unknown as (Publication & {
       member_username: string;
       display_name: string;
       platform: string;
       started_at: string | null;
+      sort_at: string | null;
     })[];
   const videos: Publication[] = rows.map((row) => ({
     ...row,
@@ -835,7 +867,24 @@ export function getPublications(search = '', page = 1) {
       row.started_at || '',
     ),
   }));
-  return { videos: videos.slice(0, 50), hasMore: rows.length > 50 };
+
+  const summaryRows = getDb().prepare(`SELECT
+    COUNT(*) AS total,
+    COALESCE(SUM(CASE WHEN decided = 0 AND visible = 0 THEN 1 ELSE 0 END), 0) AS waiting,
+    COALESCE(SUM(CASE WHEN visible = 1 THEN 1 ELSE 0 END), 0) AS visible,
+    COALESCE(SUM(CASE WHEN decided = 1 AND published = 0 THEN 1 ELSE 0 END), 0) AS held
+    FROM (${base.sql})`).get(...base.params) as unknown as PublicationSummary;
+
+  return {
+    videos: videos.slice(0, 50),
+    hasMore: rows.length > 50,
+    summary: {
+      total: summaryRows?.total || 0,
+      waiting: summaryRows?.waiting || 0,
+      visible: summaryRows?.visible || 0,
+      held: summaryRows?.held || 0,
+    },
+  };
 }
 
 export function setPublication(videoId: string, published: boolean): boolean {

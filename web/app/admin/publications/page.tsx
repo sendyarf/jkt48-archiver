@@ -1,54 +1,245 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Publication } from '@/lib/db';
+import type { Publication, PublicationStatusFilter, PublicationSummary } from '@/lib/db';
+
+function platformBadge(platform: string) {
+  const cls = platform === 'showroom' ? 'showroom' : 'idn';
+  const label = platform === 'showroom' ? 'Showroom' : 'IDN';
+  return <span className={`platform-badge inline-badge ${cls}`}>{label}</span>;
+}
+
+function statusBadge(v: Publication) {
+  if (v.visible) {
+    return <span className="visibility-badge published">{v.decided ? 'Tayang (manual)' : 'Tayang'}</span>;
+  }
+  if (v.decided && !v.published) {
+    return <span className="visibility-badge held">Ditahan</span>;
+  }
+  return <span className="visibility-badge waiting">Menunggu</span>;
+}
+
+function statusHint(v: Publication, autoHours: number): string {
+  if (v.visible) return v.decided ? 'Keputusan admin' : 'Rilis otomatis';
+  if (v.decided && !v.published) return 'Keputusan admin';
+  if (v.hours_since_end === null) return 'Menunggu jam tayang';
+  const elapsed = Math.floor(v.hours_since_end);
+  if (autoHours <= 0) return 'Perlu persetujuan manual';
+  const left = Math.max(0, autoHours - elapsed);
+  if (left === 0) return 'Ambang lewat — belum dipublikasi';
+  return `Otomatis dalam ±${left} jam`;
+}
+
 export default function PublicationsPage() {
   const router = useRouter();
   const [videos, setVideos] = useState<Publication[]>([]);
+  const [summary, setSummary] = useState<PublicationSummary | null>(null);
   const [revision, setRevision] = useState(0);
   const [query, setQuery] = useState('');
+  const [status, setStatus] = useState<PublicationStatusFilter>('all');
   const [page, setPage] = useState(1);
   const [more, setMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
   const [autoHours, setAutoHours] = useState(0);
+
   useEffect(() => {
     const controller = new AbortController();
-    fetch(`/api/admin/publications?q=${encodeURIComponent(query)}&page=${page}`, { cache: 'no-store', signal: controller.signal })
-      .then(async res => { if (res.status === 401) router.replace('/login'); if (!res.ok) throw new Error('Gagal memuat replay.'); return res.json(); })
-      .then(data => { setVideos(data.videos); setMore(data.hasMore); setAutoHours(data.autoPublishAfterHours ?? 0); })
-      .catch(e => { if (e.name !== 'AbortError') setMessage(e.message); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    const qs = new URLSearchParams({ q: query, page: String(page), status });
+    fetch(`/api/admin/publications?${qs}`, { cache: 'no-store', signal: controller.signal })
+      .then(async (res) => {
+        if (res.status === 401) router.replace('/login');
+        if (!res.ok) throw new Error('Gagal memuat replay.');
+        return res.json();
+      })
+      .then((data) => {
+        setVideos(data.videos);
+        setMore(data.hasMore);
+        setSummary(data.summary ?? null);
+        setAutoHours(data.autoPublishAfterHours ?? 0);
+      })
+      .catch((e) => {
+        if (e.name !== 'AbortError') setMessage(e.message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
     return () => controller.abort();
-  }, [query, page, revision, router]);
-  const label = (v: Publication) => {
-    if (v.decided && v.published) return 'Disetujui manual';
-    if (v.decided && !v.published) return 'Ditahan manual';
-    if (v.platform === 'showroom') return 'Otomatis (Showroom langsung)';
-    if (v.visible) return `Otomatis (lewat ${autoHours} jam)`;
-    return 'Menunggu jam tayang';
-  };
-  async function toggle(video: Publication) {
-    const nextPublished = !video.visible;
-    if (!window.confirm(nextPublished ? 'Konten ini boleh tayang publik? Terbitkan sekarang?' : 'Tarik replay ini dari semua halaman publik?')) return;
-    setBusy(true); setMessage('');
+  }, [query, page, status, revision, router]);
+
+  const changeTab = useCallback((next: PublicationStatusFilter) => {
+    setLoading(true);
+    setMessage('');
+    setPage(1);
+    setStatus(next);
+  }, []);
+
+  async function setPublished(video: Publication, nextPublished: boolean) {
+    const confirmText = nextPublished
+      ? 'Tayangkan replay ini sekarang?'
+      : 'Tarik replay ini dari semua halaman publik?';
+    if (!window.confirm(confirmText)) return;
+    setBusy(true);
+    setMessage('');
     try {
-      const res = await fetch('/api/admin/publications', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ youtube_video_id: video.youtube_video_id, published: nextPublished }) });
+      const res = await fetch('/api/admin/publications', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ youtube_video_id: video.youtube_video_id, published: nextPublished }),
+      });
       if (res.status === 401) router.replace('/login');
       if (!res.ok) throw new Error('Gagal memperbarui publikasi.');
-      setVideos(items => items.map(v => v.youtube_video_id === video.youtube_video_id ? { ...v, published: nextPublished ? 1 : 0, decided: 1, visible: nextPublished ? 1 : 0 } : v));
-      setMessage('Publikasi diperbarui.'); router.refresh();
-    } catch (e) { setMessage(e instanceof Error ? e.message : 'Koneksi gagal.'); }
-    finally { setBusy(false); }
+      setVideos((items) =>
+        items.map((v) =>
+          v.youtube_video_id === video.youtube_video_id
+            ? { ...v, published: nextPublished ? 1 : 0, decided: 1, visible: nextPublished ? 1 : 0 }
+            : v,
+        ),
+      );
+      setRevision((r) => r + 1);
+      setMessage('Publikasi diperbarui.');
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : 'Koneksi gagal.');
+    } finally {
+      setBusy(false);
+    }
   }
-  return <section><div className="section-heading"><div><p className="eyebrow">KURASI ARSIP</p><h1>Publikasi</h1><p>{autoHours > 0 ? `Replay IDN tayang otomatis ${autoHours} jam setelah live selesai; replay Showroom langsung tayang. Kamu tetap bisa terbitkan lebih cepat atau menahannya.` : 'Replay IDN masih tersembunyi sampai kamu setujui; replay Showroom langsung tayang.'}</p></div></div>
-    <p className="notice">Terbitkan hanya konten yang memang boleh dibagikan publik. Status unlisted di YouTube bukan berarti otomatis boleh tayang di sini.</p>
-    <form className="form-row" onSubmit={e => { e.preventDefault(); setRevision(r => r + 1); setLoading(true); setMessage(''); setPage(1); setQuery(String(new FormData(e.currentTarget).get('q') || '')); }}><label>Cari replay<input name="q" type="search" maxLength={100} placeholder="Judul atau member" /></label><button className="secondary-button">Cari</button></form>
-    <div role="status" aria-live="polite">{message && <p className="notice">{message}</p>}</div>
-    <div className="panel table-scroll"><table className="admin-table"><caption className="sr-only">Persetujuan publikasi replay</caption><thead><tr><th>Replay</th><th>Platform</th><th>Tampil di situs</th><th>Aksi</th></tr></thead><tbody>
-      {!loading && videos.map(v => <tr key={v.youtube_video_id}><td><strong>{v.title}</strong><br /><span className="help-text">{v.member_name}</span><br /><span className="help-text">{v.hours_since_end === null ? 'Waktu tidak diketahui' : `${Math.floor(v.hours_since_end)} jam sejak live selesai`}</span><br /><a href={`https://www.youtube.com/watch?v=${v.youtube_video_id}`} target="_blank" rel="noopener noreferrer">Tinjau di YouTube ↗</a></td><td><span className={`platform-badge ${v.platform === 'showroom' ? 'showroom' : 'idn'}`}>{v.platform === 'showroom' ? 'Showroom' : 'IDN'}</span></td><td><span className={`visibility-badge ${v.visible ? 'published' : ''}`}>{v.visible ? 'Publik' : 'Tersembunyi'}</span><br /><span className="help-text">{label(v)}</span></td><td><button className="secondary-button" disabled={busy} onClick={() => toggle(v)}>{v.visible ? 'Tarik publikasi' : 'Terbitkan'}</button></td></tr>)}
-    </tbody></table><p className="help-text">{loading ? 'Memuat replay…' : videos.length === 0 ? 'Belum ada replay yang cocok.' : ''}</p></div>
-    <nav className="pagination" aria-label="Halaman publikasi"><button className="secondary-button" disabled={page === 1 || loading || busy} onClick={() => { setLoading(true); setPage(p => p - 1); }}>Sebelumnya</button><span>Halaman {page}</span><button className="secondary-button" disabled={!more || loading || busy} onClick={() => { setLoading(true); setPage(p => p + 1); }}>Berikutnya</button></nav>
-  </section>;
+
+  return (
+    <section>
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">KURASI ARSIP</p>
+          <h1>Publikasi</h1>
+          <p>
+            {autoHours > 0
+              ? `IDN tayang otomatis setelah ${autoHours} jam; Showroom langsung. Kamu bisa terbitkan lebih cepat atau menahan.`
+              : 'Tayang hanya setelah persetujuan; Showroom langsung tayang.'}
+          </p>
+        </div>
+      </div>
+
+      {summary && (
+        <div className="stat-chips" role="group" aria-label="Ringkasan publikasi">
+          <button type="button" className={`stat-chip ${status === 'all' ? 'active' : ''}`} onClick={() => changeTab('all')}>
+            <strong>{summary.total}</strong>
+            <span>Semua</span>
+          </button>
+          <button type="button" className={`stat-chip ${status === 'waiting' ? 'active' : ''}`} onClick={() => changeTab('waiting')}>
+            <strong>{summary.waiting}</strong>
+            <span>Menunggu</span>
+          </button>
+          <button type="button" className={`stat-chip ${status === 'visible' ? 'active' : ''}`} onClick={() => changeTab('visible')}>
+            <strong>{summary.visible}</strong>
+            <span>Tampil</span>
+          </button>
+          <button type="button" className={`stat-chip ${status === 'held' ? 'active' : ''}`} onClick={() => changeTab('held')}>
+            <strong>{summary.held}</strong>
+            <span>Ditahan</span>
+          </button>
+        </div>
+      )}
+
+      <p className="notice">
+        Terbitkan hanya konten yang boleh dibagikan publik. Status unlisted di YouTube bukan
+        berarti otomatis boleh tayang di sini.
+      </p>
+
+      <form
+        className="form-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setLoading(true);
+          setMessage('');
+          setPage(1);
+          setQuery(String(new FormData(e.currentTarget).get('q') || ''));
+          setRevision((r) => r + 1);
+        }}
+      >
+        <label>
+          Cari replay
+          <input name="q" type="search" maxLength={100} placeholder="Judul atau member" />
+        </label>
+        <button className="secondary-button">Cari</button>
+      </form>
+
+      <div role="status" aria-live="polite">
+        {message && <p className="notice">{message}</p>}
+      </div>
+
+      <div className="panel table-scroll">
+        <table className="admin-table">
+          <caption className="sr-only">Persetujuan publikasi replay</caption>
+          <thead>
+            <tr>
+              <th>Replay</th>
+              <th>Status</th>
+              <th>Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            {!loading &&
+              videos.map((v) => (
+                <tr key={v.youtube_video_id}>
+                  <td>
+                    <div className="cell-title">{v.title}</div>
+                    <div className="cell-meta">
+                      {platformBadge(v.platform)}
+                      <span>{v.member_name}</span>
+                      <span>{v.hours_since_end === null ? 'Waktu tidak diketahui' : `${Math.floor(v.hours_since_end)} jam lalu`}</span>
+                      <a href={`https://www.youtube.com/watch?v=${v.youtube_video_id}`} target="_blank" rel="noopener noreferrer">
+                        YouTube ↗
+                      </a>
+                    </div>
+                  </td>
+                  <td>
+                    {statusBadge(v)}
+                    <div className="cell-meta">{statusHint(v, autoHours)}</div>
+                  </td>
+                  <td>
+                    <button className="secondary-button" disabled={busy} onClick={() => setPublished(v, !v.visible)}>
+                      {v.visible ? 'Tarik' : 'Terbitkan'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+        <p className="help-text">
+          {loading
+            ? 'Memuat replay…'
+            : videos.length === 0
+              ? status === 'all'
+                ? 'Belum ada replay yang cocok.'
+                : 'Tidak ada replay dengan status ini.'
+              : ''}
+        </p>
+      </div>
+
+      <nav className="pagination" aria-label="Halaman publikasi">
+        <button
+          className="secondary-button"
+          disabled={page === 1 || loading || busy}
+          onClick={() => {
+            setLoading(true);
+            setPage((p) => p - 1);
+          }}
+        >
+          Sebelumnya
+        </button>
+        <span>Halaman {page}</span>
+        <button
+          className="secondary-button"
+          disabled={!more || loading || busy}
+          onClick={() => {
+            setLoading(true);
+            setPage((p) => p + 1);
+          }}
+        >
+          Berikutnya
+        </button>
+      </nav>
+    </section>
+  );
 }

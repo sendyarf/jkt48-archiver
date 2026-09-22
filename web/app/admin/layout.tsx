@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 import { isAdmin } from '@/lib/auth';
 import type { Metadata } from 'next';
-import Link from 'next/link';
+import AdminNav from '@/components/AdminNav';
 
 export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'Administrasi', robots: { index: false, follow: false } };
@@ -9,7 +9,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   if (!(await isAdmin())) redirect('/login');
   return <div className="admin-shell container">
     <aside className="admin-sidebar"><p className="eyebrow">RUANG PENGELOLA</p><h2>Admin Studio</h2>
-      <nav aria-label="Navigasi admin"><Link href="/admin">Member</Link><Link href="/admin/publications">Publikasi</Link><Link href="/admin/videos">Sembunyikan</Link><Link href="/admin/queue">Antrean</Link><Link href="/admin/status">Sistem & antrean</Link><Link href="/admin/trial">Uji pemutar</Link><Link href="/">Balik ke situs</Link></nav>
+      <AdminNav />
     </aside><div className="admin-content">{children}</div>
   </div>;
 }

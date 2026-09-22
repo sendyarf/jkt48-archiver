@@ -625,6 +625,13 @@ select:focus-visible {
   background: rgba(244, 63, 94, 0.9);
 }
 
+/* Di luar kartu video (tabel admin, meta baris) badge harus mengalir normal. */
+.platform-badge.inline-badge {
+  position: static;
+  display: inline-block;
+  box-shadow: none;
+}
+
 .play-hover-overlay {
   position: absolute;
   inset: 0;

@@ -83,18 +83,13 @@ export default function AdminVideosPage() {
       <div className="section-heading">
         <div>
           <p className="eyebrow">KURASI ARSIP</p>
-          <h1>Sembunyikan video</h1>
+          <h1>Sembunyikan</h1>
           <p>
             Soft-hide per konten: hilang dari katalog, watch, pencarian, dan direktori
-            member — baris database & file tetap aman. Berlaku untuk video YouTube
-            maupun arsip Telegram-first. Bisa di-undo.
+            member — data & file tetap aman. Bisa di-undo.
           </p>
         </div>
       </div>
-      <p className="notice">
-        Duplikat hasil sebelum perbaikan bot dapat disembunyikan di sini tanpa menghapus
-        data. Video di kanal YouTube tidak ikut terhapus — kelola terpisah di YouTube Studio.
-      </p>
 
       <form
         className="form-row"
@@ -139,30 +134,37 @@ export default function AdminVideosPage() {
         <table className="admin-table">
           <caption className="sr-only">Daftar video untuk disembunyikan</caption>
           <thead>
-            <tr>
-              <th>Konten</th>
-              <th>Platform</th>
-              <th>Sumber</th>
-              <th>Visibilitas</th>
-              <th>Aksi</th>
-            </tr>
+              <tr>
+                <th>Konten</th>
+                <th>Visibilitas</th>
+                <th>Aksi</th>
+              </tr>
           </thead>
           <tbody>
             {!loading &&
               videos.map((v) => (
                 <tr key={v.content_key}>
                   <td>
-                    <strong>{v.title}</strong>
-                    <br />
-                    <span className="help-text">{v.member_name}</span>
-                    <br />
-                    <span className="help-text">
-                      Key: <code>{v.content_key}</code>
-                      {v.row_count > 1 ? ` · ${v.row_count} baris` : ''}
-                    </span>
-                    {v.youtube_video_id && (
-                      <>
-                        <br />
+                    <div className="cell-title">{v.title}</div>
+                    <div className="cell-meta">
+                      <span className={`platform-badge inline-badge ${v.platform === 'showroom' ? 'showroom' : 'idn'}`}>
+                        {platformLabel(v.platform)}
+                      </span>
+                      <span>{v.member_name}</span>
+                      <span>
+                        {v.has_yt ? 'YouTube' : ''}
+                        {v.has_yt && v.has_tg ? ' + ' : ''}
+                        {v.has_tg ? 'Telegram' : ''}
+                        {!v.has_yt && !v.has_tg ? '—' : ''}
+                      </span>
+                      <span>
+                        {v.hours_since_end === null ? 'Waktu tidak diketahui' : `${Math.floor(v.hours_since_end)} jam lalu`}
+                      </span>
+                      <span className="help-text">
+                        Key: <code>{v.content_key}</code>
+                        {v.row_count > 1 ? ` · ${v.row_count} baris` : ''}
+                      </span>
+                      {v.youtube_video_id && (
                         <a
                           href={`https://www.youtube.com/watch?v=${v.youtube_video_id}`}
                           target="_blank"
@@ -170,40 +172,20 @@ export default function AdminVideosPage() {
                         >
                           YouTube ↗
                         </a>
-                      </>
-                    )}
-                  </td>
-                  <td>
-                    <span className={`platform-badge ${v.platform === 'showroom' ? 'showroom' : 'idn'}`}>
-                      {platformLabel(v.platform)}
-                    </span>
-                  </td>
-                  <td>
-                    <span className="help-text">
-                      {v.has_yt ? 'YouTube' : ''}
-                      {v.has_yt && v.has_tg ? ' + ' : ''}
-                      {v.has_tg ? 'Telegram' : ''}
-                      {!v.has_yt && !v.has_tg ? '—' : ''}
-                    </span>
-                    <br />
-                    <span className="help-text">
-                      {v.hours_since_end === null
-                        ? 'Waktu tidak diketahui'
-                        : `${Math.floor(v.hours_since_end)} jam lalu`}
-                    </span>
+                      )}
+                    </div>
                   </td>
                   <td>
                     <span className={`visibility-badge ${v.visible ? 'published' : ''}`}>
                       {v.visible ? 'Tampil' : 'Tersembunyi'}
                     </span>
-                    <br />
-                    <span className="help-text">
+                    <div className="cell-meta">
                       {v.override === 1
                         ? 'Override admin: terbit'
                         : v.override === 0
                           ? 'Override admin: tahan'
                           : 'Ikut aturan otomatis'}
-                    </span>
+                    </div>
                   </td>
                   <td>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
