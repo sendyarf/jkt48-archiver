@@ -200,9 +200,16 @@ export default function TikTokArchive({
   const listRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!selectedId) return;
-    listRef.current
-      ?.querySelector('.tiktok-post-item.active')
-      ?.scrollIntoView({ block: 'nearest' });
+    const list = listRef.current;
+    const item = list?.querySelector<HTMLElement>('.tiktok-post-item.active');
+    if (!list || !item) return;
+    const listRect = list.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    if (itemRect.top < listRect.top) {
+      list.scrollTop -= listRect.top - itemRect.top;
+    } else if (itemRect.bottom > listRect.bottom) {
+      list.scrollTop += itemRect.bottom - listRect.bottom;
+    }
   }, [selectedId]);
 
   const pickAccount = useCallback(
