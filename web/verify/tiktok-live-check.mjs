@@ -200,7 +200,8 @@ try {
     line('  fallback inisial', count(/tiktok-account-initial/g));
     const empty = html.includes('Belum ada arsip TikTok yang tayang');
     line('  pesan "belum ada arsip"', empty ? 'MUNCUL' : 'tidak');
-    const summary = html.match(/(\d+) arsip siap ditonton dari (\d+) akun/)
+    const summary = html.match(/(\d+) arsip dari (\d+) akun — (\d+) bisa diputar · (\d+) unduh via bot/)
+      || html.match(/(\d+) arsip siap ditonton dari (\d+) akun/)
       || html.match(/(\d+) akun dipantau/);
     line('  ringkasan header', summary ? summary[0] : '(tidak terbaca)');
     if (!html.includes('tiktok-shell')) {

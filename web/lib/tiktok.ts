@@ -252,6 +252,8 @@ export function getTikTokSummary(): {
   videos: number;
   photos: number;
   stories: number;
+  /** Arsip yang punya video YouTube → bisa diputar langsung di halaman. */
+  playable: number;
   latest_display: string;
 } {
   const db = getDb();
@@ -261,12 +263,13 @@ export function getTikTokSummary(): {
       SUM(CASE WHEN p.kind = 'video' AND p.is_story = 0 THEN 1 ELSE 0 END) as videos,
       SUM(CASE WHEN p.kind = 'photo' AND p.is_story = 0 THEN 1 ELSE 0 END) as photos,
       SUM(CASE WHEN p.is_story = 1 THEN 1 ELSE 0 END) as stories,
+      SUM(CASE WHEN COALESCE(p.youtube_video_id, '') <> '' THEN 1 ELSE 0 END) as playable,
       MAX(COALESCE(NULLIF(p.created_at, ''), p.added_at)) as latest
     FROM tiktok_posts p
     WHERE ${PUBLIC_POST_SQL}
   `).get() as unknown as {
     total: number | null; videos: number | null; photos: number | null;
-    stories: number | null; latest: string | null;
+    stories: number | null; playable: number | null; latest: string | null;
   } | undefined;
 
   const accountsRow = db.prepare(
@@ -280,6 +283,7 @@ export function getTikTokSummary(): {
     videos: Number(row?.videos || 0),
     photos: Number(row?.photos || 0),
     stories: Number(row?.stories || 0),
+    playable: Number(row?.playable || 0),
     latest_display: latest ? formatWibLong(latest) : '',
   };
 }

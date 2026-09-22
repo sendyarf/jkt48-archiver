@@ -21,6 +21,9 @@ export default function TikTokPage() {
   const accounts = getTikTokAccounts();
   const { posts, total } = getTikTokPosts({ limit: MAX_POSTS });
   const summary = getTikTokSummary();
+  // Sambutan pertama harus arsip yang BISA DIPUTAR, bukan sekadar yang terbaru
+  // — arsip terbaru bisa jadi belum punya video YouTube (hanya unduh via bot).
+  const firstPlayable = posts.find((p) => p.youtube_video_id);
 
   return (
     <div className="page-section">
@@ -37,7 +40,7 @@ export default function TikTokPage() {
           </div>
           <p className="result-summary">
             {summary.posts > 0
-              ? `${summary.posts} arsip siap ditonton dari ${summary.accounts} akun`
+              ? `${summary.posts} arsip dari ${summary.accounts} akun — ${summary.playable} bisa diputar · ${summary.posts - summary.playable} unduh via bot`
               : `${summary.accounts} akun dipantau`}
             {summary.posts > 0
               ? ` · ${summary.videos} video · ${summary.photos} foto · ${summary.stories} story`
@@ -55,7 +58,7 @@ export default function TikTokPage() {
           accounts={accounts}
           initialPosts={posts}
           initialTotal={total}
-          initialSelectedId={posts[0]?.id || ''}
+          initialSelectedId={(firstPlayable || posts[0])?.id || ''}
         />
 
         <p className="help-text" style={{ marginTop: '18px' }}>

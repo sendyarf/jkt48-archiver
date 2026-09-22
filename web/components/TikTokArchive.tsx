@@ -49,6 +49,26 @@ export default function TikTokArchive({
   const [error, setError] = useState('');
   const [selectedId, setSelectedId] = useState(initialSelectedId || initialPosts[0]?.id || '');
   const [keyword, setKeyword] = useState('');
+  const [accountKeyword, setAccountKeyword] = useState('');
+
+  // Arsip pertama yang dipilih saat daftar berganti = yang terbaru DAN bisa
+  // diputar (punya video YouTube), supaya pengunjung tidak disambut placeholder
+  // "belum siap" padahal masih ada yang bisa ditonton.
+  const firstSelectableId = useCallback(
+    (list: TikTokPost[]) =>
+      (list.find((p) => p.youtube_video_id) || list[0])?.id || '',
+    []
+  );
+
+  const visibleAccounts = useMemo(() => {
+    const q = accountKeyword.trim().toLowerCase();
+    if (!q) return accounts;
+    return accounts.filter(
+      (a) =>
+        a.display_name.toLowerCase().includes(q) ||
+        a.unique_id.toLowerCase().includes(q)
+    );
+  }, [accounts, accountKeyword]);
 
   const selected = useMemo(() => {
     if (!posts.length) return null;
@@ -91,7 +111,7 @@ export default function TikTokArchive({
         setAccount(uniqueId);
         setPosts(data.posts || []);
         setTotal(Number(data.total || 0));
-        setSelectedId(data.posts?.[0]?.id || '');
+        setSelectedId(firstSelectableId(data.posts || []));
         setKeyword('');
       } catch {
         setError('Gagal memuat arsip akun ini. Coba lagi ya.');
@@ -99,7 +119,7 @@ export default function TikTokArchive({
         setLoading(false);
       }
     },
-    [account]
+    [account, firstSelectableId]
   );
 
   return (
@@ -109,6 +129,16 @@ export default function TikTokArchive({
         <h2 className="tiktok-panel-title">
           Akun <span className="tiktok-count">{accounts.length}</span>
         </h2>
+        <label className="tiktok-search input-with-icon">
+          <Search size={15} aria-hidden="true" />
+          <input
+            type="search"
+            value={accountKeyword}
+            onChange={(e) => setAccountKeyword(e.target.value)}
+            placeholder="Cari member"
+            aria-label="Cari akun member"
+          />
+        </label>
         <div className="tiktok-account-list">
           <button
             type="button"
@@ -119,7 +149,10 @@ export default function TikTokArchive({
             <span className="tiktok-account-name">Semua akun</span>
             <span className="tiktok-count">{totalArchived}</span>
           </button>
-          {accounts.map((acc) => (
+          {visibleAccounts.length === 0 && (
+            <p className="help-text">Tidak ada akun yang cocok. Coba kata kunci lain ya.</p>
+          )}
+          {visibleAccounts.map((acc) => (
             <button
               key={acc.unique_id}
               type="button"
@@ -294,6 +327,9 @@ export default function TikTokArchive({
                     {post.kind === 'photo' && post.image_count
                       ? ` · ${post.image_count} foto`
                       : ''}
+                    {!post.youtube_video_id && (
+                      <span className="tiktok-badge-dl">Unduh via bot</span>
+                    )}
                   </span>
                 </span>
               </button>

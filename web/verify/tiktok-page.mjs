@@ -15,6 +15,10 @@
  *   7. API `/api/tiktok/posts` bisa memfilter satu akun.
  *   8. Anti-regresi bahasa: halaman publik tidak memakai kata "Anda" maupun
  *      istilah "siaran ulang".
+ *   9. Arsip terpilih saat halaman dibuka = terbaru yang BISA DIPUTAR (punya
+ *      YouTube), bukan terbaru yang hanya bisa diunduh via bot.
+ *  10. Kartu tanpa YouTube diberi penanda "Unduh via bot"; ringkasan header
+ *      memecah "bisa diputar" vs "unduh via bot"; sidebar akun punya pencarian.
  *
  * Port 3115 (3107 = public-private-check, 3108 = player-check,
  * 3110 = player-trial-check, 3111/3112 = auto-publish-check,
@@ -41,6 +45,7 @@ const POST_VIDEO = '7685965837307596052';
 const POST_PHOTO = '7679000000000000001';
 const POST_STORY = '7685000000000000009';
 const POST_LULU = '7681262713913347348';
+const POST_NEWEST_DL = '7690000000000000001'; // terbaru, TANPA YouTube (unduh via bot)
 const POST_PENDING = '7670000000000000099';   // belum siap (tanpa yt & tg)
 const POST_HIDDEN = '7670000000000000088';    // visible = 0
 const ACCOUNT_OFF = 'offjkt48';               // enabled = 0
@@ -148,6 +153,10 @@ VALUES
    30, 0, 'https://p16.invalid/cover-lulu.webp',
    'https://www.tiktok.com/@lulu_jkt48/video/${POST_LULU}', '/tmp/tt/lulu.mp4',
    '401', 'TTL00000001', 1, 'done'),
+  ('${POST_NEWEST_DL}', 'indahjkt48', 'video', 0, 'baru banget', datetime('now', '-10 minutes'),
+   21, 0, 'https://p16.invalid/cover-baru.webp',
+   'https://www.tiktok.com/@indahjkt48/video/${POST_NEWEST_DL}', '/tmp/tt/baru.mp4',
+   '601', NULL, 1, 'done'),
   ('${POST_PENDING}', 'indahjkt48', 'video', 0, 'belum selesai diproses',
    datetime('now', '-30 minutes'), 15, 0, NULL,
    'https://www.tiktok.com/@indahjkt48/video/${POST_PENDING}', '/tmp/tt/pending.mp4',
@@ -246,11 +255,21 @@ try {
     'Daftar arsip harus urut terbaru lebih dulu'
   );
 
-  // ── Detail arsip terpilih (video terbaru) ───────────────────────────────
+  // ── Detail arsip terpilih: terbaru yang BISA DIPUTAR (bukan terbaru mutlak) ─
+  // Fixture sengaja punya arsip PALING baru tanpa YouTube ('baru banget') —
+  // pemutar awal tetap harus memakai arsip terbaru ber-YouTube ('twinnie').
   assert.match(html, /Video TikTok Indah JKT48/, 'Judul pemutar memuat jenis arsip + member');
   assert.match(html, /tiktok-player-container/, 'Wadah pemutar wajib dirender');
   assert.match(html, new RegExp(`data-download-payload="tt_${POST_VIDEO}"`),
-    'Tombol download arsip TikTok memakai payload bot tt_<post_id>');
+    'Arsip terpilih awal = terbaru yang bisa diputar (punya YouTube)');
+  assert.doesNotMatch(html, new RegExp(`data-download-payload="tt_${POST_NEWEST_DL}"`),
+    'Arsip terbaru tanpa YouTube TIDAK boleh jadi pilihan awal');
+
+  // ── Penanda unduh + ringkasan jujur + pencarian akun ─────────────────────
+  assert.match(html, /Unduh via bot/, 'Kartu tanpa YouTube wajib diberi penanda "Unduh via bot"');
+  assert.match(html, /5 arsip dari 2 akun — 3 bisa diputar · 2 unduh via bot/,
+    'Ringkasan header memecah arsip bisa diputar vs unduh via bot');
+  assert.match(html, /Cari member/, 'Sidebar akun wajib punya kolom pencarian');
 
   // ── Postingan foto: label jumlah foto + story berlabel ──────────────────
   assert.match(html, /12 foto/, 'Postingan foto harus menampilkan jumlah fotonya');
@@ -263,7 +282,7 @@ try {
   // ── API: daftar lengkap + filter per akun ───────────────────────────────
   const all = await (await fetch(`${server.origin}/api/tiktok/posts`)).json();
   assert.equal(all.success, true, 'API daftar arsip harus sukses');
-  assert.equal(all.total, 4, `API harus mengembalikan 4 arsip siap (dapat ${all.total})`);
+  assert.equal(all.total, 5, `API harus mengembalikan 5 arsip siap (dapat ${all.total})`);
   const ids = all.posts.map((p) => p.id);
   assert.ok(ids.includes(POST_VIDEO) && ids.includes(POST_PHOTO) && ids.includes(POST_STORY));
   assert.ok(!ids.includes(POST_PENDING), 'Arsip yang belum siap tidak boleh dikirim API');
@@ -298,9 +317,11 @@ try {
 
   console.log(
     'PASS: halaman /tiktok menampilkan tata letak 3 kolom (akun · pemutar · daftar arsip), ' +
-    'hanya akun aktif & arsip siap tayang yang muncul (terbaru lebih dulu), postingan foto ' +
-    'memakai payload bot tt_<id>, story berlabel Story, API bisa memfilter per akun, dan tidak ' +
-    'ada kata "Anda"/"siaran ulang".'
+    'hanya akun aktif & arsip siap tayang yang muncul (terbaru lebih dulu), arsip terpilih ' +
+    'awal = terbaru yang bisa diputar, kartu tanpa YouTube berpenanda "Unduh via bot", ' +
+    'ringkasan memecah bisa-diputar vs unduh-via-bot, sidebar akun punya pencarian, postingan ' +
+    'foto memakai payload bot tt_<id>, story berlabel Story, API bisa memfilter per akun, ' +
+    'dan tidak ada kata "Anda"/"siaran ulang".'
   );
 } finally {
   for (const server of servers) {
