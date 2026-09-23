@@ -148,7 +148,7 @@ export default async function WatchPage({ params }: WatchPageProps) {
               </div>
             </div>
 
-            {video.telegram_archived && (
+            {!isPrerelease && video.telegram_archived && (
               <div style={{ marginTop: '14px' }}>
                 <TelegramDownloadButton
                   youtubeVideoId={video.youtube_video_id}
