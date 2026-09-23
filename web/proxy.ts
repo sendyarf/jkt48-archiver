@@ -6,6 +6,8 @@ const SESSION_COOKIE = 'jkt48_admin_session';
 // Optimistic check only — verifikasi sesi penuh (isAdmin) tetap di
 // app/admin/layout.tsx dan route handler /api/admin/* (defense in depth).
 // Proxy tidak boleh membuka DB / membaca session penuh (lihat Next.js docs).
+// Halaman /admin tanpa sesi TIDAK diarahkan ke login (bocor path admin);
+// biarkan layout memanggil notFound() → 404.
 export function proxy(request: NextRequest) {
   const hasSession = request.cookies.has(SESSION_COOKIE);
 
@@ -17,7 +19,9 @@ export function proxy(request: NextRequest) {
         { status: 401, headers: { 'Cache-Control': 'no-store' } },
       );
     }
-    return NextResponse.redirect(new URL('/login', request.url));
+    // Halaman admin tanpa sesi → 404 (jangan redirect ke login: bocor path).
+    // Rewrite ke route not-found bawaan App Router (status 404).
+    return NextResponse.rewrite(new URL('/_not-found', request.url));
   }
 
   return NextResponse.next();

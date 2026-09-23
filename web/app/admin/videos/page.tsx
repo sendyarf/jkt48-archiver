@@ -26,7 +26,7 @@ export default function AdminVideosPage() {
     const qs = new URLSearchParams({ q: query, page: String(page), visibility });
     fetch(`/api/admin/videos?${qs}`, { cache: 'no-store', signal: controller.signal })
       .then(async (res) => {
-        if (res.status === 401) router.replace('/login');
+        if (res.status === 401) router.replace('/login-r3pl4y');
         if (!res.ok) throw new Error('Gagal memuat daftar video.');
         return res.json();
       })
@@ -62,7 +62,7 @@ export default function AdminVideosPage() {
             : { content_key: video.content_key, visible: nextVisible },
         ),
       });
-      if (res.status === 401) router.replace('/login');
+      if (res.status === 401) router.replace('/login-r3pl4y');
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.message || 'Gagal memperbarui visibilitas.');
       setMessage(data.message || 'Diperbarui.');

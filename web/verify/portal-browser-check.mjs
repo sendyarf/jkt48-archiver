@@ -17,7 +17,7 @@ try {
     await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 768 });
     for (const route of ['/', '/members', '/about', '/tiktok', '/admin/status']) {
       await send('Page.navigate', { url: 'http://localhost:3101' + route });
-      const expectedPath = route === '/admin/status' ? '/login' : route;
+      const expectedPath = route;
       for (let i = 0; i < 100; i++) { await delay(250); if (await evaluate(`document.readyState === 'complete' && location.pathname === ${JSON.stringify(expectedPath)} && !!document.querySelector('h1')`)) break; }
       await delay(600);
       // Latar hero diambil dari YouTube (maxresdefault) sehingga bisa lambat.
@@ -91,7 +91,10 @@ try {
       if (state.heroImg) assert(state.heroImg.loaded, `Latar hero gagal dimuat di ${width}px: ${JSON.stringify(state.heroImg)}`);
       if (state.searchInputBox) assert(!state.searchInputBox.overflows, `Input pencarian meluber di ${width}px ${state.path}: ${JSON.stringify(state.searchInputBox)}`);
       assert(!state.links.includes('/status') && !state.links.includes('/admin'));
-      if (route === '/admin/status') assert.equal(state.path, '/login');
+      if (route === '/admin/status') {
+        assert.equal(state.path, '/admin/status');
+        assert.match(state.text, /Halaman tidak ditemukan|ERROR 404/, 'Admin tanpa sesi harus 404');
+      }
       // Halaman depan: hero poster wajib tampil (dan menampilkan judul replay
       // asli) selama masih ada replay terbit — angka diambil dari ringkasan
       // hasil katalog, jadi uji ini tetap benar walau isi arsip berubah.

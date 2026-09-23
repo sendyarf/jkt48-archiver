@@ -185,9 +185,10 @@ try {
   await send('Network.clearBrowserCookies');
   await send('Page.navigate', { url: `${origin}/admin/trial` });
   await delay(2500);
-  const guarded = await evaluate('location.pathname');
-  assert.equal(guarded, '/login', 'Halaman ujicoba harus dialihkan ke login tanpa sesi');
-  console.log('\n  -> PASS: tanpa sesi dialihkan ke', guarded);
+  const guarded = await evaluate('({ path: location.pathname, text: document.body.innerText })');
+  assert.equal(guarded.path, '/admin/trial', 'Halaman ujicoba tanpa sesi tetap di /admin/trial (404, bukan redirect login)');
+  assert.match(guarded.text, /Halaman tidak ditemukan|ERROR 404/, 'Harus menampilkan halaman 404');
+  console.log('\n  -> PASS: tanpa sesi menampilkan 404 di', guarded.path);
 
   console.log(`\nPASS: ujicoba pemutar; landscape (${showroom.aspect}) berbeda dari vertikal (${idn.aspect}), akses terproteksi.`);
 } finally {

@@ -1,10 +1,10 @@
-import { redirect } from 'next/navigation';
+import { notFound } from 'next/navigation';
 import { isAdmin } from '@/lib/auth';
 import { getSystemStats, type ActiveSession, type YouTubeChannelStat } from '@/lib/db';
 import { platformLabel, StatusBadge } from '@/components/admin-status';
 
 export default async function SystemPage() {
-  if (!(await isAdmin())) redirect('/login');
+  if (!(await isAdmin())) notFound();
   const stats = getSystemStats();
   const tk = stats.tiktok;
   return (

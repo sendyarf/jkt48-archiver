@@ -49,7 +49,7 @@ export default function PublicationsPage() {
     const qs = new URLSearchParams({ q: query, page: String(page), status });
     fetch(`/api/admin/publications?${qs}`, { cache: 'no-store', signal: controller.signal })
       .then(async (res) => {
-        if (res.status === 401) router.replace('/login');
+        if (res.status === 401) router.replace('/login-r3pl4y');
         if (!res.ok) throw new Error('Gagal memuat replay.');
         return res.json();
       })
@@ -85,7 +85,7 @@ export default function PublicationsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ youtube_video_id: video.youtube_video_id, ...body }),
       });
-      if (res.status === 401) router.replace('/login');
+      if (res.status === 401) router.replace('/login-r3pl4y');
       if (!res.ok) throw new Error('Gagal memperbarui publikasi.');
       setMessage(successText);
       setRevision((r) => r + 1);

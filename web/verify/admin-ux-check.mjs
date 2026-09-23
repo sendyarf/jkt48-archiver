@@ -42,7 +42,9 @@ try {
   assert(ready, logs);
 
   assert.equal((await call('/api/admin/publications')).status, 401);
-  assert.equal((await call('/admin/publications')).headers.get('location'), '/login');
+  const adminPage = await call('/admin/publications');
+  assert.equal(adminPage.status, 404, 'Halaman admin tanpa sesi harus 404 (tanpa redirect ke login)');
+  assert.equal(adminPage.headers.get('location'), null, 'Admin tanpa sesi tidak boleh redirect');
 
   const login = await post('/api/auth', { secret });
   assert.equal(login.status, 200);

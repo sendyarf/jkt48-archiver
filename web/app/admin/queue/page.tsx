@@ -62,7 +62,7 @@ export default function AdminQueuePage() {
     const qs = new URLSearchParams({ source, platform, status, limit: '150' });
     fetch(`/api/admin/queue?${qs}`, { cache: 'no-store', signal: controller.signal })
       .then(async (res) => {
-        if (res.status === 401) router.replace('/login');
+        if (res.status === 401) router.replace('/login-r3pl4y');
         if (!res.ok) throw new Error('Gagal memuat antrean.');
         return res.json();
       })

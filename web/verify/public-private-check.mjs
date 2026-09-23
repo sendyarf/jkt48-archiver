@@ -35,7 +35,9 @@ try {
     assert.equal((await call(route)).status, 401);
     assert.equal((await post(route, {})).status, 401);
   }
-  assert.equal((await call('/admin/status')).headers.get('location'), '/login');
+  const adminStatus = await call('/admin/status');
+  assert.equal(adminStatus.status, 404, '/admin/status tanpa sesi harus 404');
+  assert.equal(adminStatus.headers.get('location'), null, '/admin/status tanpa sesi tidak boleh redirect ke login');
   assert.equal((await call('/status')).headers.get('location'), '/admin/status');
   // IDN belum diterbitkan (auto=0): watch tetap 200 sebagai panel "segera hadir"
   // (tanpa pemutar) — konsisten dengan verify/auto-publish-check.mjs.

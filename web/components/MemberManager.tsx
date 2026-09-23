@@ -11,7 +11,7 @@ export default function MemberManager() {
   const [message, setMessage] = useState('');
   async function load() {
     const res = await fetch('/api/admin/members', { cache: 'no-store' });
-    if (res.status === 401) { router.replace('/login'); throw new Error('Sesi berakhir. Silakan masuk kembali.'); }
+    if (res.status === 401) { router.replace('/login-r3pl4y'); throw new Error('Sesi berakhir. Silakan masuk kembali.'); }
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || 'Gagal memuat member.');
     setMembers(data.members);
@@ -21,7 +21,7 @@ export default function MemberManager() {
     const controller = new AbortController();
     fetch('/api/admin/members', { cache: 'no-store', signal: controller.signal })
       .then(async res => {
-        if (res.status === 401) router.replace('/login');
+        if (res.status === 401) router.replace('/login-r3pl4y');
         if (!res.ok) throw new Error('Gagal memuat member.');
         return res.json();
       }).then(data => setMembers(data.members))
@@ -33,7 +33,7 @@ export default function MemberManager() {
     setBusy(true); setMessage('');
     try {
       const res = await fetch('/api/admin/members', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      if (res.status === 401) router.replace('/login');
+      if (res.status === 401) router.replace('/login-r3pl4y');
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || 'Perubahan gagal.');
       await load(); setMessage('Perubahan berhasil disimpan.'); return true;
@@ -43,7 +43,7 @@ export default function MemberManager() {
   return <section><div className="section-heading"><div><p className="eyebrow">KONTEN</p><h1>Member</h1><p>Atur akun mana yang dipantau bot. Hanya terlihat oleh admin.</p></div>
     <button className="secondary-button" disabled={busy} onClick={async () => {
       setBusy(true);
-      try { const res = await fetch('/api/auth', { method: 'DELETE' }); if (!res.ok) throw new Error(); router.replace('/login'); router.refresh(); }
+      try { const res = await fetch('/api/auth', { method: 'DELETE' }); if (!res.ok) throw new Error(); router.replace('/login-r3pl4y'); router.refresh(); }
       catch { setMessage('Logout gagal. Coba lagi.'); setBusy(false); }
     }}>Keluar</button></div>
     <div role="status" aria-live="polite">{message && <p className="notice">{message}</p>}</div>
