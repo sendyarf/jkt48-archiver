@@ -5,5 +5,6 @@ import LoginForm from '@/components/LoginForm';
 export const metadata: Metadata = { title: 'Login Admin', robots: { index: false, follow: false } };
 export default async function LoginPage() {
   if (await isAdmin()) redirect('/admin');
-  return <div className="container page-section"><LoginForm turnstileSiteKey={process.env.TURNSTILE_SITE_KEY || undefined} /></div>;
+  const siteKey = process.env.TURNSTILE_SITE_KEY;
+  return <div className="container page-section"><LoginForm turnstileSiteKey={siteKey && siteKey !== 'off' ? siteKey : undefined} /></div>;
 }

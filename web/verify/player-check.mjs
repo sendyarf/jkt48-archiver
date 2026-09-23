@@ -28,7 +28,7 @@ db.close();
 
 const server = spawn(process.execPath, [join(root, 'node_modules/next/dist/bin/next'), 'start', '-p', String(PORT)], {
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'production', ADMIN_SECRET: randomBytes(32).toString('hex'), APP_ORIGIN: origin, DB_PATH: join(temp, 'fixture.db') },
+  env: { ...process.env, NODE_ENV: 'production', ADMIN_SECRET: randomBytes(32).toString('hex'), APP_ORIGIN: origin, DB_PATH: join(temp, 'fixture.db'), TURNSTILE_SITE_KEY: 'off', TURNSTILE_SECRET_KEY: 'off' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let logs = ''; server.stdout.on('data', d => logs += d); server.stderr.on('data', d => logs += d);

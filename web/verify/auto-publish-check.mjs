@@ -63,7 +63,7 @@ function startServer(port, autoHours) {
   const origin = `http://localhost:${port}`;
   const child = spawn(process.execPath, [join(root, 'node_modules/next/dist/bin/next'), 'start', '-p', String(port)], {
     cwd: root,
-    env: { ...process.env, NODE_ENV: 'production', ADMIN_SECRET: secret, APP_ORIGIN: origin, DB_PATH: dbPath, AUTO_PUBLISH_AFTER_HOURS: String(autoHours) },
+    env: { ...process.env, NODE_ENV: 'production', ADMIN_SECRET: secret, APP_ORIGIN: origin, DB_PATH: dbPath, AUTO_PUBLISH_AFTER_HOURS: String(autoHours), TURNSTILE_SITE_KEY: 'off', TURNSTILE_SECRET_KEY: 'off' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';

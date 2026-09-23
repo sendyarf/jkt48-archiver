@@ -189,6 +189,8 @@ function startServer(port, autoHours, showroomHours) {
       DB_PATH: dbPath,
       AUTO_PUBLISH_AFTER_HOURS: String(autoHours),
       AUTO_PUBLISH_AFTER_HOURS_SHOWROOM: String(showroomHours),
+      TURNSTILE_SITE_KEY: 'off',
+      TURNSTILE_SECRET_KEY: 'off',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

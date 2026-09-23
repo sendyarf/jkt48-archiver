@@ -200,11 +200,15 @@ export default function VideoPlayer({
   const [showToast, setShowToast] = useState(false);
 
   // Reset transient playback state when the player is pointed at another video.
+  // isMuted/tidak: preference suara DIPEERTAHANKAN antar arsip (scroll feed
+  // TikTok) supaya setelah user unmute, video berikutnya tidak diam-diam senyap
+  // sementara pill unmute sudah hilang.
   const [loadedVideoId, setLoadedVideoId] = useState(youtubeId);
   if (loadedVideoId !== youtubeId) {
     setLoadedVideoId(youtubeId);
     setCurrentTime(0);
     setIsReady(false);
+    setIsBuffering(true);
   }
 
   const showToastNotification = (msg: string) => {
@@ -273,6 +277,7 @@ export default function VideoPlayer({
     e.stopPropagation();
     if (!playerRef.current) return;
     playerRef.current.muted = false;
+    if (volume > 0) playerRef.current.volume = volume;
     setIsMuted(false);
     if (playerRef.current.paused) {
       setIsPaused(false);
@@ -474,27 +479,48 @@ export default function VideoPlayer({
         onTouchStart={wakeControls}
       >
         {/* Vidstack Media Player */}
-        {/* muted + autoplay: Chrome/Brave mobile menolak autoplay dengan suara,
-            dan penolakan itu bisa membuat player macet di status "hang" sehingga
-            tombol play terasa mati. Mulai senyap lalu unmute hanya ketika user
-            berinteraksi (gestur) = pola yang diterima semua browser mobile. */}
+        {/* muted diikat ke state: prop hardcoded `muted` (true) membuat reload
+            src saat scroll men-senyap-kan player tanpa memperbarui isMuted —
+            pill "Nyalakan suara" hilang padahal audionya masih mati. */}
         <MediaPlayer
           ref={playerRef}
           title={title}
           src={mediaSrc}
           poster={effectivePoster}
           aspectRatio={effectiveRatio}
-          autoplay
-          muted
+          autoPlay
+          muted={isMuted}
           playsInline
           style={getPlayerStyle() as PlayerStyle}
-          onCanPlay={() => setIsReady(true)}
+          onCanPlay={() => {
+            setIsReady(true);
+            // Pastikan preference suara ikut ke provider setelah ganti video
+            // (beberapa provider re-init muted dari default saat load src baru).
+            if (playerRef.current) {
+              playerRef.current.muted = isMuted;
+              if (!isMuted && volume > 0) playerRef.current.volume = volume;
+            }
+          }}
           onWaiting={() => setIsBuffering(true)}
           onPlaying={() => { setIsBuffering(false); setIsReady(true); }}
           onPlay={() => { setIsPaused(false); wakeControls(); }}
           onPause={() => { setIsPaused(true); wakeControls(); }}
           onTimeUpdate={(detail) => setCurrentTime(detail.currentTime)}
           onDurationChange={(detail) => setDuration(detail)}
+          onVolumeChange={(detail) => {
+            // Sinkronkan UI bila browser/provider mengubah mute sendiri
+            // (mis. autoplay policy memaksa senyap → pill harus muncul lagi).
+            setIsMuted(detail.muted);
+            if (typeof detail.volume === 'number' && detail.volume > 0) setVolume(detail.volume);
+          }}
+          onAutoPlayFail={() => {
+            // Autoplay dengan suara ditolak → senyapkan dulu, tampilkan pill.
+            if (playerRef.current) {
+              playerRef.current.muted = true;
+              setIsMuted(true);
+              playerRef.current.play().catch(() => {});
+            }
+          }}
         >
           <MediaProvider />
         </MediaPlayer>

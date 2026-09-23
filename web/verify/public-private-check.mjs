@@ -21,7 +21,7 @@ const secret = randomBytes(32).toString('hex');
 // Aturan 72 jam diuji terpisah di verify/auto-publish-check.mjs.
 // Catatan: baris SHOWROOM di fixture langsung tampil (ambang Showroom = 0),
 // sehingga /api/members tidak lagi kosong sejak awal.
-const child = spawn(process.execPath, [join(root, 'node_modules/next/dist/bin/next'), 'start', '-p', '3107'], { cwd: root, env: { ...process.env, NODE_ENV: 'production', ADMIN_SECRET: secret, APP_ORIGIN: origin, DB_PATH: join(temp, 'fixture.db'), AUTO_PUBLISH_AFTER_HOURS: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+const child = spawn(process.execPath, [join(root, 'node_modules/next/dist/bin/next'), 'start', '-p', '3107'], { cwd: root, env: { ...process.env, NODE_ENV: 'production', ADMIN_SECRET: secret, APP_ORIGIN: origin, DB_PATH: join(temp, 'fixture.db'), AUTO_PUBLISH_AFTER_HOURS: '0', TURNSTILE_SITE_KEY: 'off', TURNSTILE_SECRET_KEY: 'off' }, stdio: ['ignore', 'pipe', 'pipe'] });
 let logs = ''; child.stdout.on('data', d => logs += d); child.stderr.on('data', d => logs += d);
 const call = (route, options = {}) => fetch(origin + route, { redirect: 'manual', ...options });
 const post = (route, body, cookie = '', requestOrigin = origin) => call(route, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: requestOrigin, Cookie: cookie }, body: JSON.stringify(body) });

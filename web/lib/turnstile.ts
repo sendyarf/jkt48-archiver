@@ -1,17 +1,25 @@
 const SITEVERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+/** Sentinel: '' kosong dihapus OS (Windows) lalu .env di-load lagi — pakai 'off'. */
+const DISABLED = 'off';
+
+function secretKey(): string | null {
+  const secret = process.env.TURNSTILE_SECRET_KEY;
+  if (!secret || secret === DISABLED) return null;
+  return secret;
+}
 
 /** Turnstile aktif hanya bila secret key di-set (site key alone = widget tanpa verifikasi). */
 export function turnstileEnabled(): boolean {
-  return !!process.env.TURNSTILE_SECRET_KEY;
+  return !!secretKey();
 }
 
 /**
  * Verifikasi token Turnstile ke Cloudflare siteverify.
- * - Belum dikonfigurasi → lolos (login tanpa Turnstile; verify scripts tetap jalan).
+ * - Belum dikonfigurasi / 'off' → lolos (login tanpa Turnstile; verify scripts tetap jalan).
  * - Token kosong / siteverify gagal / success !== true → tolak (fail-closed).
  */
 export async function verifyTurnstile(token: unknown, remoteip?: string): Promise<boolean> {
-  const secret = process.env.TURNSTILE_SECRET_KEY;
+  const secret = secretKey();
   if (!secret) return true;
   if (typeof token !== 'string' || token.length === 0 || token.length > 4096) return false;
   try {

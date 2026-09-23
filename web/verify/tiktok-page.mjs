@@ -185,6 +185,8 @@ function startServer() {
         ADMIN_SECRET: randomBytes(32).toString('hex'),
         APP_ORIGIN: origin,
         NEXT_PUBLIC_REPLAY_BOT_USERNAME: BOT_USERNAME,
+        TURNSTILE_SITE_KEY: 'off',
+        TURNSTILE_SECRET_KEY: 'off',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     }

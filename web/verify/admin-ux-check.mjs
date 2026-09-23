@@ -26,7 +26,7 @@ const origin = 'http://localhost:3116';
 const secret = randomBytes(32).toString('hex');
 const child = spawn(process.execPath, [join(root, 'node_modules/next/dist/bin/next'), 'start', '-p', '3116'], {
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'production', ADMIN_SECRET: secret, APP_ORIGIN: origin, DB_PATH: join(temp, 'fixture.db'), AUTO_PUBLISH_AFTER_HOURS: '72', AUTO_PUBLISH_AFTER_HOURS_SHOWROOM: '0' },
+  env: { ...process.env, NODE_ENV: 'production', ADMIN_SECRET: secret, APP_ORIGIN: origin, DB_PATH: join(temp, 'fixture.db'), AUTO_PUBLISH_AFTER_HOURS: '72', AUTO_PUBLISH_AFTER_HOURS_SHOWROOM: '0', TURNSTILE_SITE_KEY: 'off', TURNSTILE_SECRET_KEY: 'off' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let logs = ''; child.stdout.on('data', d => logs += d); child.stderr.on('data', d => logs += d);
