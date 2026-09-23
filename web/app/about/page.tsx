@@ -1,5 +1,8 @@
 import type { Metadata } from 'next';
-export const metadata: Metadata = { title: 'Tentang & Privasi' };
+export const metadata: Metadata = {
+  title: 'Tentang & Privasi',
+  alternates: { canonical: '/about' },
+};
 export default function AboutPage() {
   return <article className="container page-section prose"><p className="eyebrow">TENTANG SITUS</p><h1>Arsip yang dibuat fans, untuk fans</h1><p>JKT48 Replay adalah arsip komunitas untuk nonton ulang live JKT48. Situs ini bukan situs resmi dan tidak berafiliasi dengan JKT48, IDN, Showroom, maupun YouTube — hak atas kontennya tetap milik pemiliknya.</p>
     <section className="panel"><h2>Apa saja yang ada di sini?</h2><p>Di halaman publik kamu bisa melihat replay yang sudah lolos kurasi: judul, member, platform, tanggal, dan thumbnail-nya. Selesai di-upload belum berarti replay langsung tayang — pengelola yang memutuskan, dan bisa menerbitkan lebih cepat atau menahannya.</p></section>

@@ -4,7 +4,11 @@ import type { Metadata } from 'next';
 import { Search } from 'lucide-react';
 import { getPublicMembers } from '@/lib/db';
 export const dynamic = 'force-dynamic';
-export const metadata: Metadata = { title: 'Member', description: 'Cari replay dari member favoritmu.' };
+export const metadata: Metadata = {
+  title: 'Member',
+  description: 'Cari replay dari member favoritmu.',
+  alternates: { canonical: '/members' },
+};
 export default async function MemberDirectory({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q = '' } = await searchParams;
   const members = getPublicMembers().filter(m => `${m.display_name} ${m.username}`.toLowerCase().includes(q.toLowerCase()));

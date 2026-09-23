@@ -19,6 +19,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return {
     title: `${member.display_name}`,
     description: `Replay live ${member.display_name} di arsip JKT48 Replay.`,
+    alternates: { canonical: `/members/${encodeURIComponent(username)}` },
   };
 }
 

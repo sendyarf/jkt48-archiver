@@ -32,6 +32,11 @@ export async function generateMetadata({ params }: WatchPageProps): Promise<Meta
       : `Replay ${video.title} dari ${video.streamer_name} segera tayang.`,
     // Pra-rilis tidak boleh diindex mesin pencari sampai benar-benar terbit.
     robots: video.is_visible ? undefined : { index: false, follow: false },
+    // URL kanonis: bentuk watch_id (Base64URL YT / content_uid) — varian ID mentah
+    // atau kunci lain di-consolidate ke satu URL.
+    alternates: {
+      canonical: `/watch/${video.watch_id || video.content_uid || video.youtube_video_id || String(video.id)}`,
+    },
     openGraph: {
       title: `${video.title} - ${video.streamer_name}`,
       description: `Replay live JKT48 — IDN & Showroom`,

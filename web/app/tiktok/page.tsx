@@ -9,6 +9,7 @@ export const metadata: Metadata = {
   title: 'Arsip TikTok member JKT48',
   description:
     'Kumpulan video, foto, dan story TikTok member JKT48 — diarsipkan otomatis dan bisa diunduh lewat bot Telegram.',
+  alternates: { canonical: '/tiktok' },
   openGraph: {
     title: 'Arsip TikTok JKT48',
     description: 'Video, foto, dan story TikTok member JKT48 dalam satu tempat.',
