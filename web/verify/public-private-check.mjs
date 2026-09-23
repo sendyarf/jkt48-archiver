@@ -38,10 +38,12 @@ try {
   const adminStatus = await call('/admin/status');
   assert.equal(adminStatus.status, 404, '/admin/status tanpa sesi harus 404');
   assert.equal(adminStatus.headers.get('location'), null, '/admin/status tanpa sesi tidak boleh redirect ke login');
-  assert.equal((await call('/status')).headers.get('location'), '/admin/status');
+  const statusRedirect = await call('/status');
+  assert.equal(statusRedirect.status, 308, '/status harus redirect permanen 308');
+  assert.equal(statusRedirect.headers.get('location'), '/admin/status');
   // IDN belum diterbitkan (auto=0): watch tetap 200 sebagai panel "segera hadir"
   // (tanpa pemutar) — konsisten dengan verify/auto-publish-check.mjs.
-  // Pakai ID tersamar; raw ID memicu redirect() streaming → body skeleton.
+  // Pakai ID tersamar; raw ID memicu permanentRedirect() → 308 ke bentuk tersamar.
   const prereleaseWatch = await call(`/watch/${mask('R8pnx79dyDQ')}`);
   assert.equal(prereleaseWatch.status, 200);
   const prereleaseHtml = await prereleaseWatch.text();

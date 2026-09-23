@@ -31,7 +31,15 @@ function parseEntries(raw: string): Entry[] {
   if (!raw) return [];
   try {
     const list = JSON.parse(raw) as Entry[];
-    return Array.isArray(list) ? list.slice(0, 4) : [];
+    if (!Array.isArray(list)) return [];
+    // WatchTracker menyimpan path penuh (/watch/…); data lama bisa berupa
+    // token mentah — normalisasi agar href tidak jadi /watch//watch/….
+    return list
+      .map((entry) => ({
+        ...entry,
+        id: entry.id.startsWith('/') ? entry.id : `/watch/${entry.id}`,
+      }))
+      .slice(0, 4);
   } catch {
     // data rusak — biarkan kosong
     return [];
@@ -55,7 +63,7 @@ export default function ContinueWatching() {
       </header>
       <div className="video-grid">
         {entries.map((entry) => (
-          <Link key={entry.id} href={`/watch/${entry.id}`} className="continue-card">
+          <Link key={entry.id} href={entry.id} className="continue-card">
             <div className="continue-thumb-box">
               {entry.thumbnail ? (
                 <Image

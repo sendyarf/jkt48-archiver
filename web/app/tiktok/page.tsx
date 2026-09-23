@@ -11,6 +11,9 @@ export const metadata: Metadata = {
     'Kumpulan video, foto, dan story TikTok member JKT48 — diarsipkan otomatis dan bisa diunduh lewat bot Telegram.',
   alternates: { canonical: '/tiktok' },
   openGraph: {
+    type: 'website',
+    url: '/tiktok',
+    siteName: 'JKT48 Replay',
     title: 'Arsip TikTok JKT48',
     description: 'Video, foto, dan story TikTok member JKT48 dalam satu tempat.',
   },

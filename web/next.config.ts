@@ -1,10 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // /status → /admin/status harus HTTP redirect (307), bukan redirect()
-  // di page yang bisa ter-streaming menjadi meta tag client-side.
+  // /status → /admin/status permanen (308) — path lama tidak akan balik.
+  // HTTP redirect (bukan redirect() di page) agar tidak ter-streaming jadi
+  // meta tag client-side.
   redirects: async () => [
-    { source: '/status', destination: '/admin/status', permanent: false },
+    { source: '/status', destination: '/admin/status', permanent: true },
   ],
   images: {
     remotePatterns: [

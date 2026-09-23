@@ -1,4 +1,4 @@
-import { notFound, redirect } from 'next/navigation';
+import { notFound, permanentRedirect } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
 import type { Metadata } from 'next';
@@ -25,6 +25,10 @@ export async function generateMetadata({ params }: WatchPageProps): Promise<Meta
   if (!video) {
     return { title: 'Replay tidak ditemukan' };
   }
+  // URL kanonis: bentuk watch_id (Base64URL YT / content_uid) — varian ID mentah
+  // atau kunci lain di-consolidate ke satu URL.
+  const watchPath = `/watch/${video.watch_id || video.content_uid || video.youtube_video_id || String(video.id)}`;
+  const ogImage = video.thumbnail_url || undefined;
   return {
     title: `${video.title} - ${video.streamer_name}`,
     description: video.is_visible
@@ -32,15 +36,24 @@ export async function generateMetadata({ params }: WatchPageProps): Promise<Meta
       : `Replay ${video.title} dari ${video.streamer_name} segera tayang.`,
     // Pra-rilis tidak boleh diindex mesin pencari sampai benar-benar terbit.
     robots: video.is_visible ? undefined : { index: false, follow: false },
-    // URL kanonis: bentuk watch_id (Base64URL YT / content_uid) — varian ID mentah
-    // atau kunci lain di-consolidate ke satu URL.
-    alternates: {
-      canonical: `/watch/${video.watch_id || video.content_uid || video.youtube_video_id || String(video.id)}`,
-    },
+    alternates: { canonical: watchPath },
     openGraph: {
+      type: 'video.other',
       title: `${video.title} - ${video.streamer_name}`,
-      description: `Replay live JKT48 — IDN & Showroom`,
-      images: [video.thumbnail_url],
+      description: video.is_visible
+        ? `Nonton replay ${video.title} dari ${video.streamer_name} — ${video.platform === 'idn' ? 'IDN Live' : 'Showroom'}.`
+        : `Replay ${video.title} dari ${video.streamer_name} segera tayang.`,
+      url: watchPath,
+      siteName: 'JKT48 Replay',
+      ...(ogImage ? { images: [{ url: ogImage, alt: video.title }] } : {}),
+    },
+    twitter: {
+      card: ogImage ? 'summary_large_image' : 'summary',
+      title: `${video.title} - ${video.streamer_name}`,
+      description: video.is_visible
+        ? `Nonton replay ${video.title} dari ${video.streamer_name}.`
+        : `Replay ${video.title} dari ${video.streamer_name} segera tayang.`,
+      ...(ogImage ? { images: [ogImage] } : {}),
     },
   };
 }
@@ -54,9 +67,9 @@ export default async function WatchPage({ params }: WatchPageProps) {
   }
 
   // URL kanonis memakai ID tersamar. Bila dibuka pakai YouTube ID mentah
-  // (link lama / dibagikan manual), arahkan permanen ke bentuk tersamar.
+  // (link lama / dibagikan manual), arahkan permanen (308) ke bentuk tersamar.
   if (isRawYoutubeId(id) && video.youtube_video_id === id) {
-    redirect(`/watch/${encodeWatchId(id)}`);
+    permanentRedirect(`/watch/${encodeWatchId(id)}`);
   }
 
   // Kunci konten: YouTube ID bila ada; selain itu content_uid (arsip TG-first).
@@ -92,8 +105,41 @@ export default async function WatchPage({ params }: WatchPageProps) {
   // panel "segera hadir" tanpa angka.
   const isPrerelease = !video.is_visible;
 
+  // Structured data: VideoObject (rich result) — hanya untuk replay yang tayang.
+  const uploadIso = new Date(
+    (video.started_at || video.created_at).replace(' ', 'T') + 'Z',
+  ).toISOString();
+  const durationSec = video.duration_seconds || 0;
+  const durationIso = durationSec > 0 ? `PT${durationSec}S` : undefined;
+  const jsonLd =
+    !isPrerelease && video.youtube_video_id
+      ? {
+          '@context': 'https://schema.org',
+          '@type': 'VideoObject',
+          name: video.title,
+          description: `Replay live ${video.title} dari ${video.streamer_name} di JKT48 Replay — ${
+            video.platform === 'idn' ? 'IDN Live' : 'Showroom'
+          }.`,
+          thumbnailUrl: video.thumbnail_url ? [video.thumbnail_url] : undefined,
+          uploadDate: uploadIso,
+          contentUrl: `https://www.youtube.com/watch?v=${video.youtube_video_id}`,
+          embedUrl: `https://www.youtube-nocookie.com/embed/${video.youtube_video_id}`,
+          ...(durationIso ? { duration: durationIso } : {}),
+          publisher: {
+            '@type': 'Organization',
+            name: 'JKT48 Replay',
+          },
+        }
+      : null;
+
   return (
     <div className="container" style={{ paddingTop: '24px' }}>
+      {jsonLd && (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
+      )}
       <div className="watch-layout">
         {/* Left Column: Player & Video Details */}
         <div>

@@ -60,6 +60,21 @@ export const metadata: Metadata = {
   authors: [{ name: 'JKT48 Replay' }],
   icons: { icon: '/icon.svg', apple: '/icon.svg' },
   manifest: '/manifest.webmanifest',
+  // Default share card — di-override per-halaman (watch/tiktok) bila perlu.
+  openGraph: {
+    type: 'website',
+    locale: 'id_ID',
+    siteName: 'JKT48 Replay',
+    title: 'JKT48 Replay | Nonton Ulang Live IDN & Showroom',
+    description:
+      'Kumpulan replay live JKT48 dari IDN Live & Showroom. Cari replay favoritmu lewat nama member, judul, atau tanggal.',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'JKT48 Replay | Nonton Ulang Live IDN & Showroom',
+    description:
+      'Kumpulan replay live JKT48 dari IDN Live & Showroom. Cari replay favoritmu lewat nama member, judul, atau tanggal.',
+  },
 };
 
 export default function RootLayout({
