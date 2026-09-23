@@ -924,6 +924,11 @@ select:focus-visible {
   display: block;
 }
 
+img.member-avatar-lg {
+  object-fit: cover;
+  display: block;
+}
+
 .member-card:hover .member-avatar-lg {
   border-color: var(--rose-500);
 }
