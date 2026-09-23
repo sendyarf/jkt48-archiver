@@ -148,6 +148,18 @@ APP_ORIGIN=https://jkt48.vidx.download
 `ADMIN_SECRET` minimal 32 karakter. Bila kurang, login admin **dinonaktifkan**
 dan isi situs tidak bisa dipublikasikan.
 
+Opsional — Cloudflare Turnstile di `/login`:
+
+```dotenv
+TURNSTILE_SITE_KEY=<dari Cloudflare Dashboard → Turnstile>
+TURNSTILE_SECRET_KEY=<secret, hanya di server>
+```
+
+Isi **keduanya** atau kosongkan keduanya. Dengan secret terisi, `POST /api/auth`
+memverifikasi token sebelum password dicek (widget di `LoginForm` memakai site
+key). Jangan commit secret. Matikan juga “Bot Fight Mode” bila Cloudflare proxy
+aktif agar widget Turnstile di origin tidak bentrok (lihat bagian Cloudflare).
+
 ### Pengembangan lokal
 
 `web/.env.development.local` menimpa `APP_ORIGIN` menjadi
@@ -299,7 +311,7 @@ Mengaktifkannya terlalu dini adalah penyebab kegagalan paling umum.
 | Setelan | Lokasi | Alasan |
 |---|---|---|
 | **Rocket Loader** | Speed → Optimization | Menunda eksekusi JS dan dapat merusak hidrasi Next.js |
-| **Bot Fight Mode / JS Challenge** pada `/login` | Security → Bots | Tantangan JS bisa mengunci Anda sendiri dari panel admin |
+| **Bot Fight Mode / JS Challenge** pada `/login` | Security → Bots | Tantangan JS bisa mengunci Anda sendiri dari panel admin; bila memakai Turnstile di origin (`TURNSTILE_*`), jangan menumpuk dua captcha |
 
 **Setelan yang perlu dibiarkan apa adanya:**
 

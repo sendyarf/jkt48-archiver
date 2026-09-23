@@ -6,6 +6,7 @@
 .login-panel p { color: var(--text-secondary); }
 .login-panel form { display: flex; flex-direction: column; gap: 12px; margin: 28px 0; }
 .help-text { font-size: .8rem; }
+.turnstile-box { min-height: 65px; display: flex; align-items: center; }
 .admin-shell { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 36px; padding-top: 36px; padding-bottom: 64px; }
 .admin-sidebar { padding-top: 6px; }
 .admin-sidebar h2 { font-size: 1.35rem; margin-bottom: 18px; }

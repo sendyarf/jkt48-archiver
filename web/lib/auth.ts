@@ -42,7 +42,7 @@ export function allowLogin(request?: Request): boolean {
   return row.attempts <= 20;
 }
 
-function clientIp(request?: Request): string {
+export function clientIp(request?: Request): string {
   if (!request) return 'unknown';
   const fwd = request.headers.get('x-forwarded-for');
   if (fwd) return (fwd.split(',')[0] || '').trim() || 'unknown';
