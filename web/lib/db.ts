@@ -895,6 +895,13 @@ export function setPublication(videoId: string, published: boolean): boolean {
   return result.changes > 0;
 }
 
+/** Hapus keputusan admin → kembali mengikuti aturan auto-publish. */
+export function clearPublication(videoId: string): boolean {
+  const result = getDb().prepare(`DELETE FROM web_publications WHERE youtube_video_id = ?`)
+    .run(videoId);
+  return result.changes > 0;
+}
+
 interface StreamerRow {
   username: string;
   display_name: string | null;

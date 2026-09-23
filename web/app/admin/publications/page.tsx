@@ -21,7 +21,7 @@ function statusBadge(v: Publication) {
 
 function statusHint(v: Publication, autoHours: number): string {
   if (v.visible) return v.decided ? 'Keputusan admin' : 'Rilis otomatis';
-  if (v.decided && !v.published) return 'Keputusan admin';
+  if (v.decided && !v.published) return 'Ditahan — tidak tayang otomatis';
   if (v.hours_since_end === null) return 'Menunggu jam tayang';
   const elapsed = Math.floor(v.hours_since_end);
   if (autoHours <= 0) return 'Perlu persetujuan manual';
@@ -75,10 +75,7 @@ export default function PublicationsPage() {
     setStatus(next);
   }, []);
 
-  async function setPublished(video: Publication, nextPublished: boolean) {
-    const confirmText = nextPublished
-      ? 'Tayangkan replay ini sekarang?'
-      : 'Tarik replay ini dari semua halaman publik?';
+  async function mutate(video: Publication, body: Record<string, unknown>, confirmText: string, successText: string) {
     if (!window.confirm(confirmText)) return;
     setBusy(true);
     setMessage('');
@@ -86,24 +83,69 @@ export default function PublicationsPage() {
       const res = await fetch('/api/admin/publications', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ youtube_video_id: video.youtube_video_id, published: nextPublished }),
+        body: JSON.stringify({ youtube_video_id: video.youtube_video_id, ...body }),
       });
       if (res.status === 401) router.replace('/login');
       if (!res.ok) throw new Error('Gagal memperbarui publikasi.');
-      setVideos((items) =>
-        items.map((v) =>
-          v.youtube_video_id === video.youtube_video_id
-            ? { ...v, published: nextPublished ? 1 : 0, decided: 1, visible: nextPublished ? 1 : 0 }
-            : v,
-        ),
-      );
+      setMessage(successText);
       setRevision((r) => r + 1);
-      setMessage('Publikasi diperbarui.');
     } catch (e) {
       setMessage(e instanceof Error ? e.message : 'Koneksi gagal.');
     } finally {
       setBusy(false);
     }
+  }
+
+  function rowActions(v: Publication) {
+    if (v.visible) {
+      return (
+        <button
+          className="secondary-button"
+          disabled={busy}
+          onClick={() => mutate(v, { published: false }, 'Tarik replay ini dari semua halaman publik?', 'Replay ditarik dari situs.')}
+        >
+          Tarik
+        </button>
+      );
+    }
+    if (v.decided && !v.published) {
+      return (
+        <div className="row-actions">
+          <button
+            className="secondary-button"
+            disabled={busy}
+            onClick={() => mutate(v, { published: true }, 'Tayangkan replay ini sekarang?', 'Replay ditayangkan.')}
+          >
+            Terbitkan
+          </button>
+          <button
+            className="secondary-button"
+            disabled={busy}
+            onClick={() => mutate(v, { action: 'reset' }, 'Lepas tahan? Replay kembali mengikuti aturan otomatis.', 'Tahan dilepas — aturan otomatis berlaku lagi.')}
+          >
+            Lepas tahan
+          </button>
+        </div>
+      );
+    }
+    return (
+      <div className="row-actions">
+        <button
+          className="secondary-button"
+          disabled={busy}
+          onClick={() => mutate(v, { published: true }, 'Tayangkan replay ini sekarang?', 'Replay ditayangkan.')}
+        >
+          Terbitkan
+        </button>
+        <button
+          className="secondary-button"
+          disabled={busy}
+          onClick={() => mutate(v, { published: false }, 'Tahan replay ini? Tidak akan tayang otomatis setelah jeda rilis.', 'Replay ditahan — tidak akan tayang otomatis.')}
+        >
+          Tahan
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -197,11 +239,7 @@ export default function PublicationsPage() {
                     {statusBadge(v)}
                     <div className="cell-meta">{statusHint(v, autoHours)}</div>
                   </td>
-                  <td>
-                    <button className="secondary-button" disabled={busy} onClick={() => setPublished(v, !v.visible)}>
-                      {v.visible ? 'Tarik' : 'Terbitkan'}
-                    </button>
-                  </td>
+                  <td>{rowActions(v)}</td>
                 </tr>
               ))}
           </tbody>

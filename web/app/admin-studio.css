@@ -34,6 +34,7 @@
 .cell-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; font-size: .78rem; color: var(--text-secondary); }
 .cell-meta a { color: #fda4af; }
 .cell-meta .platform-badge { margin: 0; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .truncate-meta { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Ringkasan angka yang sekaligus berfungsi sebagai filter tab. */
 .stat-chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }

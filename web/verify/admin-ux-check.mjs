@@ -73,6 +73,24 @@ try {
   const heldAgain = await (await call('/api/admin/publications?status=held', { headers: { Cookie: cookie } })).json();
   assert.deepEqual(heldAgain.summary, all.summary);
 
+  // Tahan replay menunggu → pindah ke Ditahan, lepas tahan → kembali Menunggu.
+  const hold = await post('/api/admin/publications', { youtube_video_id: 'AAAAAAAAAAA', published: false }, cookie);
+  assert.equal(hold.status, 200, `hold: ${hold.status} ${await hold.text()}`);
+  const afterHold = await (await call('/api/admin/publications?status=all', { headers: { Cookie: cookie } })).json();
+  assert.deepEqual(
+    { waiting: afterHold.summary.waiting, held: afterHold.summary.held },
+    { waiting: 0, held: 2 },
+    `after hold summary: ${JSON.stringify(afterHold.summary)}`,
+  );
+  const reset = await post('/api/admin/publications', { youtube_video_id: 'AAAAAAAAAAA', action: 'reset' }, cookie);
+  assert.equal(reset.status, 200, `reset: ${reset.status} ${await reset.text()}`);
+  const afterReset = await (await call('/api/admin/publications?status=all', { headers: { Cookie: cookie } })).json();
+  assert.deepEqual(
+    { waiting: afterReset.summary.waiting, held: afterReset.summary.held },
+    { waiting: 1, held: 1 },
+    `after reset summary: ${JSON.stringify(afterReset.summary)}`,
+  );
+
   // Halaman admin menyertakan chip filter & nav baru.
   const adminHtml = await (await call('/admin/publications', { headers: { Cookie: cookie } })).text();
   assert.match(adminHtml, /Admin Studio/);
