@@ -33,15 +33,18 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .hero-feature-img { object-fit: cover; object-position: center 24%; }
 .hero-feature-scrim { position: absolute; inset: 0; background: linear-gradient(94deg, var(--scrim-a) 0%, var(--scrim-b) 38%, var(--scrim-c) 74%, var(--scrim-d) 100%), linear-gradient(0deg, var(--scrim-a) 0%, var(--scrim-c) 52%, var(--scrim-c) 100%); }
 .hero-feature-body { position: relative; width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: clamp(18px, 2.4vw, 32px); }
-.hero-feature-kicker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: .7rem; letter-spacing: .16em; font-weight: 800; color: var(--pink-300); }
+.hero-feature-kicker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: .7rem; letter-spacing: .16em; font-weight: 800; color: var(--accent-on-media); }
 .hero-feature-brand { color: #fff; }
 /* Judul dibatasi 5 baris: judul terpanjang (100 karakter) tidak boleh mendorong
    tinggi banner sampai menutupi grid di bawahnya. */
-.hero-feature-title { max-width: min(30ch, 100%); font-size: clamp(1.55rem, 1rem + 2.6vw, 3.1rem); line-height: 1.05; letter-spacing: -.03em; overflow-wrap: break-word; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
-.hero-feature-title a:hover { color: var(--danger-on); }
-.hero-feature-meta { color: var(--text-muted); font-size: .82rem; }
+.hero-feature-title { max-width: min(30ch, 100%); font-size: clamp(1.55rem, 1rem + 2.6vw, 3.1rem); line-height: 1.05; letter-spacing: -.03em; overflow-wrap: break-word; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; color: #fff; }
+.hero-feature-title a:hover { color: var(--accent-on-media); }
+.hero-feature-meta { color: var(--text-on-media); font-size: .82rem; }
 .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .hero-actions .primary-button, .hero-actions .secondary-button, .hero-actions .text-button { flex: 0 1 auto; }
+.hero-actions .text-button { color: var(--accent-on-media); }
+.hero-actions .secondary-button { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.28); color: #fff; }
+.hero-actions .secondary-button:hover { background: rgba(255, 255, 255, 0.18); border-color: rgba(255, 255, 255, 0.45); }
 .catalog-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; padding: clamp(12px, 2vw, 16px); border: 1px solid var(--border-card); border-radius: 12px; background: var(--bg-panel); }
 .catalog-filters label, .form-row label, .search-field { display: flex; flex-direction: column; gap: 6px; font-size: .76rem; font-weight: 600; color: var(--text-secondary); min-width: 0; }
 .catalog-filters .primary-button, .catalog-filters .secondary-button, .catalog-filters .text-button { flex: 0 0 auto; }
@@ -53,7 +56,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 /* Gaya form ini TIDAK boleh mengenai <input type="range"> milik pemutar video:
    min-height 44px + border + padding akan membengkakkan bilah progres. */
 .catalog-filters input:not([type="range"]), .catalog-filters select, .admin-shell input:not([type="range"]), .admin-shell select, .login-panel input:not([type="range"]) { width: 100%; max-width: 100%; min-width: 0; min-height: 42px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-input); border-radius: 10px; padding: 8px 12px; transition: border-color .2s ease, box-shadow .2s ease; }
-.catalog-filters input:not([type="range"]):focus, .catalog-filters select:focus, .admin-shell input:not([type="range"]):focus, .admin-shell select:focus { border-color: var(--rose-500); box-shadow: 0 0 0 3px rgba(244,63,94,.18); outline: none; }
+.catalog-filters input:not([type="range"]):focus, .catalog-filters select:focus, .admin-shell input:not([type="range"]):focus, .admin-shell select:focus { border-color: var(--rose-500); box-shadow: 0 0 0 3px rgba(244,114,144,.18); outline: none; }
 .input-with-icon { position: relative; display: block; min-width: 0; }
 /* Ikon dipusatkan vertikal & teks digeser; spesifisitas diperkuat (.catalog-filters)
    agar padding-left ikon tidak dikalahkan oleh aturan padding umum input. */
@@ -139,7 +142,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
    .catalog-filters/.admin-shell, jadi panel ini menata inputnya sendiri —
    termasuk ruang untuk ikon kaca pembesar (tanpa ini ikon menimpa teks). */
 .tiktok-search input:not([type="range"]) { width: 100%; max-width: 100%; min-width: 0; min-height: 38px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-input); border-radius: 10px; padding: 6px 12px 6px 38px; transition: border-color .2s ease, box-shadow .2s ease; }
-.tiktok-search input:focus { border-color: var(--rose-500); box-shadow: 0 0 0 3px rgba(244,63,94,.18); outline: none; }
+.tiktok-search input:focus { border-color: var(--rose-500); box-shadow: 0 0 0 3px rgba(244,114,144,.18); outline: none; }
 .tiktok-search svg { left: 12px; }
 .tiktok-post-item { display: flex; gap: 10px; width: 100%; padding: 6px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; transition: background .15s ease, border-color .15s ease; }
 .tiktok-post-item:hover { background: var(--bg-elevated); border-color: var(--border-strong); }

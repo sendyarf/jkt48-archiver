@@ -571,7 +571,7 @@ export default function VideoPlayer({
               onChange={handleSeek}
               className="video-seek-slider"
               style={{
-                background: `linear-gradient(to right, #f43f5e ${(currentTime / (duration || 1)) * 100}%, rgba(255,255,255,0.2) ${(currentTime / (duration || 1)) * 100}%)`
+                background: `linear-gradient(to right, #f47290 ${(currentTime / (duration || 1)) * 100}%, rgba(255,255,255,0.2) ${(currentTime / (duration || 1)) * 100}%)`
               }}
               aria-label="Posisi Video"
             />
