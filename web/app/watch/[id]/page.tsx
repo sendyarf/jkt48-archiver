@@ -106,13 +106,19 @@ export default async function WatchPage({ params }: WatchPageProps) {
   const isPrerelease = !video.is_visible;
 
   // Structured data: VideoObject (rich result) — hanya untuk replay yang tayang.
-  const uploadIso = new Date(
-    (video.started_at || video.created_at).replace(' ', 'T') + 'Z',
-  ).toISOString();
+  // Date kosong / tidak valid jangan sampai melempar (akan 500 seluruh halaman).
+  const rawUpload = video.started_at || video.created_at || '';
+  let uploadIso: string | undefined;
+  if (rawUpload) {
+    const parsed = new Date(rawUpload.includes('T') ? rawUpload : rawUpload.replace(' ', 'T') + 'Z');
+    if (!Number.isNaN(parsed.getTime())) {
+      uploadIso = parsed.toISOString();
+    }
+  }
   const durationSec = video.duration_seconds || 0;
   const durationIso = durationSec > 0 ? `PT${durationSec}S` : undefined;
   const jsonLd =
-    !isPrerelease && video.youtube_video_id
+    !isPrerelease && video.youtube_video_id && uploadIso
       ? {
           '@context': 'https://schema.org',
           '@type': 'VideoObject',
