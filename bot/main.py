@@ -518,10 +518,11 @@ class JKT48LiveBot:
                     delete_file(path)
             elif yt_ok and not archive_ok:
                 # YouTube sudah ada; arsip TG belum — jangan dianggap done.
+                # Jangan timpa error spesifik dari _archive_to_telegram
+                # (FloodWait, file hilang, dsb.) dengan pesan generik.
                 set_status(
                     "pending_upload",
                     youtube_video_id=video_id,
-                    error_message="Telegram archive pending",
                 )
 
     async def _archive_to_telegram(
@@ -786,8 +787,8 @@ class JKT48LiveBot:
                         url_refresher=_url_refresher,
                     )
                 except DownloadError as exc:
-                    database.update_status(part_id, "failed", error_message=str(exc))
                     if await self._showroom_broadcast_replaced(room_id, broadcast_id):
+                        database.update_status(part_id, "failed", error_message=str(exc))
                         logger.info(
                             "Showroom %s: broadcast berganti sesi — akhiri task; "
                             "loop utama akan memulai rekaman sesi baru",
@@ -799,12 +800,17 @@ class JKT48LiveBot:
                         Config.SHOWROOM_MAX_RESUMES,
                         await self._showroom_room_live(room_id),
                     ):
+                        database.update_status(part_id, "failed", error_message=str(exc))
                         raise
+                    # Resume: segmen kosong (tanpa file) tidak ikut merge dan tidak
+                    # boleh menetap sebagai "Gagal" di antrean admin — potongan
+                    # berikutnya bisa sukses di-upload (insiden Lia 24 Sep 2026).
+                    database.delete_session(part_id)
                     resumes_done += 1
                     logger.info(
                         "Showroom %s: yt-dlp berhenti padahal live belum berakhir "
-                        "— resume bagian %d dengan URL segar",
-                        username, resumes_done,
+                        "— resume bagian %d dengan URL segar (sesi kosong %s dihapus)",
+                        username, resumes_done, part_id,
                     )
                     await asyncio.sleep(Config.SHOWROOM_RESUME_DELAY_SECONDS)
                     part_id = f"{live_id}_r{resumes_done}"
@@ -1061,13 +1067,20 @@ class JKT48LiveBot:
             name = sess["member_name"] or username
             started_at = sess["started_at"] or sess["created_at"]
 
-            await self.handle_upload_ready(
-                live_id=live_id,
-                member_username=username,
-                member_name=name,
-                started_at=started_at,
-                file_path=file_path,
-            )
+            # try/except per item: satu kegagalan (mis. FloodWait / network)
+            # tidak boleh memblokir seluruh antrean retry berikutnya.
+            try:
+                await self.handle_upload_ready(
+                    live_id=live_id,
+                    member_username=username,
+                    member_name=name,
+                    started_at=started_at,
+                    file_path=file_path,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Retry upload gagal untuk %s (%s): %s", live_id, file_path, exc,
+                )
 
     async def run(self) -> None:
         """Main polling loop."""

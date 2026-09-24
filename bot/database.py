@@ -882,6 +882,12 @@ def mark_session_failed(live_id: str, error_message: str) -> None:
         )
 
 
+def delete_session(live_id: str) -> None:
+    """Hapus satu sesi (mis. segmen kosong hasil resume yang tidak ikut merge)."""
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM live_sessions WHERE live_id = ?", (live_id,))
+
+
 # ─── Member HLS Operations ───────────────────────────────────────────────────
 
 def register_members_if_not_exists(usernames: list[str]) -> None:

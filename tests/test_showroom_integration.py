@@ -322,14 +322,17 @@ class TestRecordShowroomTask(ShowroomIntegrationTestCase):
 
         # Dua kali percobaan download: gagal → resume sukses.
         self.assertEqual(downloads["count"], 2)
-        # Hanya bagian kedua yang sampai ke merge manager (bagian 1 gagal).
+        # Hanya bagian kedua yang sampai ke merge manager (bagian 1 kosong dihapus).
         self.assertEqual(
             [s["live_id"] for s in segmented], [f"{live_id}_r1"]
         )
         row0 = database.get_session(live_id)
         row1 = database.get_session(f"{live_id}_r1")
-        assert row0 is not None and row1 is not None
-        self.assertEqual(row0["status"], "failed")
+        self.assertIsNone(
+            row0,
+            "sesi kosong hasil resume dihapus agar tidak jadi Gagal di antrean",
+        )
+        assert row1 is not None
         self.assertEqual(row1["status"], "segment_done")
         # Bagian resume memakai URL HLS segar dari API Showroom.
         self.assertEqual(row1["hls_url"], "https://cdn.showroom.example/fresh.m3u8")

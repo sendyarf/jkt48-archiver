@@ -310,6 +310,64 @@ class RetryLoopTestCase(HandleUploadReadyTestCase):
 
         self.assertEqual(len(calls), 1, calls)
 
+    def test_retry_continues_after_one_item_raises(self):
+        """Satu item gagal (mis. FloodWait) tidak boleh memblokir item lain."""
+        bot = self._make_bot()
+        path_a = Path(self._tmp.name) / "a.mp4"
+        path_b = Path(self._tmp.name) / "b.mp4"
+        path_a.write_bytes(b"\x00" * 64)
+        path_b.write_bytes(b"\x00" * 64)
+        for lid, path in (("fail_me", path_a), ("ok_me", path_b)):
+            database.insert_live(
+                live_id=lid,
+                member_username="jkt48_daisy",
+                member_name="Daisy",
+                started_at="2026-09-22T13:00:00+00:00",
+            )
+            database.update_status(lid, "pending_upload", file_path=str(path))
+
+        calls: list[str] = []
+
+        async def fake_handle(**kwargs):
+            calls.append(kwargs["live_id"])
+            if kwargs["live_id"] == "fail_me":
+                raise RuntimeError("FloodWait 120s")
+
+        bot.handle_upload_ready = fake_handle  # type: ignore[method-assign]
+        asyncio.run(bot.retry_pending_uploads())
+
+        # Kedua item tetap dicoba; urutan mengikuti created_at lalu rowid.
+        self.assertEqual(set(calls), {"fail_me", "ok_me"}, calls)
+        self.assertEqual(len(calls), 2, calls)
+
+    def test_yt_done_archive_fail_keeps_specific_error(self):
+        """Arsip TG gagal: pertahankan error spesifik, jangan ditimpa generik."""
+        bot = self._make_bot()
+        path = self._write_video()
+        self._insert_session_for_upload(path, youtube_video_id="ytOLD")
+
+        bot.tg.upload_video_with_splitting = AsyncMock(
+            side_effect=RuntimeError("FloodWait 3600s during upload")
+        )
+        bot.tg.send_message = AsyncMock(return_value=None)
+        bot.yt_pool.upload_video = Mock(return_value=("NOPE", "x"))
+
+        asyncio.run(bot.handle_upload_ready(
+            live_id="merged_1",
+            member_username="jkt48_daisy",
+            member_name="Daisy",
+            started_at="2026-09-22T13:00:00+00:00",
+            file_path=str(path),
+            platform="idn",
+        ))
+
+        for row in self._group_rows(1):
+            self.assertEqual(row["status"], "pending_upload")
+            self.assertEqual(row["youtube_video_id"], "ytOLD")
+            err = row["error_message"] or ""
+            self.assertIn("FloodWait", err)
+            self.assertNotEqual(err, "Telegram archive pending")
+
 
 if __name__ == "__main__":
     unittest.main()
