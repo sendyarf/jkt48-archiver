@@ -56,7 +56,7 @@ export default function LoginForm({ turnstileSiteKey }: Props) {
         if (cancelled || !widgetRef.current || !window.turnstile) return;
         widgetIdRef.current = window.turnstile.render(widgetRef.current, {
           sitekey: turnstileSiteKey,
-          theme: 'dark',
+          theme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
           callback: (token: string) => { tokenRef.current = token; },
           'expired-callback': () => { tokenRef.current = ''; },
           'error-callback': () => { tokenRef.current = ''; },

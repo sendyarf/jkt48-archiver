@@ -104,13 +104,13 @@ export default function TelegramDownloadButton({
             <p className="modal-body">
               {isPhoto ? (
                 <>
-                  Semua foto dari <strong style={{ color: '#fff' }}>{title}</strong> bakal
+                  Semua foto dari <strong style={{ color: 'var(--text-primary)' }}>{title}</strong> bakal
                   dikirim ke kamu lewat bot Telegram kami — dipisah per album (maksimal 10
                   foto). Tekan tombol di bawah, lalu tap <strong>Start</strong> di Telegram.
                 </>
               ) : (
                 <>
-                  Video <strong style={{ color: '#fff' }}>{title}</strong> bakal dikirim ke
+                  Video <strong style={{ color: 'var(--text-primary)' }}>{title}</strong> bakal dikirim ke
                   kamu lewat bot Telegram kami. Tekan tombol di bawah, lalu tap{' '}
                   <strong>Start</strong> di Telegram — videonya langsung masuk.
                 </>

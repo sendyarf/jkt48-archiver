@@ -59,7 +59,7 @@ export default async function SystemPage() {
                   <StatusBadge status={s.status} />
                 </td>
                 <td>
-                  <span className="help-text" style={s.error_message ? { color: '#fecdd3' } : undefined}>
+                  <span className="help-text" style={s.error_message ? { color: 'var(--danger-on)' } : undefined}>
                     {s.error_message || '—'}
                   </span>
                 </td>

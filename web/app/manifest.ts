@@ -9,8 +9,8 @@ export default function manifest(): MetadataRoute.Manifest {
       'Kumpulan replay live JKT48 dari IDN Live & Showroom. Cari replay favoritmu lewat nama member, judul, atau tanggal.',
     start_url: '/',
     display: 'standalone',
-    background_color: '#07090e',
-    theme_color: '#07090e',
+    background_color: '#10131c',
+    theme_color: '#10131c',
     icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
   };
 }

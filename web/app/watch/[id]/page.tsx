@@ -183,7 +183,7 @@ export default async function WatchPage({ params }: WatchPageProps) {
             <div className="watch-streamer-row">
               <Link href={`/?member=${video.streamer_username}`} className="streamer-profile-link">
                 <div>
-                  <h3 style={{ fontSize: '1rem', color: '#fff' }}>{video.streamer_name}</h3>
+                  <h3 style={{ fontSize: '1rem', color: 'var(--text-primary)' }}>{video.streamer_name}</h3>
                   <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>
                     {dateFormatted}
                     {video.duration_formatted ? ` • ${video.duration_formatted}` : ''}

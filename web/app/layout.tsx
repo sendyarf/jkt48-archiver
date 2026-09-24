@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Bricolage_Grotesque, Plus_Jakarta_Sans } from 'next/font/google';
+import { Outfit } from 'next/font/google';
 import './globals.css';
 import './portal.css';
 import './admin-studio.css';
@@ -7,23 +7,15 @@ import Navbar from '@/components/PublicNavbar';
 import Footer from '@/components/Footer';
 import BottomNav from '@/components/BottomNav';
 
-/** Display font (judul/hero): ekspresif, playful — vibe idol/fandom.
- * next/font menyuntik nilainya langsung ke variabel --font-display di bawah. */
-const displayFont = Bricolage_Grotesque({
+/** Satu font untuk display & body: Outfit (variable, self-hosted via next/font). */
+const outfit = Outfit({
   subsets: ['latin'],
-  weight: ['400', '500', '600', '700', '800'],
-  variable: '--font-display',
+  variable: '--font-outfit',
   display: 'swap',
 });
 
-/** Body font: hangat & legibel untuk teks Indonesia.
- * next/font menyuntik nilainya langsung ke variabel --font-body di bawah. */
-const bodyFont = Plus_Jakarta_Sans({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-body',
-  display: 'swap',
-});
+/** Anti-FOUC: terapkan tema tersimpan sebelum paint pertama. */
+const themeInit = `(function(){try{var t=localStorage.getItem('jkt48_theme');if(t!=='light'&&t!=='dark'){t=window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}document.documentElement.setAttribute('data-theme',t);}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();`;
 
 export const viewport = {
   width: 'device-width',
@@ -84,8 +76,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="id" className={`${displayFont.variable} ${bodyFont.variable}`}>
+    <html
+      lang="id"
+      data-theme="dark"
+      data-scroll-behavior="smooth"
+      className={outfit.variable}
+    >
       <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInit }} />
         {/* Prefetch DNS/koneksi ke host YouTube sebelum pemutar/thumbnail dimuat. */}
         <link rel="preconnect" href="https://www.youtube.com" />
         <link rel="preconnect" href="https://i.ytimg.com" />

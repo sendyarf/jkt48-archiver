@@ -1,86 +1,86 @@
 /* Portal styles; player/theater layout remains unchanged. */
-:root { --text-secondary: #abb6c8; --text-tertiary: #98a5ba; --rose-glow: none; }
+[data-theme='dark'] { --rose-glow: none; }
 body::before { display: none; }
-:focus-visible { outline: 2px solid #fda4af; outline-offset: 4px; }
+:focus-visible { outline: 2px solid var(--pink-300); outline-offset: 4px; }
 button, input, select { font: inherit; }
 button { color: inherit; }
 button:disabled { cursor: not-allowed; opacity: .5; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
-.skip-link { position: fixed; left: 16px; top: -100px; z-index: 100; padding: 12px 20px; background: #fff; color: #111; border-radius: 8px; }
+.skip-link { position: fixed; left: 16px; top: -100px; z-index: 100; padding: 12px 20px; background: #fff; color: var(--text-dark); border-radius: 8px; }
 .skip-link:focus { top: 12px; }
 .page-section { padding-top: clamp(18px, 4vw, 26px); padding-bottom: clamp(28px, 5vw, 44px); }
 .page-section > p { overflow-wrap: anywhere; }
 .container { min-width: 0; }
-.eyebrow { font-size: .72rem; letter-spacing: .16em; font-weight: 700; color: #fda4af; margin-bottom: 12px; }
+.eyebrow { font-size: .72rem; letter-spacing: .16em; font-weight: 700; color: var(--pink-300); margin-bottom: 12px; }
 .section-heading { display: flex; justify-content: space-between; align-items: end; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
 .section-heading > div { min-width: 0; flex: 1 1 220px; }
 .section-heading h1 { font-size: clamp(1.35rem, 1.1rem + 1.8vw, 2.15rem); line-height: 1.2; margin-bottom: 8px; overflow-wrap: break-word; }
 .section-heading h2 { font-size: clamp(1.15rem, 1rem + 0.9vw, 1.5rem); overflow-wrap: break-word; }
 .section-heading p:not(.eyebrow), .help-text, .result-summary { color: var(--text-secondary); }
 .primary-button, .secondary-button, .text-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 15px; border-radius: 9px; font-weight: 600; font-size: .82rem; }
-.primary-button { background: #be123c; border: 1px solid #e11d48; color: white; }
-.primary-button:hover { background: #9f1239; }
-.secondary-button { background: #171e2b; border: 1px solid var(--border-card); color: #f8fafc; }
-.secondary-button:hover { border-color: #94a3b8; }
-.text-button { color: #fda4af; }
+.primary-button { background: var(--rose-700); border: 1px solid var(--rose-600); color: white; }
+.primary-button:hover { background: var(--danger-border); }
+.secondary-button { background: var(--bg-elevated); border: 1px solid var(--border-card); color: var(--text-primary); }
+.secondary-button:hover { border-color: var(--text-secondary); }
+.text-button { color: var(--pink-300); }
 .catalog-hero-block { padding-top: clamp(16px, 2.4vw, 24px); padding-bottom: clamp(16px, 2.4vw, 24px); }
 /* Hero gaya poster film: thumbnail replay terbaru tampil FULL-BLEED sebagai
    latar (tajam, tanpa blur sinematik), teks ditumpuk di atasnya dengan scrim
    gelap dari sisi kiri supaya tetap kontras. Judul = judul replay asli, jadi
    banner selalu memuat informasi nyata (member + tanggal + jam). */
-.hero-feature { position: relative; display: flex; align-items: flex-end; min-height: clamp(300px, 27vw, 380px); overflow: hidden; border: 1px solid #3d2331; border-radius: 18px; background: #0b060d; }
+.hero-feature { position: relative; display: flex; align-items: flex-end; min-height: clamp(300px, 27vw, 380px); overflow: hidden; border: 1px solid var(--rose-600); border-radius: 18px; background: var(--bg-media); }
 .hero-feature-media { position: absolute; inset: 0; }
 .hero-feature-img { object-fit: cover; object-position: center 24%; }
-.hero-feature-scrim { position: absolute; inset: 0; background: linear-gradient(94deg, rgba(7, 3, 10, .94) 0%, rgba(7, 3, 10, .8) 38%, rgba(7, 3, 10, .3) 74%, rgba(7, 3, 10, .46) 100%), linear-gradient(0deg, rgba(7, 3, 10, .9) 0%, rgba(7, 3, 10, .18) 52%, rgba(7, 3, 10, .3) 100%); }
+.hero-feature-scrim { position: absolute; inset: 0; background: linear-gradient(94deg, var(--scrim-a) 0%, var(--scrim-b) 38%, var(--scrim-c) 74%, var(--scrim-d) 100%), linear-gradient(0deg, var(--scrim-a) 0%, var(--scrim-c) 52%, var(--scrim-c) 100%); }
 .hero-feature-body { position: relative; width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: clamp(18px, 2.4vw, 32px); }
-.hero-feature-kicker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: .7rem; letter-spacing: .16em; font-weight: 800; color: #fda4af; }
+.hero-feature-kicker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: .7rem; letter-spacing: .16em; font-weight: 800; color: var(--pink-300); }
 .hero-feature-brand { color: #fff; }
 /* Judul dibatasi 5 baris: judul terpanjang (100 karakter) tidak boleh mendorong
    tinggi banner sampai menutupi grid di bawahnya. */
 .hero-feature-title { max-width: min(30ch, 100%); font-size: clamp(1.55rem, 1rem + 2.6vw, 3.1rem); line-height: 1.05; letter-spacing: -.03em; overflow-wrap: break-word; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
-.hero-feature-title a:hover { color: #fecdd3; }
-.hero-feature-meta { color: #dcd2da; font-size: .82rem; }
+.hero-feature-title a:hover { color: var(--danger-on); }
+.hero-feature-meta { color: var(--text-muted); font-size: .82rem; }
 .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .hero-actions .primary-button, .hero-actions .secondary-button, .hero-actions .text-button { flex: 0 1 auto; }
-.catalog-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; padding: clamp(12px, 2vw, 16px); border: 1px solid var(--border-card); border-radius: 12px; background: #101622; }
+.catalog-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; padding: clamp(12px, 2vw, 16px); border: 1px solid var(--border-card); border-radius: 12px; background: var(--bg-panel); }
 .catalog-filters label, .form-row label, .search-field { display: flex; flex-direction: column; gap: 6px; font-size: .76rem; font-weight: 600; color: var(--text-secondary); min-width: 0; }
 .catalog-filters .primary-button, .catalog-filters .secondary-button, .catalog-filters .text-button { flex: 0 0 auto; }
 .catalog-search { flex: 1 1 240px; min-width: 0; }
 .catalog-select { flex: 0 1 190px; min-width: 150px; }
 .catalog-filters .filter-actions { margin-left: auto; display: flex; gap: 10px; align-items: center; }
 .filter-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.filter-chip { display: inline-flex; align-items: center; gap: 6px; font-size: .74rem; font-weight: 600; color: #fda4af; background: #2b1520; border: 1px solid #4c2333; border-radius: 9999px; padding: 4px 10px; text-decoration: none; }
+.filter-chip { display: inline-flex; align-items: center; gap: 6px; font-size: .74rem; font-weight: 600; color: var(--pink-300); background: var(--bg-chip); border: 1px solid var(--rose-600); border-radius: 9999px; padding: 4px 10px; text-decoration: none; }
 /* Gaya form ini TIDAK boleh mengenai <input type="range"> milik pemutar video:
    min-height 44px + border + padding akan membengkakkan bilah progres. */
-.catalog-filters input:not([type="range"]), .catalog-filters select, .admin-shell input:not([type="range"]), .admin-shell select, .login-panel input:not([type="range"]) { width: 100%; max-width: 100%; min-width: 0; min-height: 42px; background: #090e17; color: #f8fafc; border: 1px solid #374151; border-radius: 10px; padding: 8px 12px; transition: border-color .2s ease, box-shadow .2s ease; }
+.catalog-filters input:not([type="range"]), .catalog-filters select, .admin-shell input:not([type="range"]), .admin-shell select, .login-panel input:not([type="range"]) { width: 100%; max-width: 100%; min-width: 0; min-height: 42px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-input); border-radius: 10px; padding: 8px 12px; transition: border-color .2s ease, box-shadow .2s ease; }
 .catalog-filters input:not([type="range"]):focus, .catalog-filters select:focus, .admin-shell input:not([type="range"]):focus, .admin-shell select:focus { border-color: var(--rose-500); box-shadow: 0 0 0 3px rgba(244,63,94,.18); outline: none; }
 .input-with-icon { position: relative; display: block; min-width: 0; }
 /* Ikon dipusatkan vertikal & teks digeser; spesifisitas diperkuat (.catalog-filters)
    agar padding-left ikon tidak dikalahkan oleh aturan padding umum input. */
-.input-with-icon svg { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #98a5ba; pointer-events: none; }
+.input-with-icon svg { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-tertiary); pointer-events: none; }
 .catalog-filters .input-with-icon input:not([type="range"]) { padding-left: 44px; }
 /* Dropdown dengan ikon di kiri */
 .select-with-icon { position: relative; display: block; min-width: 0; }
-.select-with-icon svg { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #98a5ba; pointer-events: none; z-index: 1; }
+.select-with-icon svg { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-tertiary); pointer-events: none; z-index: 1; }
 .catalog-filters .select-with-icon select { padding-left: 44px; appearance: none; -webkit-appearance: none; padding-right: 34px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2398a5ba' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; cursor: pointer; }
 .result-summary { font-size: .78rem; margin: 10px 0 14px; }
-.empty-state { padding: 40px 20px; text-align: center; background: #101622; border: 1px dashed #374151; border-radius: 12px; }
+.empty-state { padding: 40px 20px; text-align: center; background: var(--bg-panel); border: 1px dashed var(--border-input); border-radius: 12px; }
 .empty-state h2 { margin: 12px 0 6px; font-size: 1.15rem; }
 .empty-state p { color: var(--text-secondary); margin-bottom: 18px; font-size: .85rem; }
 .pagination { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; margin: 18px 0; font-size: .82rem; }
 .public-catalog .video-card { background: transparent; border-color: transparent; box-shadow: none; }
-.public-catalog .video-card:hover { transform: translateY(-3px); background: #101622; border-color: var(--border-card); }
+.public-catalog .video-card:hover { transform: translateY(-3px); background: var(--bg-panel); border-color: var(--border-card); }
 .public-catalog .video-info { padding: 8px 2px; }
-.member-initial { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; background: #302031; color: #fda4af; font-size: 1.05rem; font-weight: 700; }
+.member-initial { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; background: var(--bg-chip); color: var(--pink-300); font-size: 1.05rem; font-weight: 700; }
 .member-card { box-shadow: none; }
-.footer-brand { font-weight: 700; color: #f8fafc; margin-bottom: 8px; }
+.footer-brand { font-weight: 700; color: var(--text-primary); margin-bottom: 8px; }
 
 /* Hero: di bawah 900px teks menempati seluruh lebar panel (bukan lagi separuh
    kiri), jadi min-height dilepas dan scrim dibuat tegak dari bawah ke atas. */
 @media (max-width: 900px) {
   .hero-feature { min-height: 0; }
   .hero-feature-img { object-position: center 20%; }
-  .hero-feature-scrim { background: linear-gradient(0deg, rgba(7, 3, 10, .95) 0%, rgba(7, 3, 10, .78) 38%, rgba(7, 3, 10, .34) 74%, rgba(7, 3, 10, .5) 100%); }
+  .hero-feature-scrim { background: linear-gradient(0deg, var(--scrim-a) 0%, var(--scrim-b) 38%, var(--scrim-c) 74%, var(--scrim-d) 100%); }
   .hero-feature-body { padding: 18px 16px; }
 }
 
@@ -89,71 +89,71 @@ button:disabled { cursor: not-allowed; opacity: .5; }
    1100px menjadi 2 kolom (akun di atas, daftar di kanan pemutar), dan di bawah
    820px menumpuk satu kolom supaya tetap nyaman di ponsel. */
 .tiktok-shell { display: grid; grid-template-columns: minmax(190px, 232px) minmax(0, 1fr) minmax(240px, 320px); gap: 18px; align-items: start; }
-.tiktok-panel { min-width: 0; background: #101622; border: 1px solid var(--border-card); border-radius: 14px; padding: 14px; }
+.tiktok-panel { min-width: 0; background: var(--bg-panel); border: 1px solid var(--border-card); border-radius: 14px; padding: 14px; }
 .tiktok-panel-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: .82rem; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 10px; }
-.tiktok-count { font-size: .72rem; font-weight: 700; color: #fda4af; background: #2b1520; border: 1px solid #4c2333; border-radius: 999px; padding: 2px 8px; }
+.tiktok-count { font-size: .72rem; font-weight: 700; color: var(--pink-300); background: var(--bg-chip); border: 1px solid var(--rose-600); border-radius: 999px; padding: 2px 8px; }
 /* Sidebar akun & daftar arsip: daftar panjang di-scroll sendiri agar pemutar
    tetap terlihat tanpa harus scroll seluruh halaman. Scrollbar dibuat tipis
    supaya tidak memakan lebar kartu. */
-.tiktok-account-list, .tiktok-post-list { display: flex; flex-direction: column; gap: 4px; max-height: min(64vh, 620px); overflow-y: auto; scrollbar-width: thin; scrollbar-color: #2a3446 transparent; }
+.tiktok-account-list, .tiktok-post-list { display: flex; flex-direction: column; gap: 4px; max-height: min(64vh, 620px); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 .tiktok-account-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; transition: background .15s ease, border-color .15s ease; }
-.tiktok-account-item:hover { background: #171f2e; border-color: #2a3446; }
-.tiktok-account-item.active { background: #1d1526; border-color: #5b2440; }
-.tiktok-account-initial { display: grid; place-items: center; flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; background: #302031; color: #fda4af; font-size: .82rem; font-weight: 700; }
+.tiktok-account-item:hover { background: var(--bg-elevated); border-color: var(--border-strong); }
+.tiktok-account-item.active { background: var(--bg-chip-hover); border-color: var(--rose-600); }
+.tiktok-account-initial { display: grid; place-items: center; flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; background: var(--bg-chip); color: var(--pink-300); font-size: .82rem; font-weight: 700; }
 /* Foto member dari roster resmi jkt48.com (kolom `avatar_url`). Bentuknya sama
    dengan inisial di atas supaya baris daftar tidak "melompat" saat foto belum
    ada atau gagal dimuat. */
-.tiktok-account-avatar { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; overflow: hidden; background: #302031; border: 1px solid #4c2333; }
+.tiktok-account-avatar { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; overflow: hidden; background: var(--bg-chip); border: 1px solid var(--rose-600); }
 .tiktok-account-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .tiktok-account-meta { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
-.tiktok-account-name { font-size: .84rem; font-weight: 600; color: #f8fafc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tiktok-account-name { font-size: .84rem; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tiktok-account-handle { font-size: .72rem; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tiktok-stage { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 /* Frame pemutar: sudut membulat + bayangan lembut supaya area tontonan terasa
    seperti "panggung" utama halaman. */
-#tiktok-player-container { position: relative; border-radius: 14px; overflow: hidden; border: 1px solid var(--border-card); background: #05080f; box-shadow: 0 18px 50px -22px rgba(0, 0, 0, .85); }
+#tiktok-player-container { position: relative; border-radius: 14px; overflow: hidden; border: 1px solid var(--border-card); background: var(--bg-media); box-shadow: 0 18px 50px -22px rgba(0, 0, 0, .85); }
 #tiktok-player-container:focus-visible { outline: 2px solid var(--rose-500); outline-offset: 2px; }
 /* Navigasi feed ala Shorts: tombol bulat melayang di tepi kanan area video.
    Melayang (bukan kolom sendiri) supaya tidak memakan ruang di layar kecil;
    ukurannya menyusut di ponsel. Latar sengaja dibuat transparan supaya tidak
    menutupi video dan terasa menempel ringan, bukan "keras". */
 .tiktok-nav { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; z-index: 5; }
-.tiktok-nav-btn { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; border: 1px solid rgba(55, 65, 81, .65); background: rgba(9, 14, 23, .45); color: #f8fafc; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); cursor: pointer; transition: background .15s ease, border-color .15s ease, transform .15s ease; }
-.tiktok-nav-btn:hover:not(:disabled) { background: #2b1520; border-color: #5b2440; color: #fda4af; transform: scale(1.06); }
+.tiktok-nav-btn { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; border: 1px solid rgba(55, 65, 81, .65); background: rgba(9, 14, 23, .45); color: var(--text-primary); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); cursor: pointer; transition: background .15s ease, border-color .15s ease, transform .15s ease; }
+.tiktok-nav-btn:hover:not(:disabled) { background: var(--bg-chip); border-color: var(--rose-600); color: var(--pink-300); transform: scale(1.06); }
 .tiktok-nav-btn:disabled { opacity: .35; cursor: default; }
-.tiktok-player-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: clamp(220px, 32vw, 380px); padding: 24px; text-align: center; background: radial-gradient(120% 140% at 50% 0%, #141b2c 0%, #0d1320 60%); border: 1px dashed #374151; border-radius: 14px; color: var(--text-secondary); }
-.tiktok-placeholder-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; background: #2b1520; border: 1px solid #4c2333; color: #fda4af; }
+.tiktok-player-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: clamp(220px, 32vw, 380px); padding: 24px; text-align: center; background: radial-gradient(120% 140% at 50% 0%, #141b2c 0%, #0d1320 60%); border: 1px dashed var(--border-input); border-radius: 14px; color: var(--text-secondary); }
+.tiktok-placeholder-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; background: var(--bg-chip); border: 1px solid var(--rose-600); color: var(--pink-300); }
 .tiktok-placeholder-icon svg { width: 22px; height: 22px; }
 .tiktok-player-placeholder p { font-size: .85rem; max-width: 42ch; }
-.tiktok-details { background: #101622; border: 1px solid var(--border-card); border-radius: 14px; padding: 14px; }
+.tiktok-details { background: var(--bg-panel); border: 1px solid var(--border-card); border-radius: 14px; padding: 14px; }
 .tiktok-details-title { font-size: clamp(1.05rem, .95rem + .6vw, 1.35rem); line-height: 1.25; margin-bottom: 10px; overflow-wrap: anywhere; }
 .tiktok-details-meta, .tiktok-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .tiktok-details-meta { margin-bottom: 10px; }
 .tiktok-actions { margin-top: 12px; }
-.tiktok-badge { display: inline-flex; align-items: center; gap: 6px; font-size: .72rem; font-weight: 600; color: var(--text-secondary); background: #161d2b; border: 1px solid #2a3446; border-radius: 999px; padding: 3px 10px; }
-.tiktok-badge.photo { color: #fcd34d; border-color: #4a3a15; background: #221a08; }
-.tiktok-badge.video { color: #fda4af; border-color: #4c2333; background: #2b1520; }
+.tiktok-badge { display: inline-flex; align-items: center; gap: 6px; font-size: .72rem; font-weight: 600; color: var(--text-secondary); background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 999px; padding: 3px 10px; }
+.tiktok-badge.photo { color: #fcd34d; border-color: var(--amber-400); background: var(--amber-bg); }
+.tiktok-badge.video { color: var(--pink-300); border-color: var(--rose-600); background: var(--bg-chip); }
 .tiktok-caption { font-size: .85rem; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
 .tiktok-search { margin-bottom: 10px; }
 /* Input pencarian di panel TikTok: aturan form umum portal hanya mencakup
    .catalog-filters/.admin-shell, jadi panel ini menata inputnya sendiri —
    termasuk ruang untuk ikon kaca pembesar (tanpa ini ikon menimpa teks). */
-.tiktok-search input:not([type="range"]) { width: 100%; max-width: 100%; min-width: 0; min-height: 38px; background: #090e17; color: #f8fafc; border: 1px solid #374151; border-radius: 10px; padding: 6px 12px 6px 38px; transition: border-color .2s ease, box-shadow .2s ease; }
+.tiktok-search input:not([type="range"]) { width: 100%; max-width: 100%; min-width: 0; min-height: 38px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-input); border-radius: 10px; padding: 6px 12px 6px 38px; transition: border-color .2s ease, box-shadow .2s ease; }
 .tiktok-search input:focus { border-color: var(--rose-500); box-shadow: 0 0 0 3px rgba(244,63,94,.18); outline: none; }
 .tiktok-search svg { left: 12px; }
 .tiktok-post-item { display: flex; gap: 10px; width: 100%; padding: 6px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; transition: background .15s ease, border-color .15s ease; }
-.tiktok-post-item:hover { background: #171f2e; border-color: #2a3446; }
-.tiktok-post-item.active { background: #1d1526; border-color: #5b2440; }
-.tiktok-post-thumb { position: relative; flex: 0 0 auto; width: 64px; aspect-ratio: 9 / 16; border-radius: 8px; overflow: hidden; background: #0b0f18; display: grid; place-items: center; }
+.tiktok-post-item:hover { background: var(--bg-elevated); border-color: var(--border-strong); }
+.tiktok-post-item.active { background: var(--bg-chip-hover); border-color: var(--rose-600); }
+.tiktok-post-thumb { position: relative; flex: 0 0 auto; width: 64px; aspect-ratio: 9 / 16; border-radius: 8px; overflow: hidden; background: var(--bg-media); display: grid; place-items: center; }
 .tiktok-post-img { object-fit: cover; transition: transform .2s ease; }
 .tiktok-post-item:hover .tiktok-post-img { transform: scale(1.05); }
 .tiktok-post-fallback { color: var(--text-tertiary); }
 .tiktok-post-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.tiktok-post-title { font-size: .82rem; color: #f8fafc; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.tiktok-post-title { font-size: .82rem; color: var(--text-primary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .tiktok-post-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; font-size: .7rem; color: var(--text-tertiary); }
 /* Penanda kartu arsip tanpa video YouTube: ekspektasi jelas SEBELUM diklik —
    arsip ini tidak bisa diputar di halaman, hanya bisa diunduh lewat bot. */
-.tiktok-badge-dl { font-size: .66rem; font-weight: 600; color: #fbbf24; background: #2b2115; border: 1px solid #4c3a23; border-radius: 999px; padding: 1px 7px; }
+.tiktok-badge-dl { font-size: .66rem; font-weight: 600; color: #fbbf24; background: #2b2115; border: 1px solid var(--amber-400); border-radius: 999px; padding: 1px 7px; }
 .tiktok-empty { display: flex; flex-direction: column; align-items: center; }
 /* Statistik & waktu pembaruan di BAWAH arsip (bukan di header): pengunjung
    langsung masuk ke konten, angka ringkasan jadi penutup halaman. */
@@ -197,9 +197,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 
 /* ── 404 (/ tidak ditemukan) ────────────────────────────────────────────── */
 .not-found { display: flex; align-items: center; justify-content: center; min-height: min(62vh, 560px); }
-.not-found-card { width: min(560px, 100%); text-align: center; padding: clamp(28px, 5vw, 48px) clamp(18px, 4vw, 36px); background: #101622; border: 1px solid var(--border-card); border-radius: 18px; box-shadow: 0 24px 60px -30px rgba(0, 0, 0, .8); }
+.not-found-card { width: min(560px, 100%); text-align: center; padding: clamp(28px, 5vw, 48px) clamp(18px, 4vw, 36px); background: var(--bg-panel); border: 1px solid var(--border-card); border-radius: 18px; box-shadow: 0 24px 60px -30px rgba(0, 0, 0, .8); }
 .not-found-card .eyebrow { margin-bottom: 8px; }
-.not-found-code { font-family: var(--font-display); font-size: clamp(4.5rem, 3rem + 10vw, 7.5rem); font-weight: 800; line-height: 1; letter-spacing: -.04em; background: linear-gradient(135deg, #fff 10%, #fda4af 55%, #e11d48 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 10px; }
+.not-found-code { font-family: var(--font-display); font-size: clamp(4.5rem, 3rem + 10vw, 7.5rem); font-weight: 800; line-height: 1; letter-spacing: -.04em; background: linear-gradient(135deg, #fff 10%, var(--pink-300) 55%, var(--rose-600) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 10px; }
 .not-found-card h1 { font-size: clamp(1.35rem, 1.1rem + 1.4vw, 1.85rem); margin-bottom: 10px; }
 .not-found-text { color: var(--text-secondary); font-size: .9rem; line-height: 1.7; max-width: 40ch; margin: 0 auto 22px; overflow-wrap: anywhere; }
 .not-found-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; }

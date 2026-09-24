@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 import { Menu, Music2, Users, Video, X } from 'lucide-react';
+import ThemeToggle from '@/components/ThemeToggle';
 
 function NavbarInner() {
   const pathname = usePathname();
@@ -44,6 +45,9 @@ function NavbarInner() {
         >
           {open ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
         </button>
+        <div className="nav-actions">
+          <ThemeToggle />
+        </div>
         <nav id="navigasi-utama" className={`nav-menu${open ? ' open' : ''}`} aria-label="Navigasi utama">
           <Link href="/" className={`nav-link ${pathname === '/' ? 'active' : ''}`} aria-current={pathname === '/' ? 'page' : undefined}>
             <Video size={16} aria-hidden="true" /> Replay

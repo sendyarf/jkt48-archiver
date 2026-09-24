@@ -224,7 +224,7 @@ export default function AdminQueuePage() {
                         : `${Math.floor(item.age_hours)} jam`}
                   </td>
                   <td>
-                    <span className="help-text" style={{ color: item.error_message ? '#fecdd3' : undefined }}>
+                    <span className="help-text" style={{ color: item.error_message ? 'var(--danger-on)' : undefined }}>
                       {item.error_message
                         ? item.error_message.length > 120
                           ? `${item.error_message.slice(0, 120)}…`
