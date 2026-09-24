@@ -28,7 +28,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
    latar (tajam, tanpa blur sinematik), teks ditumpuk di atasnya dengan scrim
    gelap dari sisi kiri supaya tetap kontras. Judul = judul replay asli, jadi
    banner selalu memuat informasi nyata (member + tanggal + jam). */
-.hero-feature { position: relative; display: flex; align-items: flex-end; min-height: clamp(300px, 27vw, 380px); overflow: hidden; border: 1px solid var(--rose-600); border-radius: 18px; background: var(--bg-media); }
+.hero-feature { position: relative; display: flex; align-items: flex-end; min-height: clamp(300px, 27vw, 380px); overflow: hidden; border: 1px solid transparent; border-radius: 18px; background: var(--bg-media); }
 .hero-feature-media { position: absolute; inset: 0; }
 .hero-feature-img { object-fit: cover; object-position: center 24%; }
 .hero-feature-scrim { position: absolute; inset: 0; background: linear-gradient(94deg, var(--scrim-a) 0%, var(--scrim-b) 38%, var(--scrim-c) 74%, var(--scrim-d) 100%), linear-gradient(0deg, var(--scrim-a) 0%, var(--scrim-c) 52%, var(--scrim-c) 100%); }
