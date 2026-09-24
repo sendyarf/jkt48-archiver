@@ -1,7 +1,8 @@
 import type { MetadataRoute } from 'next';
 import { getAllVideos, getPublicMembers } from '@/lib/db';
 
-export const dynamic = 'force-dynamic';
+// ISR 5 menit — sitemap tidak perlu fresh tiap request, hemat query DB saat crawl.
+export const revalidate = 300;
 
 function siteUrl(): URL {
   try {

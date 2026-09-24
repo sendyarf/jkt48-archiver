@@ -58,7 +58,8 @@ export const metadata: Metadata = {
     'Replay Live JKT48',
   ],
   authors: [{ name: 'JKT48 Replay' }],
-  icons: { icon: '/icon.svg', apple: '/icon.svg' },
+  // Icon via file convention: app/icon.svg + app/apple-icon.tsx (jangan set
+  // metadata.icons — menimpa auto-link apple-touch-icon).
   manifest: '/manifest.webmanifest',
   // Default share card — di-override per-halaman (watch/tiktok) bila perlu.
   openGraph: {
@@ -84,6 +85,15 @@ export default function RootLayout({
 }) {
   return (
     <html lang="id" className={`${displayFont.variable} ${bodyFont.variable}`}>
+      <head>
+        {/* Prefetch DNS/koneksi ke host YouTube sebelum pemutar/thumbnail dimuat. */}
+        <link rel="preconnect" href="https://www.youtube.com" />
+        <link rel="preconnect" href="https://i.ytimg.com" />
+        <link rel="preconnect" href="https://img.youtube.com" />
+        <link rel="dns-prefetch" href="https://www.youtube.com" />
+        <link rel="dns-prefetch" href="https://i.ytimg.com" />
+        <link rel="dns-prefetch" href="https://img.youtube.com" />
+      </head>
       <body>
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
           <a href="#main-content" className="skip-link">Lewati ke konten</a>
