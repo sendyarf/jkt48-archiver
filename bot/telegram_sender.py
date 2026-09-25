@@ -482,6 +482,35 @@ class TelegramSender:
         if not paths:
             return []
         await self.connect()
+
+        # Satu berkas TIDAK boleh dikirim sebagai album. Telethon meneruskan
+        # list apa pun ke `_send_album` → `SendMultiMediaRequest`, dan Telegram
+        # menolak album satu media dengan `MediaEmptyError` (terjadi pada
+        # story TikTok berupa 1 foto, 26 Sep 2026). Album 1 berkas = kirim
+        # sebagai media biasa agar tidak pernah ditolak.
+        if len(paths) == 1:
+            try:
+                msg = await self._client.send_file(
+                    target,
+                    paths[0],
+                    caption=caption,
+                    parse_mode="html",
+                )
+                logger.info(
+                    "Media tunggal TikTok terkirim ke %d (Message ID: %d): %s",
+                    target, msg.id, Path(paths[0]).name,
+                )
+                return [msg.id]
+            except MediaEmptyError:
+                logger.exception(
+                    "Media tunggal ditolak Telegram (%s); tidak diulang.",
+                    Path(paths[0]).name,
+                )
+                return []
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Gagal mengirim media TikTok: %s", exc)
+                return []
+
         for attempt in range(3):
             try:
                 result = await self._client.send_file(

@@ -409,29 +409,82 @@ class TestTelegramFloodHandling(unittest.TestCase):
             )
 
     def test_album_media_empty_error_is_not_retried(self):
+        # Dua berkas agar benar-benar melewati jalur album (1 berkas memakai
+        # jalur media tunggal, lihat test_single_photo_is_sent_as_media_not_album).
         with tempfile.TemporaryDirectory() as directory:
             first = Path(directory) / "1.jpg"
+            second = Path(directory) / "2.jpg"
             first.write_bytes(b"x")
+            second.write_bytes(b"y")
             sender = TelegramSender.__new__(TelegramSender)
             sender._connected = True
             sender._client = AsyncMock()
             sender._client.send_file = AsyncMock(side_effect=MediaEmptyError(request=None))
 
-            ids = asyncio.run(sender._send_media_album([first], "caption", -100123))
+            ids = asyncio.run(
+                sender._send_media_album([first, second], "caption", -100123)
+            )
             self.assertEqual(ids, [])
             self.assertEqual(sender._client.send_file.await_count, 1)
 
-    def test_album_flood_waits_before_retry(self):
+    def test_single_photo_is_sent_as_media_not_album(self):
+        """1 foto HARUS dikirim sebagai media biasa, bukan album.
+
+        Telethon meneruskan list apa pun ke `_send_album` (SendMultiMediaRequest)
+        dan Telegram menolak album satu media dengan MediaEmptyError — inilah
+        penyebab story TikTok 1 foto tak pernah masuk arsip.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            only = Path(directory) / "story.jpg"
+            only.write_bytes(b"x")
+            sender = TelegramSender.__new__(TelegramSender)
+            sender._connected = True
+            sender._client = AsyncMock()
+            sender._client.send_file = AsyncMock(return_value=_fake_message(55))
+
+            ids = asyncio.run(sender._send_media_album([only], "caption", -100123))
+            self.assertEqual(ids, [55])
+            sent_media = sender._client.send_file.await_args.args[1]
+            self.assertIsInstance(
+                sent_media, str,
+                "1 berkas harus dikirim sebagai path, bukan list (album)",
+            )
+
+    def test_multi_photo_still_uses_album(self):
+        """2+ foto tetap dikirim sebagai album (perilaku tidak berubah)."""
         with tempfile.TemporaryDirectory() as directory:
             first = Path(directory) / "1.jpg"
+            second = Path(directory) / "2.jpg"
             first.write_bytes(b"x")
+            second.write_bytes(b"y")
+            sender = TelegramSender.__new__(TelegramSender)
+            sender._connected = True
+            sender._client = AsyncMock()
+            sender._client.send_file = AsyncMock(
+                return_value=[_fake_message(1), _fake_message(2)]
+            )
+
+            ids = asyncio.run(
+                sender._send_media_album([first, second], "caption", -100123)
+            )
+            self.assertEqual(ids, [1, 2])
+            sent_media = sender._client.send_file.await_args.args[1]
+            self.assertIsInstance(sent_media, list, "multi-foto harus tetap album")
+
+    def test_album_flood_waits_before_retry(self):
+        # Dua berkas agar melewati jalur album (1 berkas memakai media tunggal).
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "1.jpg"
+            second = Path(directory) / "2.jpg"
+            first.write_bytes(b"x")
+            second.write_bytes(b"y")
             sender = TelegramSender.__new__(TelegramSender)
             sender._connected = True
             sender._client = AsyncMock()
             sender._client.send_file = AsyncMock(
                 side_effect=[
                     FloodError(request=None, message="FLOOD_PREMIUM_WAIT_3"),
-                    _fake_message(88),
+                    [_fake_message(88), _fake_message(89)],
                 ]
             )
             waits: list[float] = []
@@ -441,9 +494,11 @@ class TestTelegramFloodHandling(unittest.TestCase):
 
             async def run():
                 with patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep):
-                    return await sender._send_media_album([first], "caption", -100123)
+                    return await sender._send_media_album(
+                        [first, second], "caption", -100123
+                    )
 
-            self.assertEqual(asyncio.run(run()), [88])
+            self.assertEqual(asyncio.run(run()), [88, 89])
             self.assertEqual(
                 waits, [8], "durasi FLOOD_PREMIUM_WAIT_3 harus dipakai, bukan default"
             )
