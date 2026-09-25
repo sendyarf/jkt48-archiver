@@ -10,12 +10,17 @@ Supports sending:
 import asyncio
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Callable, Optional, Union
 
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError
+from telethon.errors import (
+    FloodError,
+    FloodWaitError,
+    MediaEmptyError,
+)
 from telethon.sessions import StringSession
 from telethon.tl.types import DocumentAttributeVideo
 
@@ -30,6 +35,26 @@ from bot.video_splitter import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _flood_wait_seconds(exc: BaseException, default: int = 30) -> int:
+    """Durasi tunggu (detik) yang diminta Telegram pada error flood.
+
+    `FloodWaitError` (RPC 429) menyediakan `.seconds`. Varian RPC 420 lain —
+    misalnya `FLOOD_PREMIUM_WAIT_3` pada upload file besar — hanya menyertakan
+    angka di pesan, jadi angka itu yang diambil. Tanpa parsing ini, bot akan
+    menunggu 5 detik lalu mengulang upload 1 GB dari nol.
+    """
+    seconds = getattr(exc, "seconds", None)
+    if isinstance(seconds, (int, float)) and seconds > 0:
+        return int(seconds) + 5
+    match = re.search(r"FLOOD_\w*WAIT_(\d+)", str(exc))
+    if match:
+        return int(match.group(1)) + 5
+    match = re.search(r"wait of (\d+) seconds", str(exc), re.IGNORECASE)
+    if match:
+        return int(match.group(1)) + 5
+    return max(5, int(default))
 
 
 def _format_size(size_bytes: int) -> str:
@@ -91,9 +116,12 @@ class TelegramSender:
             )
             logger.info("Telegram notification sent to %d. Message ID: %d", target, msg.id)
             return msg.id
-        except FloodWaitError as exc:
-            logger.warning("Telegram FloodWait %ds. Retrying...", exc.seconds)
-            await asyncio.sleep(exc.seconds + 5)
+        except FloodError as exc:
+            # RPC 420 (mis. FLOOD_PREMIUM_WAIT_*) bukan FloodWaitError; bila
+            # tidak tertangani ia jatuh ke except Exception dan retry langsung.
+            wait = _flood_wait_seconds(exc)
+            logger.warning("Telegram flood %ds. Retrying...", wait)
+            await asyncio.sleep(wait)
             msg = await self._client.send_message(
                 target,
                 text,
@@ -172,9 +200,27 @@ class TelegramSender:
                 logger.info("Successfully uploaded video %s to %d (Message ID: %d)", path.name, target, msg.id)
                 return msg.id
 
-            except FloodWaitError as exc:
-                logger.warning("Telegram FloodWait %ds during upload. Waiting...", exc.seconds)
-                await asyncio.sleep(exc.seconds + 5)
+            except FloodError as exc:
+                # Menangkap FloodWaitError (RPC 429) sekaligus varian RPC 420
+                # seperti FLOOD_PREMIUM_WAIT_*. Tanpa cabang ini, error 420
+                # jatuh ke `except Exception`: bot menunggu 5 detik lalu
+                # meng-upload ulang seluruh file dari 0%, sehingga upload besar
+                # (1 GB) flood berulang dan tidak pernah selesai.
+                wait = _flood_wait_seconds(exc)
+                logger.warning(
+                    "Telegram flood %ds saat upload %s (percobaan %d/3). "
+                    "Menunggu sesuai durasi dari Telegram...",
+                    wait, path.name, attempt + 1,
+                )
+                await asyncio.sleep(wait)
+            except MediaEmptyError:
+                # Media ditolak permanen (mis. story TikTok yang formatnya
+                # tidak didukung sebagai album) — mengulang tidak menolong.
+                logger.exception(
+                    "Upload ditolak Telegram untuk %s (media tidak valid); "
+                    "tidak diulang.", path.name,
+                )
+                return None
             except Exception as exc:
                 logger.exception("Upload error for %s (attempt %d/3): %s", path.name, attempt + 1, exc)
                 if attempt == 2:
@@ -415,9 +461,23 @@ class TelegramSender:
                     len(paths), target, ids,
                 )
                 return ids
-            except FloodWaitError as exc:
-                logger.warning("Telegram FloodWait %ds saat mengirim album. Menunggu...", exc.seconds)
-                await asyncio.sleep(exc.seconds + 5)
+            except FloodError as exc:
+                # Sama seperti send_video_file: variant RPC 420 (mis.
+                # FLOOD_PREMIUM_WAIT_*) harus dihormati durasinya, bukan
+                # langsung diulang 5 detik kemudian.
+                wait = _flood_wait_seconds(exc)
+                logger.warning(
+                    "Telegram flood %ds saat mengirim album. Menunggu...", wait
+                )
+                await asyncio.sleep(wait)
+            except MediaEmptyError:
+                # Album ditolak permanen (mis. satu-satunya media adalah video
+                # story). Tiga percobaan sia-sia dan hanya memperlambat antrean.
+                logger.exception(
+                    "Album ditolak Telegram (media tidak valid, %d berkas); "
+                    "tidak diulang.", len(paths),
+                )
+                return []
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Gagal mengirim album TikTok (percobaan %d/3): %s", attempt + 1, exc)
                 if attempt == 2:
