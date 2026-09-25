@@ -57,6 +57,18 @@ def _flood_wait_seconds(exc: BaseException, default: int = 30) -> int:
     return max(5, int(default))
 
 
+def _flood_backoff_seconds(base: int, attempt: int, cap: int = 900) -> int:
+    """Backoff eksponensial untuk retry flood.
+
+    `FLOOD_PREMIUM_WAIT_3` memberi durasi sangat pendek (detik) karena
+    Telegram menghitung *jumlah request*, bukan ukuran file. File 1.1 GB
+    berarti ~2.267 part pada 512 KB; mengulang 2.267 request itu setelah
+    menunggu 8 detik hanya menghasilkan flood yang sama. Karena itu tiap
+    percobaan flood diberi jeda yang makin panjang (doubling) sampai cap.
+    """
+    return min(cap, max(1, base) * (2 ** max(0, attempt - 1)))
+
+
 def _format_size(size_bytes: int) -> str:
     """Format bytes to human-readable string."""
     if not size_bytes:
@@ -185,7 +197,11 @@ class TelegramSender:
                 )
                 last_log_time = now
 
-        for attempt in range(3):
+        # Flood adalah kondisi sementara dengan jeda memanjang, jadi diberi jatah
+        # retry sendiri; error biasa tetap memakai 3 percobaan seperti sebelumnya.
+        max_attempts = max(3, Config.TELEGRAM_FLOOD_MAX_RETRIES + 1)
+        flood_attempts = 0
+        for attempt in range(max_attempts):
             try:
                 msg = await self._client.send_file(
                     target,
@@ -206,11 +222,29 @@ class TelegramSender:
                 # jatuh ke `except Exception`: bot menunggu 5 detik lalu
                 # meng-upload ulang seluruh file dari 0%, sehingga upload besar
                 # (1 GB) flood berulang dan tidak pernah selesai.
-                wait = _flood_wait_seconds(exc)
+                flood_attempts += 1
+                # Jatah habis → berhenti sebelum mencoba upload lagi. File tetap
+                # di disk dan kembali ke antrean pada siklus retry berikutnya.
+                if flood_attempts >= Config.TELEGRAM_FLOOD_MAX_RETRIES:
+                    logger.error(
+                        "Upload %s gagal: Telegram tetap flood setelah %d percobaan "
+                        "— file tetap disimpan dan akan di-retry siklus berikutnya.",
+                        path.name, flood_attempts,
+                    )
+                    return None
+                # Durasi dari Telegram adalah batas minimum. Rate limit naik
+                # saat request menumpuk, jadi jeda diperpanjang bertahap.
+                wait = max(
+                    _flood_wait_seconds(exc),
+                    _flood_backoff_seconds(
+                        Config.TELEGRAM_FLOOD_BACKOFF_BASE_SECONDS, flood_attempts
+                    ),
+                )
                 logger.warning(
-                    "Telegram flood %ds saat upload %s (percobaan %d/3). "
-                    "Menunggu sesuai durasi dari Telegram...",
-                    wait, path.name, attempt + 1,
+                    "Telegram flood %ds saat upload %s (flood %d/%d). "
+                    "Menunggu sesuai durasi Telegram + backoff…",
+                    wait, path.name, flood_attempts,
+                    Config.TELEGRAM_FLOOD_MAX_RETRIES,
                 )
                 await asyncio.sleep(wait)
             except MediaEmptyError:
@@ -222,8 +256,10 @@ class TelegramSender:
                 )
                 return None
             except Exception as exc:
-                logger.exception("Upload error for %s (attempt %d/3): %s", path.name, attempt + 1, exc)
-                if attempt == 2:
+                logger.exception(
+                    "Upload error for %s (percobaan %d): %s", path.name, attempt + 1, exc
+                )
+                if attempt >= max_attempts - 1:
                     return None
                 await asyncio.sleep(5)
 

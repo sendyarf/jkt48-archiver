@@ -78,9 +78,25 @@ class Config:
     # Telegram-then-YouTube pipeline; these values no longer disable a stage.
     UPLOAD_TARGET: str = os.getenv("UPLOAD_TARGET", "telegram").lower().strip()
 
-    # Telegram max file size threshold before splitting (MB)
-    # Default: 1950 MB (safe buffer under 2000 MB / 2 GB limit for standard accounts)
+    # Telegram max file size threshold before splitting (MB).
+    # Batas riil per file mengikuti jenis akun: 2 GB untuk akun free, 4 GB
+    # untuk akun premium. Ambang ini BUKAN penyebab FLOOD_PREMIUM_WAIT_* —
+    # Telethon memecah file jadi ~512 KB per request, jadi 1.1 GB ≈ 2.267
+    # request, dan yang dibatasi Telegram adalah JUMLAH request-nya. Jawabannya
+    # backoff flood (lihat TELEGRAM_FLOOD_* di bawah), bukan perkecil ambang.
     TELEGRAM_MAX_FILE_SIZE_MB: int = int(os.getenv("TELEGRAM_MAX_FILE_SIZE_MB", "1950"))
+
+    # Retry khusus flood (FLOOD_PREMIUM_WAIT_* / FloodWaitError) saat upload
+    # file besar. Rate limit naik seiring request menumpuk, sehingga jeda
+    # diperpanjang eksponensial: 15 → 30 → 60 → 120 … (cap 900 detik).
+    # Setelah jatah habis, file tetap di disk dan kembali ke antrean pada
+    # siklus retry berikutnya — tidak ada data yang hilang.
+    TELEGRAM_FLOOD_MAX_RETRIES: int = int(
+        os.getenv("TELEGRAM_FLOOD_MAX_RETRIES", "6")
+    )
+    TELEGRAM_FLOOD_BACKOFF_BASE_SECONDS: int = int(
+        os.getenv("TELEGRAM_FLOOD_BACKOFF_BASE_SECONDS", "15")
+    )
 
     # ─── YouTube Data API v3 ────────────────────────────────────────────
     # Fallback single channel config (backward compatibility)

@@ -20,6 +20,7 @@ from bot.telegram_sender import (
     build_youtube_notification,
     _format_size,
     _flood_wait_seconds,
+    _flood_backoff_seconds,
 )
 from bot.video_splitter import (
     VideoPart,
@@ -321,6 +322,75 @@ class TestTelegramFloodHandling(unittest.TestCase):
             self.assertEqual(asyncio.run(run()), 77)
             self.assertEqual(waits, [30], "harus menunggu sesuai flood, bukan 5 detik")
             self.assertEqual(sender._client.send_file.await_count, 2)
+
+    def test_flood_backoff_doubles_and_caps(self):
+        self.assertEqual(_flood_backoff_seconds(15, 1), 15)
+        self.assertEqual(_flood_backoff_seconds(15, 2), 30)
+        self.assertEqual(_flood_backoff_seconds(15, 3), 60)
+        self.assertEqual(_flood_backoff_seconds(15, 4), 120)
+        # Cap menahan backoff agar tidak tumbuh tanpa batas.
+        self.assertEqual(_flood_backoff_seconds(15, 20, cap=900), 900)
+
+    def test_upload_backoff_grows_across_flood_retries(self):
+        """Tiga flood berturut-turut harus menunggu 15/30/60, bukan 8/8/8."""
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "big.mp4"
+            video.write_bytes(b"0" * 32)
+            sender = TelegramSender.__new__(TelegramSender)
+            sender._connected = True
+            sender._client = AsyncMock()
+            sender._client.send_file = AsyncMock(
+                side_effect=[
+                    FloodError(request=None, message="FLOOD_PREMIUM_WAIT_3"),
+                    FloodError(request=None, message="FLOOD_PREMIUM_WAIT_3"),
+                    FloodError(request=None, message="FLOOD_PREMIUM_WAIT_3"),
+                    _fake_message(99),
+                ]
+            )
+            waits: list[float] = []
+
+            async def fake_sleep(seconds):
+                waits.append(seconds)
+
+            async def run():
+                with patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep):
+                    return await sender.send_video_file(video)
+
+            self.assertEqual(asyncio.run(run()), 99)
+            self.assertEqual(
+                waits, [15, 30, 60], "jeda flood harus memanjang, bukan konstan"
+            )
+
+    def test_upload_gives_up_after_flood_budget(self):
+        """Setelah jatah flood habis, upload kembali None (file tetap di disk)."""
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "big.mp4"
+            video.write_bytes(b"0" * 32)
+            old_retries = Config.TELEGRAM_FLOOD_MAX_RETRIES
+            Config.TELEGRAM_FLOOD_MAX_RETRIES = 2
+            try:
+                sender = TelegramSender.__new__(TelegramSender)
+                sender._connected = True
+                sender._client = AsyncMock()
+                sender._client.send_file = AsyncMock(
+                    side_effect=FloodError(request=None, message="FLOOD")
+                )
+
+                async def fake_sleep(seconds):
+                    return None
+
+                async def run():
+                    with patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep):
+                        return await sender.send_video_file(video)
+
+                self.assertIsNone(asyncio.run(run()))
+                self.assertEqual(
+                    sender._client.send_file.await_count,
+                    2,
+                    "upload harus berhenti tepat di jatah flood, tidak mencoba lebih",
+                )
+            finally:
+                Config.TELEGRAM_FLOOD_MAX_RETRIES = old_retries
 
     def test_media_empty_error_is_not_retried(self):
         with tempfile.TemporaryDirectory() as directory:
