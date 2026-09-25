@@ -5,7 +5,7 @@ Latar (temuan 19 Sep 2026): `shutdown()` dulu langsung `task.cancel()` untuk
 semua rekaman, padahal `GRACEFUL_SHUTDOWN_SECONDS` didefinisikan tapi tidak
 dipakai. Akibatnya sesi yang sedang direkam tetap berstatus 'downloading',
 lalu dihapus `clean_interrupted_downloads()` saat boot — file parsial yang
-sudah ditutup rapi oleh yt-dlp (SIGTERM) tidak pernah diupload.
+sudah ditutup rapi oleh ffmpeg (SIGTERM) tidak pernah diupload.
 """
 import asyncio
 import unittest
@@ -55,7 +55,10 @@ class ShutdownSalvageTestCase(MemberManagerTestCase):
 
     def _write_partial(self, live_id: str = LIVE_ID, size: int = 8 * 1024 * 1024) -> Path:
         path = self.downloads / f"{USERNAME}_20260919_170000_{live_id}.mp4"
-        path.write_bytes(b"\x00" * size)
+        header = b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isomiso2"
+        header += b"\x00\x00\x00\x10moof"
+        payload = header + b"\x00" * max(0, size - len(header))
+        path.write_bytes(payload)
         return path
 class TestGracefulStop(ShutdownSalvageTestCase):
     def test_menunggu_task_selesai_setelah_sigterm(self):
@@ -157,6 +160,21 @@ class TestSalvagePartialSegments(ShutdownSalvageTestCase):
         row = database.get_session(LIVE_ID)
         self.assertEqual(row["status"], "segment_done")
         self.assertIsNone(row["file_path"], "sesi yang sudah tercatat tidak ditimpa")
+
+    def test_error_body_besar_tidak_didaftarkan(self):
+        """Buffer CDN/error besar bukan video dan tidak boleh masuk merge group."""
+        bot = self._make_bot()
+        self._make_session()
+        path = self.downloads / f"{USERNAME}_20260919_170000_{LIVE_ID}.mp4"
+        path.write_bytes(b"HTTP 404 error page\n" + b"\x00" * (8 * 1024 * 1024))
+
+        asyncio.run(bot._salvage_partial_segments({USERNAME: LIVE_ID}))
+
+        row = database.get_session(LIVE_ID)
+        assert row is not None
+        self.assertEqual(row["status"], "downloading")
+        self.assertIsNone(row["merge_group_id"])
+
 
     def test_showroom_memakai_platform_dari_sesi(self):
         bot = self._make_bot()

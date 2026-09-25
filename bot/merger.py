@@ -556,8 +556,9 @@ class MergeManager:
         close_merge_group(group_id, merged_path, merged_live_id)
         set_session_fields(group_id=group_id, content_uid=merged_live_id)
 
+        pipeline_complete: Optional[bool] = None
         if self._on_upload_ready:
-            await self._on_upload_ready(
+            pipeline_complete = await self._on_upload_ready(
                 live_id=merged_live_id,
                 member_username=member_username,
                 member_name=meta_member_name,
@@ -568,11 +569,23 @@ class MergeManager:
                 platform=group_platform,
             )
 
-        # Cleanup individual segment files after successful merged output
-        if Config.AUTO_DELETE_AFTER_UPLOAD and len(file_paths) > 1:
+        # Source segments are fallback copies, not disposable scratch files.
+        # Keep them until the live pipeline explicitly reports that both
+        # Telegram and YouTube are complete.  Legacy callbacks that return
+        # ``None`` are treated conservatively as incomplete.
+        if (
+            Config.AUTO_DELETE_AFTER_UPLOAD
+            and len(file_paths) > 1
+            and pipeline_complete is True
+        ):
             for fp in file_paths:
                 if fp != merged_path:
                     delete_file(fp)
+        elif len(file_paths) > 1 and pipeline_complete is not True:
+            logger.info(
+                "%s: source segments kept until Telegram + YouTube pipeline completes",
+                member_username,
+            )
 
     async def _concat_files(
         self,

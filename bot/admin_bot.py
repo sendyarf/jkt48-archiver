@@ -89,7 +89,7 @@ class AdminBot:
 
     on_stop_recording: callback sinkron `fn(username) -> str` yang dipanggil
     setelah /stop sukses, untuk menghentikan rekaman yang sedang berjalan
-    (main.py menghentikan proses yt-dlp & mengembalikan pesan status).
+    (main.py menghentikan proses ffmpeg & mengembalikan pesan status).
     """
 
     def __init__(

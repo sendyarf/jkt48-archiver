@@ -1,10 +1,9 @@
 """
 hls_discovery.py - Discover permanent HLS URLs for new members via IDN GraphQL.
 
-This module is ONLY invoked when there are members in the database whose
-HLS URLs have not yet been recorded (hls_url is NULL).
-Once an HLS URL is discovered for a member, it is stored permanently in SQLite,
-and IDN GraphQL will no longer be queried for that member.
+HLS URLs are stored in SQLite, but playback URLs can change for a
+username.  This module discovers missing URLs and best-effort refreshes known
+URLs from the active IDN feed; failures leave the previous URL untouched.
 """
 import asyncio
 import logging
@@ -44,7 +43,7 @@ query GetLivestream($category: String, $page: Int){
 
 
 class HLSDiscovery:
-    """Discovers HLS playback URLs for members with missing HLS entries."""
+    """Discover missing HLS URLs and refresh known active-member URLs."""
 
     def __init__(self) -> None:
         self._client: Optional[httpx.AsyncClient] = None
@@ -103,11 +102,29 @@ class HLSDiscovery:
         for live in active_lives:
             creator = live.get("creator") or {}
             username = (creator.get("username") or "").lower()
-            playback_url = live.get("playback_url") or ""
+            playback_url = (live.get("playback_url") or "").strip()
             display_name = creator.get("name") or username
+            if not username or not playback_url:
+                continue
 
-            if username in missing_usernames and playback_url:
+            known = database.get_member_hls(username)
+            if not known or not known.get("enabled", 1):
+                continue
+            # Refresh URL playback even for a member that was seeded before.
+            # AWS IVS/IDN can rotate the playback host/channel while a member
+            # keeps the same public username.  A stale 404 must not permanently
+            # exclude that member from recording.
+            old_url = (known.get("hls_url") or "").strip()
+            if old_url != playback_url:
                 database.update_member_hls_url(username, playback_url, display_name)
+                logger.warning(
+                    "HLS URL IDN untuk '%s' berubah: %s → %s",
+                    username,
+                    old_url or "(kosong)",
+                    playback_url,
+                )
+
+            if username in missing_usernames:
                 logger.info("Discovered HLS URL for '%s' (%s): %s", username, display_name, playback_url)
                 discovered.append({
                     "username": username,
@@ -116,6 +133,50 @@ class HLSDiscovery:
                 })
 
         return discovered
+
+    async def refresh_known_members(self) -> list[dict]:
+        """Refresh stored IDN playback URLs for currently active members.
+
+        HLS URLs seeded from an earlier session can become stale when IDN
+        rotates the playback host/channel.  Refreshing them from the active
+        IDN feed prevents a single 404 from permanently disabling recording.
+        The operation is best-effort: an IDN outage simply returns an empty
+        list and leaves the known URLs untouched.
+        """
+        known_members = {
+            (m.get("username") or "").lower(): m
+            for m in database.get_all_member_hls(include_disabled=False)
+            if (m.get("username") or "").strip()
+            and not m.get("showroom_only", 0)
+        }
+        if not known_members:
+            return []
+
+        active_lives = await self.fetch_active_lives()
+        refreshed: list[dict] = []
+        for live in active_lives:
+            creator = live.get("creator") or {}
+            username = (creator.get("username") or "").lower().strip()
+            playback_url = (live.get("playback_url") or "").strip()
+            if username not in known_members or not playback_url:
+                continue
+            old_url = (known_members[username].get("hls_url") or "").strip()
+            if old_url == playback_url:
+                continue
+            display_name = creator.get("name") or known_members[username].get("display_name") or username
+            database.update_member_hls_url(username, playback_url, display_name)
+            logger.warning(
+                "HLS URL IDN untuk '%s' berubah: %s → %s",
+                username,
+                old_url or "(kosong)",
+                playback_url,
+            )
+            refreshed.append({
+                "username": username,
+                "display_name": display_name,
+                "hls_url": playback_url,
+            })
+        return refreshed
 
     async def close(self) -> None:
         if self._client and not self._client.is_closed:

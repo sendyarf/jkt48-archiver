@@ -21,7 +21,7 @@ FRESH_URL = "https://cdn.showroom.example/segar.m3u8"
 
 
 class _FakeProcess:
-    """yt-dlp palsu: langsung keluar dengan kode 1 tanpa menghasilkan file."""
+    """Process palsu: langsung keluar dengan kode 1 tanpa menghasilkan file."""
 
     def __init__(self):
         self.returncode = None

@@ -1,9 +1,10 @@
 """
 seed_hls.py - Populate member_hls table with known HLS URLs & display names.
 
-HLS URLs untuk AWS IVS channel JKT48 bersifat PERMANEN per member
-(channel ID tidak berubah antar sesi live), sehingga cukup di-seed
-sekali dan bot tidak perlu probe IDN GraphQL untuk member ini lagi.
+HLS URLs untuk AWS IVS channel JKT48 menjadi baseline per member
+(channel ID biasanya tetap antar sesi), sehingga cukup di-seed sekali. Jika
+IDN melaporkan playback URL yang berbeda saat member live, bot tetap dapat
+me-refresh URL tersebut di latar belakang.
 
 Jalankan sekali di server:
     python3 -m bot.seed_hls
@@ -153,7 +154,7 @@ def main() -> None:
             username=username,
             display_name=display_name,
             hls_url=hls_url,
-            confirmed=True,      # ← tidak akan di-probe IDN GraphQL lagi
+            confirmed=True,      # baseline; active IDN playback URL may refresh it
         )
         logger.info("✅ %s (%s) → %s", username, display_name, channel_id)
         seeded += 1

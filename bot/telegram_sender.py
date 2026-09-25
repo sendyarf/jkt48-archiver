@@ -193,6 +193,8 @@ class TelegramSender:
         channel_id: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         platform: str = "",
+        existing_message_ids: Optional[list[int]] = None,
+        on_part_sent: Optional[Callable[[list[int]], None]] = None,
     ) -> list[int]:
         """
         Splits video if > 2GB (TELEGRAM_MAX_FILE_SIZE_MB) and uploads all parts
@@ -209,17 +211,35 @@ class TelegramSender:
 
         logger.info("Preparing video for Telegram upload: %s", path.name)
 
-        # 1. Split video into parts if needed
-        parts = await split_video_if_needed(path)
-        total_parts = len(parts)
-
-        # 2. Generate a thumbnail frame for the video
-        thumb_path = await generate_thumbnail(path)
-
-        sent_message_ids: list[int] = []
-
+        # Keep all post-split preparation inside the cleanup scope.  A thumbnail
+        # error or an invalid durable prefix must not leave generated parts on
+        # disk for a later retry to rediscover.
+        parts: list[VideoPart] = []
+        thumb_path: Optional[Path] = None
         try:
-            for part in parts:
+            # 1. Split video into parts if needed
+            parts = await split_video_if_needed(path)
+            total_parts = len(parts)
+
+            # 2. Generate a thumbnail frame for the video
+            thumb_path = await generate_thumbnail(path)
+
+            sent_message_ids: list[int] = list(existing_message_ids or [])
+            if len(sent_message_ids) > total_parts:
+                raise ValueError(
+                    f"Telegram partial marker has {len(sent_message_ids)} IDs, "
+                    f"but current split has only {total_parts} parts"
+                )
+            if sent_message_ids:
+                logger.info(
+                    "Resuming Telegram archive for %s at part %d/%d",
+                    path.name,
+                    len(sent_message_ids) + 1,
+                    total_parts,
+                )
+            start_index = len(sent_message_ids)
+
+            for part in parts[start_index:]:
                 caption = build_telegram_video_caption(
                     member_name=member_name,
                     member_username=member_username,
@@ -252,6 +272,8 @@ class TelegramSender:
 
                 if msg_id:
                     sent_message_ids.append(msg_id)
+                    if on_part_sent is not None:
+                        on_part_sent(list(sent_message_ids))
                 else:
                     raise RuntimeError(
                         f"Failed to upload part {part.part_number}/{total_parts} ({part.file_path.name}) to Telegram"
@@ -266,12 +288,10 @@ class TelegramSender:
             return sent_message_ids
 
         finally:
-            # Clean up generated split part files
             cleanup_video_parts(parts)
-            # Clean up temporary thumbnail
-            if thumb_path and thumb_path.exists():
+            if thumb_path is not None:
                 try:
-                    thumb_path.unlink(missing_ok=True)
+                    Path(thumb_path).unlink(missing_ok=True)
                 except Exception:
                     pass
 

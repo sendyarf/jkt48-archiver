@@ -11,10 +11,9 @@ requests==2.32.4
 # tikwm.com & halaman embed TikTok (tanpa ini keduanya dijawab 403).
 curl_cffi==0.14.0
 
-# HLS downloader (handles quality selection, reconnect, auth headers)
-# ffmpeg is still required on the system for muxing: sudo apt install ffmpeg
-# yt-dlp di-pin longgar: extractor IDN/Showroom/TikTok sering berubah dan
-# pin stale (mis. 2025.1.15) bisa mematahkan recording mendadak.
+# HLS downloader. ffmpeg dipakai untuk merekam live HLS secara langsung
+# dan menulis fragmented MP4 secara bertahap; ffmpeg juga dipakai untuk muxing.
+# yt-dlp tetap dipakai sebagai fallback/penyedia media TikTok.
 yt-dlp>=2025.1.15
 
 # YouTube Data API v3

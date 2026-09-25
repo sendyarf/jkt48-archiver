@@ -1,14 +1,19 @@
 """
+Unit tests for recovery, video splitting, Telegram multipart, and config.
+
 test_telegram_upload.py - Unit tests for video splitter, telegram captions, and config.
 """
 import asyncio
 import os
 import subprocess
+import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
 from bot.config import Config
 from bot.telegram_sender import (
+    TelegramSender,
     build_telegram_video_caption,
     build_youtube_notification,
     _format_size,
@@ -189,6 +194,73 @@ class TestVideoSplitter(unittest.TestCase):
         cleanup_video_parts(parts)
         for part in parts:
             self.assertFalse(part.file_path.exists())
+
+
+class TestTelegramMultipartResume(unittest.TestCase):
+    """Multipart retries must resume after the last durable Telegram message."""
+
+    def test_failure_persists_prefix_and_retry_skips_sent_parts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.mp4"
+            source.write_bytes(b"video")
+            parts = [
+                VideoPart(i, 3, Path(directory) / f"part{i}.mp4", 10, 1, 16, 9, True)
+                for i in (1, 2, 3)
+            ]
+            for part in parts:
+                part.file_path.write_bytes(b"part")
+            sender = TelegramSender.__new__(TelegramSender)
+            sender.send_video_file = AsyncMock(side_effect=[101, None])
+            saved_prefixes = []
+            calls = []
+
+            async def fake_split(path):
+                calls.append(("split", str(path)))
+                return parts
+
+            async def fake_thumbnail(path):
+                calls.append(("thumb", str(path)))
+                return None
+
+            async def run():
+                with (
+                    patch("bot.telegram_sender.split_video_if_needed", side_effect=fake_split),
+                    patch("bot.telegram_sender.generate_thumbnail", side_effect=fake_thumbnail),
+                    patch("bot.telegram_sender.cleanup_video_parts"),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        await sender.upload_video_with_splitting(
+                            source,
+                            "Test",
+                            "jkt48_test",
+                            "2026-09-24T00:00:00+00:00",
+                            on_part_sent=lambda ids: saved_prefixes.append(list(ids)),
+                        )
+                    self.assertEqual(saved_prefixes, [[101]])
+
+                    # Re-splitting the same source is expected. Only part 2
+                    # should be uploaded; durable part 1 is not duplicated.
+                    sender.send_video_file.reset_mock()
+                    sender.send_video_file.side_effect = [202, 303]
+                    result = await sender.upload_video_with_splitting(
+                        source,
+                        "Test",
+                        "jkt48_test",
+                        "2026-09-24T00:00:00+00:00",
+                        existing_message_ids=saved_prefixes[-1],
+                        on_part_sent=lambda ids: saved_prefixes.append(list(ids)),
+                    )
+                    return result
+
+            result = asyncio.run(run())
+            self.assertEqual(result, [101, 202, 303])
+            uploaded_parts = [
+                call.kwargs["file_path"].name
+                for call in sender.send_video_file.await_args_list
+            ]
+            self.assertEqual(uploaded_parts, ["part2.mp4", "part3.mp4"])
+            self.assertEqual(saved_prefixes[-1], [101, 202, 303])
+
 
 
 if __name__ == "__main__":

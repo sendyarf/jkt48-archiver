@@ -36,6 +36,7 @@ from bot.downloader import (
     delete_file,
     get_file_size_bytes,
     cancel_download,
+    _is_usable_recording,
     has_enough_disk_space,
     DownloadError,
 )
@@ -103,8 +104,9 @@ class JKT48LiveBot:
             concurrency=Config.SHOWROOM_CONCURRENCY,
             timeout_seconds=Config.SHOWROOM_TIMEOUT_SECONDS,
         )
+        self._upload_lock = asyncio.Lock()
         self.merge_mgr = MergeManager(
-            on_upload_ready=self.handle_upload_ready,
+            on_upload_ready=self._handle_upload_ready_serialized,
             probe_active=self._probe_member_active,
             fetch_live=self._fetch_member_live,
         )
@@ -115,6 +117,11 @@ class JKT48LiveBot:
         self.active_showroom: set[str] = set()  # username Showroom yang sedang direkam
         self.active_live_ids: dict[str, str] = {}  # kunci -> live_id sedang direkam
         self.recording_tasks: set[asyncio.Task] = set()
+        # Retry workers are deliberately separate from the HLS polling loop.
+        # A large Telegram/YouTube upload must never stop live detection.
+        self._retry_task: Optional[asyncio.Task] = None
+        self._tiktok_retry_task: Optional[asyncio.Task] = None
+        self._hls_refresh_task: Optional[asyncio.Task] = None
         self.admin_bot: Optional[AdminBot] = None
         self.replay_bot: Optional[ReplayBot] = None
         # Arsip TikTok (OPSIONAL): hanya dibuat bila TIKTOK_ENABLED=true,
@@ -130,6 +137,7 @@ class JKT48LiveBot:
         logger.info("Initializing database and tables...")
         database.init_db()
         database.clean_interrupted_downloads()
+        database.recover_interrupted_uploads()
 
         # Connect to Telegram
         logger.info("Connecting to Telegram...")
@@ -141,10 +149,9 @@ class JKT48LiveBot:
         # Initial members sync
         self.sync_members_whitelist()
 
-        # Check and process pending uploads in background.
-        # Ref disimpan agar task tidak di-GC di tengah jalan (Python docs:
-        # create_task tanpa referensi kuat bisa di-collect → exception hilang).
-        self._retry_task = asyncio.create_task(self.retry_pending_uploads())
+        # Process pending uploads in background workers.  Never await this
+        # from the polling loop: a 1 GB Telegram upload can take hours.
+        self._schedule_retry_workers()
 
         # Telegram admin bot (long polling) — control channels from Telegram
         self.admin_bot = AdminBot(on_stop_recording=self._cancel_active_recording)
@@ -194,7 +201,7 @@ class JKT48LiveBot:
     def _cancel_active_recording(self, username: str) -> str:
         """
         Callback dari Telegram admin bot (/stop): hentikan rekaman yang sedang
-        berjalan untuk member ini secara graceful (SIGTERM ke yt-dlp).
+        berjalan untuk member ini secara graceful (SIGTERM ke ffmpeg).
 
         Segmen yang sudah terekam tetap disimpan, masuk merge group, lalu
         diupload seperti biasa — jadi tidak ada data yang hilang.
@@ -271,7 +278,25 @@ class JKT48LiveBot:
             return None
         return await self.idn_lookup.fetch_member_live(username)
 
+    async def _handle_upload_ready_serialized(self, **kwargs) -> bool:
+        """Serialize upload callbacks from the merge timer."""
+        async with self._upload_lock:
+            return await self._handle_upload_ready_impl(**kwargs)
+
     async def handle_upload_ready(
+        self,
+        *args,
+        _upload_lock_held: bool = False,
+        keep_file: bool = False,
+        **kwargs,
+    ) -> bool:
+        """Upload one ready video, serialized unless an internal caller holds the lock."""
+        if _upload_lock_held:
+            return await self._handle_upload_ready_impl(*args, keep_file=keep_file, **kwargs)
+        async with self._upload_lock:
+            return await self._handle_upload_ready_impl(*args, keep_file=keep_file, **kwargs)
+
+    async def _handle_upload_ready_impl(
         self,
         live_id: str,
         member_username: str,
@@ -281,38 +306,33 @@ class JKT48LiveBot:
         thumbnail_url: str = "",
         live_title: str = "",
         platform: str = "",
-    ) -> None:
-        """
-        Callback executed by MergeManager when a video (single or merged)
-        is ready to be uploaded to YouTube after the merge window expires.
-        `platform` diteruskan oleh merger; bila kosong (mis. jalur pending
-        upload lama), platform ditebak dari live_id / database.
+        keep_file: bool = False,
+    ) -> bool:
+        """Run the live-content pipeline in independent, idempotent stages.
+
+        Live archive order is intentionally Telegram first, then YouTube.  The
+        two destination markers in ``live_sessions`` are the source of truth;
+        one destination failing never erases the other destination's marker.
         """
         path = Path(file_path)
-        group_id: Optional[int] = None
-        if live_id.startswith("merged_"):
-            try:
-                group_id = int(live_id.split("_")[1])
-            except (IndexError, ValueError):
-                pass
-        else:
-            # Retry memakai live_id asli segmen (bukan `merged_<gid>`), tapi
-            # status/upload id harus menempel ke SELURUH merge group — kalau
-            # tidak, hanya satu baris yang berubah dan baris lain tetap
-            # pending_upload → di-upload ulang pada siklus retry berikutnya.
-            # Hanya saat status sudah pending_upload (retry). Concat gagal
-            # dispatch per-segmen dengan status segment_done — update-nya
-            # harus tetap per-baris, jangan digabung via merge_group_id.
-            row = database.get_session(live_id)
-            if (
-                row is not None
-                and row["merge_group_id"] is not None
-                and (row["status"] or "") == "pending_upload"
-            ):
-                group_id = int(row["merge_group_id"])
+        # Only a finalized merge group is an atomic upload destination.  A
+        # concat-failed group keeps its historical ID on each segment, but those
+        # segments must retain independent status and destination markers.
+        group_id = database.get_finalized_upload_group_id(live_id)
+        if live_id.startswith("merged_") and group_id is None:
+            logger.error(
+                "Upload callback %s ditolak: merge group belum finalized",
+                live_id,
+            )
+            return False
 
-        # Platform untuk judul/deskripsi: dari merger bila ada, lalu prefix
-        # live_id (`sr_`), lalu database (live_sessions → merge_groups).
+        # Prefer the canonical merged artifact when the callback was invoked via
+        # a stale segment row.  This is common after a restart or when an older
+        # database row still points at a deleted segment.
+        canonical_path = database.get_available_upload_path(live_id, group_id)
+        if canonical_path:
+            path = Path(canonical_path)
+
         plat = platform or database.get_platform_for_live(live_id, group_id)
 
         def set_status(status: str, **kwargs) -> None:
@@ -321,250 +341,266 @@ class JKT48LiveBot:
             else:
                 database.update_status(live_id, status, **kwargs)
 
+        # Live recordings have two equally required destinations:
+        #   Telegram = private archive / download source
+        #   YouTube  = public website playback source
+        # ``UPLOAD_TARGET`` remains in Config for compatibility with old
+        # deployments, but it no longer turns off either destination.  Keeping
+        # this decision in one place prevents a stale ``telegram`` setting from
+        # silently skipping YouTube (or vice versa).
+        target = (Config.UPLOAD_TARGET or "").strip().lower()
+        if target not in ("telegram", "youtube"):
+            logger.warning(
+                "UPLOAD_TARGET=%r tidak dikenal; pipeline live tetap memakai "
+                "Telegram lalu YouTube", Config.UPLOAD_TARGET,
+            )
+        telegram_required = True
+        youtube_required = True
+
+        prior = database.get_group_upload_state(live_id, group_id)
+        telegram_ids = (prior.get("telegram_message_ids") or "").strip()
+        # Only the plural archive marker proves that the Telegram video upload
+        # completed.  ``telegram_message_id`` is the notification-message marker
+        # in the current pipeline and must never be treated as an archive ID.
+        telegram_ok = bool(telegram_ids)
+        youtube_video_id = (prior.get("youtube_video_id") or "").strip()
+        youtube_ok = bool(youtube_video_id)
+        # A notification is considered sent only when it is distinct from the
+        # first archived message ID.  Legacy rows without a plural marker cannot
+        # safely use the singular column as a notification marker.
+        first_archive_id = telegram_ids.split(",", 1)[0].strip() if telegram_ids else ""
+        notification_sent = bool(
+            telegram_ids
+            and prior.get("telegram_message_id")
+            and str(prior.get("telegram_message_id")) != first_archive_id
+        )
+
         if not path.exists():
-            logger.error("Upload failed: file not found on disk: %s", file_path)
-            set_status("failed", error_message="File not found")
-            return
+            # A completed destination can be finalized even if a stale retry row
+            # points at a file that was already cleaned.  Incomplete destinations
+            # must remain visibly failed rather than being silently considered done.
+            if telegram_ok and youtube_ok:
+                set_status("done_youtube")
+                return True
+            else:
+                set_status("failed", error_message="File not found on disk")
+                return False
 
         file_size = get_file_size_bytes(path)
+        errors: list[str] = []
 
-        if Config.UPLOAD_TARGET == "telegram":
+        # ?? Stage 1: Telegram archive (primary, no YouTube quota involved) ??
+        if telegram_required and not telegram_ok:
             set_status(
                 "uploading_telegram",
                 file_path=str(path),
                 file_size_bytes=file_size,
             )
-            logger.info("Uploading video to Telegram for %s (%s): %s", member_name, live_id, path.name)
-
-            try:
-                msg_ids = await self.tg.upload_video_with_splitting(
-                    file_path=path,
-                    member_name=member_name or member_username,
-                    member_username=member_username,
-                    started_at=started_at,
-                    live_title=live_title,
-                    platform=plat,
-                )
-
-                if msg_ids:
-                    # Simpan SEMUA message_id (plural) agar web `telegram_archived`
-                    # dan replay bot bisa copy multi-part — sama dengan alur dual.
-                    joined = ",".join(str(m) for m in msg_ids)
-                    set_status(
-                        "done_telegram",
-                        telegram_message_id=msg_ids[0],
-                        telegram_message_ids=joined,
-                    )
-                    logger.info("Successfully uploaded to Telegram (%s). Message IDs: %s", live_id, msg_ids)
-
-                    # Auto delete local file if configured
-                    if Config.AUTO_DELETE_AFTER_UPLOAD:
-                        delete_file(path)
-                else:
-                    logger.error("Telegram upload returned no message ID for %s", live_id)
-                    set_status("pending_upload", error_message="Telegram upload returned no message ID")
-
-            except Exception as exc:
-                logger.exception("Error uploading %s to Telegram: %s", live_id, exc)
-                set_status("pending_upload", error_message=str(exc))
-
-        else:
-            # ─── YouTube Upload Flow (preserved) ─────────────────────────
-            # Progress per tujuan disimpan terpisah (youtube_video_id vs
-            # telegram_message_ids) supaya retry hanya mengerjakan yang belum
-            # selesai — kunci dual-upload saat kuota YouTube habis.
-            prior = database.get_group_upload_state(live_id, group_id)
-            already_on_youtube = bool((prior.get("youtube_video_id") or "").strip())
-            already_archived = bool((prior.get("telegram_message_ids") or "").strip())
-            already_notified = bool(prior.get("telegram_message_id"))
-
-            # Arsip ke channel TG privat INDEPENDEN dari keberhasilan YouTube.
-            # Dulu dipanggil hanya setelah YouTube sukses → kuota habis = channel
-            # arsip tidak pernah terisi.
-            archive_ok = True
-            if not already_archived:
-                archive_ok = await self._archive_to_telegram(
-                    path=path,
-                    member_name=member_name or member_username,
-                    member_username=member_username,
-                    started_at=started_at,
-                    live_title=live_title,
-                    live_id=live_id,
-                    group_id=group_id,
-                    set_status=set_status,
-                    platform=plat,
-                )
+            # Both live destinations are mandatory.  Prefer the private archive
+            # channel, but retain the regular channel as a migration fallback.
+            archive_channel = Config.TELEGRAM_ARCHIVE_CHANNEL_ID or Config.TELEGRAM_CHANNEL_ID
+            archive_ok, archive_error = await self._archive_to_telegram(
+                path=path,
+                member_name=member_name or member_username,
+                member_username=member_username,
+                started_at=started_at,
+                live_title=live_title,
+                live_id=live_id,
+                group_id=group_id,
+                channel_id=archive_channel,
+                platform=plat,
+            )
+            telegram_ok = archive_ok
+            if archive_error:
+                errors.append(archive_error)
+            if archive_ok:
+                logger.info("Telegram archive selesai untuk %s; lanjut ke YouTube", live_id)
             else:
-                logger.info(
-                    "Telegram archive already done for %s (youtube=%s); skipping archive.",
-                    live_id, prior.get("youtube_video_id") or "-",
+                # Telegram is the download archive.  Do not send the same local
+                # file to YouTube until this mandatory first stage is safe.
+                logger.warning(
+                    "Telegram archive belum selesai untuk %s; YouTube ditunda",
+                    live_id,
                 )
-
-            video_id = (prior.get("youtube_video_id") or "").strip()
-            yt_ok = already_on_youtube
-
-            if already_on_youtube:
-                logger.info(
-                    "YouTube already uploaded for %s (video_id=%s); skipping YouTube upload.",
-                    live_id, video_id,
-                )
-                set_status(
-                    "uploading_youtube",
-                    file_path=str(path),
-                    file_size_bytes=file_size,
-                    youtube_video_id=video_id,
-                )
-            else:
-                set_status(
-                    "uploading_youtube",
-                    file_path=str(path),
-                    file_size_bytes=file_size,
-                )
-
-                title = self.yt_pool.build_title(
-                    member_name or member_username, started_at, plat
-                )
-                desc = self.yt_pool.build_description(
-                    member_name or member_username, member_username, started_at, plat
-                )
-
-                logger.info("Uploading video to YouTube for %s (%s): %s", member_name, live_id, title)
-
-                try:
-                    video_id, channel_label = self.yt_pool.upload_video(path, title=title, description=desc)
-
-                    if video_id:
-                        yt_ok = True
-                        set_status(
-                            "uploading_youtube",
-                            youtube_video_id=video_id,
-                        )
-                        logger.info("Successfully uploaded to YouTube (%s). Video ID: %s", channel_label, video_id)
-
-                        # Thumbnail untuk video BARU: kolase 3x2 bila bisa, atau
-                        # fallback 1 frame cover (lihat build_collage). Best-effort:
-                        # gagal -> warning saja, upload tetap sukses.
-                        thumb_path = None
-                        try:
-                            if Config.THUMBNAIL_COLLAGE_ENABLED:
-                                thumb_path = build_collage(path)
-                                if thumb_path is not None:
-                                    ok_thumb = self.yt_pool.set_thumbnail(
-                                        video_id, thumb_path,
-                                        channel_label=channel_label,
-                                    )
-                                    if not ok_thumb:
-                                        logger.warning(
-                                            "Thumbnail gagal terpasang ke YouTube %s "
-                                            "(file lokal tetap dihapus; video memakai "
-                                            "thumbnail otomatis).",
-                                            video_id,
-                                        )
-                        except Exception as exc:
-                            logger.warning("Thumbnail kolase dilewati (%s): %s", live_id, exc)
-                        finally:
-                            if thumb_path is not None:
-                                try:
-                                    thumb_path.unlink(missing_ok=True)
-                                except OSError:
-                                    pass
-                    else:
-                        logger.error("YouTube upload returned no video ID for %s", live_id)
-                        set_status("pending_upload", error_message="YouTube upload failed")
-
-                except YouTubeQuotaExceeded as q_exc:
-                    logger.warning(
-                        "YouTube quota limit exceeded across all channels for %s: %s",
-                        live_id, q_exc,
-                    )
-                    set_status("pending_upload", error_message=str(q_exc))
-                    # File stays on disk; notify admin if configured
-                    if Config.ADMIN_CHAT_ID:
-                        await self.tg.send_message(
-                            f"⚠️ <b>YouTube Quota Alert</b>\n"
-                            f"Semua channel YouTube mencapai limit upload harian.\n"
-                            f"Video untuk <b>{member_name}</b> disimpan di VPS dan masuk antrian upload.",
-                            channel_id=Config.ADMIN_CHAT_ID,
-                        )
-                except Exception as exc:
-                    # Error non-kuota (network, OAuth, dsb.) juga retryable —
-                    # tandai pending_upload agar file TIDAK stuck permanen sebagai
-                    # `failed` tanpa pernah dicoba lagi (get_pending_uploads_youtube
-                    # hanya memilih pending_upload).
-                    logger.exception("Unexpected error uploading %s to YouTube: %s", live_id, exc)
-                    set_status("pending_upload", error_message=str(exc))
-
-            # Finalisasi hanya bila KEDUA tujuan selesai (YouTube + arsip TG).
-            # YouTube gagal/kuota → status sudah pending_upload; file tetap di
-            # disk. Arsip TG gagal → pending_upload supaya di-retry tanpa
-            # mengulang YouTube (youtube_video_id sudah terisi).
-            if yt_ok and archive_ok:
-                set_status("done_youtube", youtube_video_id=video_id)
-
-                if not already_notified:
-                    msg_text = build_youtube_notification(
-                        member_name=member_name or member_username,
-                        member_username=member_username,
-                        started_at=started_at,
-                        video_id=video_id,
-                        live_title=live_title,
-                        platform=plat,
-                    )
-                    msg_id = await self.tg.send_message(msg_text)
-                    if msg_id:
-                        set_status("done_youtube", youtube_video_id=video_id, telegram_message_id=msg_id)
-
-                if Config.AUTO_DELETE_AFTER_UPLOAD:
-                    delete_file(path)
-            elif yt_ok and not archive_ok:
-                # YouTube sudah ada; arsip TG belum — jangan dianggap done.
-                # Jangan timpa error spesifik dari _archive_to_telegram
-                # (FloodWait, file hilang, dsb.) dengan pesan generik.
                 set_status(
                     "pending_upload",
-                    youtube_video_id=video_id,
+                    error_message=" | ".join(errors) or archive_error or "Telegram archive pending",
                 )
+                return False
+
+        # ---- Stage 2: YouTube (runs only after Telegram succeeded) ----
+        if youtube_required and not youtube_ok:
+            set_status(
+                "uploading_youtube",
+                file_path=str(path),
+                file_size_bytes=file_size,
+            )
+            title = self.yt_pool.build_title(member_name or member_username, started_at, plat)
+            description = self.yt_pool.build_description(
+                member_name or member_username,
+                member_username,
+                started_at,
+                plat,
+            )
+            logger.info("Uploading video to YouTube for %s (%s): %s", member_name, live_id, title)
+            try:
+                video_id, channel_label = await asyncio.to_thread(
+                    self.yt_pool.upload_video,
+                    path,
+                    title=title,
+                    description=description,
+                )
+                if not video_id:
+                    errors.append("YouTube upload returned no video ID")
+                    youtube_ok = False
+                else:
+                    youtube_video_id = str(video_id)
+                    youtube_ok = True
+                    set_status("uploading_youtube", youtube_video_id=youtube_video_id)
+                    logger.info(
+                        "Successfully uploaded to YouTube (%s). Video ID: %s",
+                        channel_label,
+                        video_id,
+                    )
+
+                    # Thumbnail is best effort and runs off the event loop.
+                    thumb_path = None
+                    try:
+                        if Config.THUMBNAIL_COLLAGE_ENABLED:
+                            thumb_path = await asyncio.to_thread(build_collage, path)
+                            if thumb_path is not None and not await asyncio.to_thread(
+                                self.yt_pool.set_thumbnail,
+                                video_id,
+                                thumb_path,
+                                channel_label=channel_label,
+                            ):
+                                logger.warning(
+                                    "Thumbnail gagal terpasang ke YouTube %s; upload tetap sukses",
+                                    video_id,
+                                )
+                    except Exception as exc:
+                        logger.warning("Thumbnail kolase dilewati (%s): %s", live_id, exc)
+                    finally:
+                        if thumb_path is not None:
+                            with contextlib.suppress(OSError):
+                                Path(thumb_path).unlink(missing_ok=True)
+            except YouTubeQuotaExceeded as exc:
+                youtube_ok = False
+                errors.append(str(exc))
+                logger.warning("YouTube quota limit reached for %s: %s", live_id, exc)
+                if Config.ADMIN_CHAT_ID:
+                    with contextlib.suppress(Exception):
+                        await self.tg.send_message(
+                            "⚠️ <b>YouTube Quota Alert</b>\n"
+                            f"Video <b>{member_name or member_username}</b> sudah aman di Telegram, "
+                            "tetapi YouTube menunggu kuota harian.",
+                            channel_id=Config.ADMIN_CHAT_ID,
+                        )
+            except Exception as exc:
+                youtube_ok = False
+                errors.append(f"YouTube: {exc}")
+                logger.exception("Unexpected error uploading %s to YouTube: %s", live_id, exc)
+
+        # ---- Stage 3: notification, only after both required uploads ----
+        if telegram_ok and youtube_ok:
+            if not notification_sent:
+                notification = build_youtube_notification(
+                    member_name=member_name or member_username,
+                    member_username=member_username,
+                    started_at=started_at,
+                    video_id=youtube_video_id,
+                    live_title=live_title,
+                    platform=plat,
+                )
+                try:
+                    notification_id = await self.tg.send_message(notification)
+                except Exception as exc:
+                    notification_id = None
+                    logger.warning(
+                        "Notification Telegram gagal untuk %s: %s", live_id, exc
+                    )
+                if notification_id:
+                    # Notification is best-effort.  Both media destinations are
+                    # already complete, so a text-message failure must not put the
+                    # row back in the upload queue or make us upload either file
+                    # again.  The singular column is retained only as an optional
+                    # marker of a successfully sent notification.
+                    set_status(
+                        "done_youtube", telegram_message_id=notification_id
+                    )
+                else:
+                    logger.warning(
+                        "Notification Telegram gagal untuk %s; dua upload tetap selesai",
+                        live_id,
+                    )
+
+            # Completion depends only on the two required media destinations,
+            # never on notification delivery.
+            set_status("done_youtube", youtube_video_id=youtube_video_id)
+            if Config.AUTO_DELETE_AFTER_UPLOAD and not keep_file:
+                delete_file(path)
+            return True
+
+        # One or more stages are retryable.  Preserve the specific error instead
+        # of overwriting a Telegram FloodWait with a generic pending message.
+        set_status(
+            "pending_upload",
+            error_message=" | ".join(errors) or "Upload pipeline incomplete",
+        )
+        return False
 
     async def _archive_to_telegram(
         self,
         *,
-        path,
+        path: Path,
         member_name: str,
         member_username: str,
         started_at: str,
         live_title: str,
         live_id: str,
         group_id: Optional[int] = None,
-        set_status,
+        channel_id: int = 0,
         platform: str = "",
-    ) -> bool:
-        """
-        Upload video hasil merge ke channel Telegram privat sebagai "database"
-        replay, lalu simpan SEMUA message_id ke kolom telegram_message_ids.
+    ) -> tuple[bool, str]:
+        """Upload a live recording to Telegram and persist its message IDs.
 
-        `platform` diteruskan ke caption arsip supaya header memakai label yang
-        benar (IDN vs SHOWROOM).
-
-        Dipanggil INDEPENDEN dari keberhasilan YouTube (bukan hanya setelah
-        YouTube sukses). Sukses → hanya menulis `telegram_message_ids` tanpa
-        mengubah status (penentu status akhir ada di `handle_upload_ready`).
-        Gagal → sesi ditandai pending_upload agar file lokal TIDAK dihapus
-        dan arsip bisa di-retry tanpa mengulang YouTube.
+        For multi-part files, already-sent part IDs are persisted after every
+        part.  A retry resumes at the next missing part instead of uploading
+        the whole recording again.  ``telegram_message_ids`` is written only
+        when every part succeeds; until then the partial marker is the source
+        of truth.
         """
-        if not Config.TELEGRAM_ARCHIVE_UPLOAD_ENABLED:
-            return True
-        archive_channel = Config.TELEGRAM_ARCHIVE_CHANNEL_ID
+        archive_channel = (
+            channel_id
+            or Config.TELEGRAM_ARCHIVE_CHANNEL_ID
+            or Config.TELEGRAM_CHANNEL_ID
+        )
         if not archive_channel:
-            logger.warning(
-                "TELEGRAM_ARCHIVE_UPLOAD_ENABLED=true tapi TELEGRAM_ARCHIVE_CHANNEL_ID "
-                "kosong — arsip Telegram dilewati untuk %s.", live_id,
+            return False, "telegram archive: channel ID belum dikonfigurasi"
+
+        prior = database.get_group_upload_state(live_id, group_id)
+        partial_ids: list[int] = []
+        for raw in str(prior.get("telegram_partial_message_ids") or "").split(","):
+            try:
+                value = int(raw.strip())
+                if value > 0:
+                    partial_ids.append(value)
+            except (TypeError, ValueError):
+                continue
+
+        def persist_partial(ids: list[int]) -> None:
+            database.set_session_fields(
+                live_id=live_id,
+                group_id=group_id,
+                telegram_partial_message_ids=",".join(str(value) for value in ids),
             )
-            return True
 
         try:
             logger.info(
                 "Archiving video to Telegram channel %s for %s (%s)",
-                archive_channel, member_name, live_id,
+                archive_channel,
+                member_name,
+                live_id,
             )
             msg_ids = await self.tg.upload_video_with_splitting(
                 file_path=path,
@@ -574,33 +610,28 @@ class JKT48LiveBot:
                 live_title=live_title,
                 channel_id=archive_channel,
                 platform=platform,
+                existing_message_ids=partial_ids,
+                on_part_sent=persist_partial,
             )
-            if msg_ids:
-                joined = ",".join(str(m) for m in msg_ids)
-                # Hanya catat message_id — status akhir (done vs pending)
-                # ditentukan setelah YouTube juga dievaluasi.
-                database.set_session_fields(
-                    live_id=live_id,
-                    group_id=group_id,
-                    telegram_message_ids=joined,
-                )
-                logger.info(
-                    "Archived to Telegram (%s). Message IDs: %s", live_id, msg_ids,
-                )
-                return True
-            logger.error("Telegram archive returned no message ID for %s", live_id)
-            set_status(
-                "pending_upload",
-                error_message="Telegram archive upload returned no message ID",
+            if not msg_ids:
+                return False, "telegram archive: tidak ada message ID"
+            joined = ",".join(str(message_id) for message_id in msg_ids)
+            database.set_session_fields(
+                live_id=live_id,
+                group_id=group_id,
+                telegram_message_ids=joined,
+                telegram_partial_message_ids=None,
             )
-            return False
+            logger.info("Archived to Telegram (%s). Message IDs: %s", live_id, msg_ids)
+            return True, ""
         except Exception as exc:
             logger.exception("Error archiving %s to Telegram: %s", live_id, exc)
-            set_status("pending_upload", error_message=f"telegram archive: {exc}")
-            return False
+            # ``on_part_sent`` already persisted the successful prefix.  Keep it
+            # even when a later part fails, so the next retry resumes safely.
+            return False, f"telegram archive: {exc}"
 
     async def _record_member_task(self, member: dict, live_id: str) -> None:
-        """Background task that records a member's live stream via yt-dlp."""
+        """Background task that records a member's live stream via ffmpeg."""
         username = member["username"].lower()
         display_name = member.get("display_name") or username
         hls_url = member["hls_url"]
@@ -629,11 +660,30 @@ class JKT48LiveBot:
         if Config.IDN_LOOKUP_ENABLED:
             slug_task = asyncio.create_task(self._fetch_member_live(username))
 
+        hls_holder = {"url": hls_url}
+
+        async def _refresh_idn_hls() -> Optional[str]:
+            """Ambil playback URL IDN terbaru untuk retry sesi IDN."""
+            live_info = await self._fetch_member_live(username)
+            playback_url = str((live_info or {}).get("playback_url") or "").strip()
+            if not playback_url or playback_url == hls_holder["url"]:
+                return playback_url or None
+            logger.warning(
+                "IDN HLS URL untuk %s berubah saat rekaman: %s → %s",
+                username,
+                hls_holder["url"],
+                playback_url,
+            )
+            database.update_member_hls_url(username, playback_url)
+            hls_holder["url"] = playback_url
+            return playback_url
+
         try:
             output_file = await download_stream(
                 hls_url=hls_url,
                 member_username=username,
                 live_id=live_id,
+                url_refresher=_refresh_idn_hls,
             )
 
             file_size = get_file_size_bytes(output_file)
@@ -643,6 +693,7 @@ class JKT48LiveBot:
                 download_ended_at=utc_now_iso(),
                 file_path=str(output_file),
                 file_size_bytes=file_size,
+                hls_url=hls_holder["url"],
             )
             database.update_member_last_live(username)
 
@@ -698,7 +749,7 @@ class JKT48LiveBot:
             yang sebelumnya hanya berasal dari YouTube.
           * Judul grup memakai nama room Showroom, supaya arsip web punya
             konteks meski tanpa judul dari IDN.
-          * Task TETAP TINGGAL sampai live benar-benar berakhir. Kalau yt-dlp
+          * Task TETAP TINGGAL sampai live benar-benar berakhir. Kalau ffmpeg
             berhenti lebih awal (HLS Showroom belum feeding, token kadaluarsa,
             hiccup CDN), task resume dengan URL HLS segar; setiap potongan
             resume jadi live_id `_r<N>` tersendiri dan tetap masuk satu merge
@@ -808,7 +859,7 @@ class JKT48LiveBot:
                     database.delete_session(part_id)
                     resumes_done += 1
                     logger.info(
-                        "Showroom %s: yt-dlp berhenti padahal live belum berakhir "
+                        "Showroom %s: ffmpeg berhenti padahal live belum berakhir "
                         "— resume bagian %d dengan URL segar (sesi kosong %s dihapus)",
                         username, resumes_done, part_id,
                     )
@@ -835,6 +886,7 @@ class JKT48LiveBot:
                     download_ended_at=utc_now_iso(),
                     file_path=str(output_file),
                     file_size_bytes=file_size,
+                    hls_url=hls_holder["url"],
                 )
                 database.update_member_last_live(username)
 
@@ -855,7 +907,7 @@ class JKT48LiveBot:
                     platform="showroom",
                 )
 
-                # yt-dlp keluar "bersih" padahal live masih jalan (mis. playlist
+                # ffmpeg keluar "bersih" padahal live masih jalan (mis. playlist
                 # berhenti diperbarui sesaat) → lanjut bagian berikutnya.
                 if await self._showroom_broadcast_replaced(room_id, broadcast_id):
                     logger.info(
@@ -1028,37 +1080,106 @@ class JKT48LiveBot:
             self.recording_tasks.add(task)
             task.add_done_callback(self.recording_tasks.discard)
 
+    def _schedule_pending_uploads(self) -> None:
+        """Start one pending-upload worker, if one is not already running."""
+        task = self._retry_task
+        if task is not None and not task.done():
+            return
+        self._retry_task = asyncio.create_task(
+            self.retry_pending_uploads(), name="pending-uploads"
+        )
+
+    def _schedule_tiktok_retries(self) -> None:
+        """Start one TikTok retry worker, if one is not already running."""
+        if self.tiktok is None:
+            return
+        task = self._tiktok_retry_task
+        if task is not None and not task.done():
+            return
+
+        async def _run() -> None:
+            try:
+                await self.tiktok.retry_pending()
+                await self.tiktok.retry_youtube_backlog()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Retry arsip TikTok gagal (diabaikan): %s", exc)
+
+        self._tiktok_retry_task = asyncio.create_task(
+            _run(), name="tiktok-retries"
+        )
+
+    def _schedule_hls_refresh(self) -> None:
+        """Refresh IDN playback URLs without blocking HLS status polling."""
+        task = self._hls_refresh_task
+        if task is not None and not task.done():
+            return
+
+        async def _run() -> None:
+            try:
+                missing = database.get_members_without_hls()
+                if missing:
+                    discovered = await self.hls_discovery.discover_missing_members()
+                    if discovered:
+                        logger.info("Discovered %d new HLS URLs!", len(discovered))
+                refreshed = await self.hls_discovery.refresh_known_members()
+                if refreshed:
+                    logger.info("Refreshed %d stored HLS URL(s) from IDN", len(refreshed))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("HLS discovery/refresh gagal (diabaikan): %s", exc)
+
+        self._hls_refresh_task = asyncio.create_task(
+            _run(), name="hls-discovery-refresh"
+        )
+
+    def _schedule_retry_workers(self) -> None:
+        """Schedule all optional queue workers without blocking the poll loop."""
+        self._schedule_pending_uploads()
+        self._schedule_tiktok_retries()
+
     async def retry_pending_uploads(self) -> None:
         """Retry sessions that were previously paused or pending upload."""
-        if Config.UPLOAD_TARGET == "telegram":
-            pending = database.get_all_pending_videos()
-        else:
-            pending = database.get_pending_uploads_youtube()
+        # Live queue is a single two-destination pipeline.  Always include
+        # pending_upload and download_complete, regardless of UPLOAD_TARGET.
+        pending = database.get_all_pending_videos()
 
         if not pending:
             return
 
-        logger.info(
-            "Found %d pending upload(s) in queue for target '%s'.",
-            len(pending),
-            Config.UPLOAD_TARGET,
-        )
+        logger.info("Found %d pending live upload(s) for Telegram + YouTube", len(pending))
         # Dedupe per file_path: baris merge group berbagi path yang sama;
         # tanpa ini, satu video hasil merge di-upload sekali per baris segmen.
         seen_files: set[str] = set()
         for sess in pending:
             live_id = sess["live_id"]
             file_path = sess["file_path"]
-            if not file_path or not Path(file_path).exists():
-                logger.warning("Pending upload file missing on disk: %s. Marking failed.", file_path)
-                database.update_status(live_id, "failed", error_message="File missing on disk")
+            if not file_path:
+                logger.warning("Pending upload row has no file path: %s", live_id)
+                database.update_status(live_id, "failed", error_message="File path is empty")
                 continue
 
-            resolved = str(Path(file_path).resolve())
+            resolved = database.get_available_upload_path(live_id) or file_path
+            path = Path(resolved)
+            if not database._nonempty_file(path):
+                # A group may have finalized its merged file after this item was
+                # collected. Re-resolve the group before declaring it missing.
+                database.recover_interrupted_uploads()
+                resolved = database.get_available_upload_path(live_id) or file_path
+                path = Path(resolved)
+            if not path.exists() or not path.is_file():
+                logger.warning(
+                    "Pending upload file missing on disk after collection: %s", path
+                )
+                # Let recovery decide whether this is a completed pipeline or a
+                # genuine failed row; do not blindly overwrite group state here.
+                continue
             if resolved in seen_files:
                 logger.debug(
                     "Skipping duplicate pending upload for %s (same file already queued: %s)",
-                    live_id, file_path,
+                    live_id, resolved,
                 )
                 continue
             seen_files.add(resolved)
@@ -1075,7 +1196,7 @@ class JKT48LiveBot:
                     member_username=username,
                     member_name=name,
                     started_at=started_at,
-                    file_path=file_path,
+                    file_path=str(path),
                 )
             except Exception as exc:
                 logger.exception(
@@ -1162,13 +1283,13 @@ class JKT48LiveBot:
                 # 1. Hot-reload members.txt
                 self.sync_members_whitelist()
 
-                # 2. HLS Discovery: periodic check every ~2 minutes (8 loops) for unseeded members
-                if loop_counter % 8 == 0:
-                    missing = database.get_members_without_hls()
-                    if missing:
-                        discovered = await self.hls_discovery.discover_missing_members()
-                        if discovered:
-                            logger.info("Discovered %d new HLS URLs!", len(discovered))
+                # 2. HLS discovery/refresh runs in the background.  Do not await
+                #    GraphQL here: a slow/regional API response must not pause
+                #    detection of members whose stored HLS URL is still healthy.
+                #    Loop pertama juga refresh agar URL lama yang sudah 404 tidak
+                #    menunggu sampai 2 menit sebelum diperbarui.
+                if loop_counter == 1 or loop_counter % 8 == 0:
+                    self._schedule_hls_refresh()
 
                 # 3. Check HLS status of all members with stored HLS
                 #    Hanya member ENABLED (enabled = 1) yang di-probe — member
@@ -1183,7 +1304,7 @@ class JKT48LiveBot:
                     active_now = await self.hls_monitor.check_active_members(candidate_members)
 
                     # Guard disk: jangan MULAI rekaman baru bila ruang hampir
-                    # habis (yt-dlp/ffmpeg bisa gagal di tengah jalan). Rekaman
+                    # habis (ffmpeg bisa gagal di tengah jalan). Rekaman
                     # yang sudah berjalan tetap dibiarkan; deteksi diulang siklus
                     # berikutnya begitu space cukup.
                     if active_now and not has_enough_disk_space():
@@ -1215,18 +1336,11 @@ class JKT48LiveBot:
                     except Exception as exc:
                         logger.warning("Pemeriksaan Showroom gagal (diabaikan): %s", exc)
 
-                # 5. Periodic retry of pending uploads (every ~30 minutes or 120 ticks)
+                # 5. Periodic retry of pending uploads.  Schedule background
+                # workers instead of awaiting them here; otherwise a large
+                # Telegram upload pauses HLS/Showroom detection for hours.
                 if loop_counter % 120 == 0:
-                    await self.retry_pending_uploads()
-                    if self.tiktok is not None:
-                        try:
-                            await self.tiktok.retry_pending()
-                        except Exception as exc:
-                            logger.warning("Retry arsip TikTok gagal (diabaikan): %s", exc)
-                        try:
-                            await self.tiktok.retry_youtube_backlog()
-                        except Exception as exc:
-                            logger.warning("Retry backlog YouTube TikTok gagal (diabaikan): %s", exc)
+                    self._schedule_retry_workers()
 
                 # 6. Arsip TikTok (OPSIONAL): satu akun per siklus (round-robin),
                 #    dibungkus try/except sendiri supaya masalah TikTok tidak
@@ -1250,7 +1364,7 @@ class JKT48LiveBot:
         """
         Graceful shutdown of all components and tasks.
 
-        Rekaman aktif TIDAK langsung dibatalkan. yt-dlp di-SIGTERM lebih dulu
+        Rekaman aktif TIDAK langsung dibatalkan. ffmpeg di-SIGTERM lebih dulu
         supaya container file ditutup rapi, lalu task diberi waktu
         `GRACEFUL_SHUTDOWN_SECONDS` untuk menyelesaikan jalur normalnya
         (`segment_done` + masuk merge group). Tanpa ini, setiap `pm2 restart` di
@@ -1269,6 +1383,8 @@ class JKT48LiveBot:
         if self.replay_bot:
             await self.replay_bot.stop()
 
+        await self._stop_retry_workers()
+
         await self._stop_recordings_gracefully()
 
         await self.merge_mgr.shutdown()
@@ -1280,11 +1396,30 @@ class JKT48LiveBot:
         await self.tg.disconnect()
         logger.info("Bot shutdown complete.")
 
+    async def _stop_retry_workers(self) -> None:
+        """Stop queue/discovery workers without leaving async tasks behind.
+
+        Upload callbacks may be inside ``asyncio.to_thread``; cancelling the
+        coroutine cannot stop the already-running synchronous function.  We
+        therefore cancel and await the task, but never claim that an in-flight
+        thread is gone—the process-level PM2 timeout remains the final guard.
+        The database recovery on next startup returns any file still present to
+        ``pending_upload``.
+        """
+        for attr in ("_retry_task", "_tiktok_retry_task", "_hls_refresh_task"):
+            task = getattr(self, attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+            if task is not None:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+            setattr(self, attr, None)
+
     async def _stop_recordings_gracefully(self) -> None:
         """
         Hentikan rekaman aktif tanpa membuang segmen parsial.
 
-        Urutan: SIGTERM semua yt-dlp aktif → tunggu task selesai maksimal
+        Urutan: SIGTERM semua ffmpeg aktif → tunggu task selesai maksimal
         `GRACEFUL_SHUTDOWN_SECONDS` → batalkan paksa sisanya → selamatkan file
         parsial yang tertinggal. `active_live_ids` disalin SEBELUM apa pun
         dibatalkan karena task yang berhenti menghapus entri itu di blok
@@ -1298,7 +1433,7 @@ class JKT48LiveBot:
         for key, live_id in snapshot.items():
             if cancel_download(live_id):
                 logger.info(
-                    "Shutdown: SIGTERM yt-dlp %s [live_id=%s] — file parsial "
+                    "Shutdown: SIGTERM ffmpeg %s [live_id=%s] — file parsial "
                     "ditutup rapi lalu didaftarkan sebagai segmen",
                     key, live_id,
                 )
@@ -1372,10 +1507,10 @@ class JKT48LiveBot:
     @staticmethod
     def _find_partial_file(directory: Path, username: str, live_id: str) -> Optional[Path]:
         """
-        Cari file output yt-dlp milik sebuah sesi.
+        Cari file output ffmpeg milik sebuah sesi.
 
         Nama file dibuat `downloader._output_path` memakai timestamp saat itu
-        (`<username>_<yyyymmdd_HHMMSS>_<live_id>.<ext>`), jadi timestamp tidak
+        (`<username>_<yyyymmdd_HHMMSS>_<live_id>.mp4`), jadi timestamp tidak
         bisa direkonstruksi — dicari dengan glob lalu diambil yang terbesar
         (paling lengkap).
         """
@@ -1384,7 +1519,11 @@ class JKT48LiveBot:
         candidates: list[Path] = []
         for candidate in directory.glob(f"{username}_*_{live_id}.*"):
             try:
-                if candidate.is_file() and candidate.stat().st_size >= _MIN_PARTIAL_BYTES:
+                if (
+                    candidate.is_file()
+                    and candidate.stat().st_size >= _MIN_PARTIAL_BYTES
+                    and _is_usable_recording(candidate)
+                ):
                     candidates.append(candidate)
             except OSError:
                 continue

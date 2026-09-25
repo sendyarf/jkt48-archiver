@@ -63,6 +63,8 @@ class Config:
     # Upload juga video ke channel arsip Telegram (selain YouTube). File lokal
     # baru dihapus setelah KEDUA upload sukses; jika salah satu gagal, sesi
     # ditandai pending_upload agar di-retry.
+    # Kept for backward-compatible configuration parsing.  Live recordings
+    # always require the Telegram archive; this flag no longer disables it.
     TELEGRAM_ARCHIVE_UPLOAD_ENABLED: bool = (
         os.getenv("TELEGRAM_ARCHIVE_UPLOAD_ENABLED", "true").lower() == "true"
     )
@@ -72,7 +74,8 @@ class Config:
         os.getenv("REPLAY_BOT_ENABLED", "true").lower() == "true"
     )
 
-    # Upload Target: "telegram" (default) or "youtube"
+    # Legacy compatibility switches.  Live recordings always use the complete
+    # Telegram-then-YouTube pipeline; these values no longer disable a stage.
     UPLOAD_TARGET: str = os.getenv("UPLOAD_TARGET", "telegram").lower().strip()
 
     # Telegram max file size threshold before splitting (MB)
@@ -206,7 +209,7 @@ class Config:
     # berhasil merekam ±8-10 menit kemudian karena HLS Showroom belum feeding
     # saat deteksi — task gagal cepat, lalu menunggu siklus deteksi berikutnya,
     # berulang-ulang. Sekarang task rekaman TETAP TINGGAL sampai live benar-
-    # benar berakhir: kalau yt-dlp berhenti lebih awal / belum menghasilkan
+    # benar berakhir: kalau ffmpeg berhenti lebih awal / belum menghasilkan
     # output, task resume dengan URL HLS segar (token Showroom bisa berotasi).
     SHOWROOM_EMPTY_RETRIES: int = int(os.getenv("SHOWROOM_EMPTY_RETRIES", "30"))
 
@@ -235,7 +238,7 @@ class Config:
     DOWNLOAD_DIR: str = os.getenv("DOWNLOAD_DIR", "/tmp/jkt48-lives")
 
     # Ruang disk minimum (MB) sebelum mulai recording baru. Di bawah ambang
-    # ini deteksi live di-skip + warning log (bukan crash) supaya yt-dlp/ffmpeg
+    # ini deteksi live di-skip + warning log (bukan crash) supaya ffmpeg
     # tidak gagal di tengah jalan dan meninggalkan sesi macet.
     MIN_FREE_DISK_MB: int = int(os.getenv("MIN_FREE_DISK_MB", "2048"))
 
@@ -249,7 +252,7 @@ class Config:
     # SQLite database file path
     DB_PATH: str = os.getenv("DB_PATH", "jkt48_live.db")
 
-    # Delete local file after successful YouTube upload?
+    # Delete the canonical local file only after Telegram AND YouTube succeed.
     AUTO_DELETE_AFTER_UPLOAD: bool = (
         os.getenv("AUTO_DELETE_AFTER_UPLOAD", "true").lower() == "true"
     )

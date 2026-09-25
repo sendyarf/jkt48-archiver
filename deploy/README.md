@@ -34,7 +34,8 @@ bisa diakses langsung dari internet. Semua trafik wajib lewat nginx.
 | VPS Linux + IP publik | |
 | Node.js ≥ 20 | Untuk Next.js 16 |
 | Python 3 + venv | Untuk bot. Ubuntu 24.04 mengunci `pip` sistem (PEP 668) → dependensi bot **harus** di venv `.venv` (langkah 2) |
-| ffmpeg, yt-dlp | Untuk perekaman & penggabungan |
+| ffmpeg | Untuk perekaman HLS langsung, kolase thumbnail, dan penggabungan |
+| yt-dlp | Tetap dipakai untuk media TikTok dan dependency operasional; rekaman HLS utama memakai ffmpeg |
 | PM2 | `sudo npm i -g pm2` |
 | nginx + certbot | `sudo apt install nginx certbot python3-certbot-nginx` |
 
@@ -195,7 +196,7 @@ pengaturan ini `pm2 restart` akan SIGKILL bot lebih dulu dan **segmen parsial
 hilang** — kebalikan dari jaminan di README.
 
 Sejak 19 Sep 2026 shutdown tidak lagi membatalkan task rekaman seketika: setiap
-yt-dlp di-SIGTERM lebih dulu, task diberi waktu `GRACEFUL_SHUTDOWN_SECONDS`, dan
+ffmpeg di-SIGTERM lebih dulu, task diberi waktu `GRACEFUL_SHUTDOWN_SECONDS`, dan
 file parsial yang tertinggal (≥ 5 MB) didaftarkan sebagai segmen sah lalu masuk
 merge group. Jadi `pm2 restart` di tengah live tidak lagi membuang potongan
 rekaman — asalkan `kill_timeout` tetap ≥ `GRACEFUL_SHUTDOWN_SECONDS + 10`.

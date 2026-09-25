@@ -1,7 +1,7 @@
 """
 test_disk_space.py — Guard ruang disk sebelum mulai recording.
 
-Latar: yt-dlp/ffmpeg bisa gagal di tengah jalan bila disk penuh dan
+Latar: ffmpeg bisa gagal di tengah jalan bila disk penuh dan
 meninggalkan sesi macet (insiden yang tercatat di SHOWROOM-PLAN §6.1).
 `has_enough_disk_space()` dipanggil di loop utama (IDN & Showroom) sebelum
 spawn task rekaman BARU; rekaman yang sudah berjalan tidak disentuh.

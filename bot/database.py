@@ -5,11 +5,14 @@ Tracks all live sessions so we never double-download/send.
 import sqlite3
 import json
 import logging
+import os
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Optional, Generator
 from bot.config import Config
 
 logger = logging.getLogger(__name__)
+
 
 CREATE_LIVE_SESSIONS_SQL = """
 CREATE TABLE IF NOT EXISTS live_sessions (
@@ -26,6 +29,7 @@ CREATE TABLE IF NOT EXISTS live_sessions (
     status              TEXT    NOT NULL DEFAULT 'detected',
     telegram_message_id INTEGER,
     telegram_message_ids TEXT,
+    telegram_partial_message_ids TEXT,
     youtube_video_id    TEXT,
     content_uid         TEXT,
     error_message       TEXT,
@@ -129,7 +133,7 @@ CREATE TABLE IF NOT EXISTS tiktok_posts (
 
 # Possible values for `status` column:
 # 'detected'           → live stream detected, not yet downloading
-# 'downloading'        → yt-dlp/ffmpeg is currently recording
+# 'downloading'        → ffmpeg is currently recording
 # 'segment_done'       → recorded segment, waiting in merge window
 # 'download_complete'  → ready to upload
 # 'merging'            → merging segments
@@ -210,6 +214,13 @@ def init_db() -> None:
             # dipakai untuk pesan notifikasi teks.
             conn.execute("ALTER TABLE live_sessions ADD COLUMN telegram_message_ids TEXT")
             logger.info("Schema migration: added telegram_message_ids column to live_sessions")
+        if "telegram_partial_message_ids" not in cols:
+            # Message ID part Telegram yang sudah terkirim sebelum upload multi-part
+            # gagal.  Retry memakai marker ini agar part yang sama tidak diulang.
+            conn.execute("ALTER TABLE live_sessions ADD COLUMN telegram_partial_message_ids TEXT")
+            logger.info(
+                "Schema migration: added telegram_partial_message_ids column to live_sessions"
+            )
         if "content_uid" not in cols:
             # content_uid: kunci konten unik (bukan YouTube ID).
             # Multi-segmen = merged_<group_id>; single-segmen = live_id.
@@ -393,10 +404,10 @@ def insert_live(
         conn.execute(
             """
             INSERT OR IGNORE INTO live_sessions
-                (live_id, member_username, member_name, started_at, hls_url, platform, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'detected')
+                (live_id, member_username, member_name, started_at, hls_url, platform, content_uid, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'detected')
             """,
-            (live_id, member_username, member_name, started_at, hls_url, platform),
+            (live_id, member_username, member_name, started_at, hls_url, platform, live_id),
         )
 
 
@@ -405,6 +416,7 @@ _SESSION_FIELD_COLS = {
     "file_size_bytes",
     "telegram_message_id",
     "telegram_message_ids",
+    "telegram_partial_message_ids",
     "youtube_video_id",
     "content_uid",
     "download_started_at",
@@ -461,30 +473,34 @@ def get_group_upload_state(
     """
     Status penyelesaian upload untuk satu live / merge group:
     `youtube_video_id`, `telegram_message_ids` (arsip channel), dan
-    `telegram_message_id` (notifikasi chat).
+    `telegram_message_id` (notifikasi chat).  Hanya plural archive marker yang
+    menyatakan upload video Telegram selesai; singular hanya marker notifikasi.
 
     Dipakai retry supaya tidak meng-upload ulang tujuan yang sudah selesai.
     """
     empty = {
         "youtube_video_id": "",
         "telegram_message_ids": "",
+        "telegram_partial_message_ids": "",
         "telegram_message_id": 0,
     }
     with _get_conn() as conn:
         if group_id is not None:
             row = conn.execute(
-                """SELECT MAX(COALESCE(youtube_video_id, ''))     AS youtube_video_id,
+                """SELECT MAX(COALESCE(youtube_video_id, '')) AS youtube_video_id,
                           MAX(COALESCE(telegram_message_ids, '')) AS telegram_message_ids,
-                          MAX(COALESCE(telegram_message_id, 0))   AS telegram_message_id
+                          MAX(COALESCE(telegram_partial_message_ids, '')) AS telegram_partial_message_ids,
+                          MAX(COALESCE(telegram_message_id, 0)) AS telegram_message_id
                    FROM live_sessions
                    WHERE merge_group_id = ?""",
                 (group_id,),
             ).fetchone()
         elif live_id and not live_id.startswith("merged_"):
             row = conn.execute(
-                """SELECT COALESCE(youtube_video_id, '')     AS youtube_video_id,
+                """SELECT COALESCE(youtube_video_id, '') AS youtube_video_id,
                           COALESCE(telegram_message_ids, '') AS telegram_message_ids,
-                          COALESCE(telegram_message_id, 0)   AS telegram_message_id
+                          COALESCE(telegram_partial_message_ids, '') AS telegram_partial_message_ids,
+                          COALESCE(telegram_message_id, 0) AS telegram_message_id
                    FROM live_sessions
                    WHERE live_id = ?""",
                 (live_id,),
@@ -545,6 +561,115 @@ def get_archived_session_by_content_uid(content_uid: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def _nonempty_file(path: str | Path) -> bool:
+    """Safely check a local source without leaking filesystem races."""
+    try:
+        return Path(path).is_file() and Path(path).stat().st_size > 0
+    except OSError:
+        return False
+
+
+def get_finalized_upload_group_id(live_id: str) -> Optional[int]:
+    """Return a merge-group ID only when it represents one finalized artifact.
+
+    Concat failure intentionally dispatches every segment as an independent
+    upload while keeping their historical ``merge_group_id``.  Such a failed
+    group must not share destination markers or status between segments.  A
+    group is atomic only after ``close_merge_group()`` recorded a canonical
+    ``merged_file_path``.
+    """
+    raw_id = str(live_id or "").strip()
+    group_id: Optional[int] = None
+    if raw_id.startswith("merged_"):
+        try:
+            group_id = int(raw_id.split("_", 2)[1])
+        except (IndexError, ValueError):
+            return None
+    else:
+        with _get_conn() as conn:
+            row = conn.execute(
+                "SELECT merge_group_id FROM live_sessions WHERE live_id = ?",
+                (raw_id,),
+            ).fetchone()
+        if row is None or row["merge_group_id"] is None:
+            return None
+        group_id = int(row["merge_group_id"])
+
+    with _get_conn() as conn:
+        group = conn.execute(
+            """SELECT status, merged_file_path
+               FROM merge_groups WHERE id = ?""",
+            (group_id,),
+        ).fetchone()
+    if (
+        group is None
+        or (group["status"] or "") != "done"
+        or not str(group["merged_file_path"] or "").strip()
+    ):
+        return None
+    return group_id
+
+
+def get_available_upload_path(
+    live_id: str = "", group_id: Optional[int] = None
+) -> Optional[str]:
+    """Return the canonical upload source for a live/finalized group.
+
+    A finalized group has exactly one valid source: ``merged_file_path``.  Return
+    that path even when it has already disappeared so callers fail safely and
+    never substitute an old, partial segment.  A concat-failed group is not
+    finalized and therefore resolves each session's own existing path.
+    """
+    raw_id = str(live_id or "").strip()
+    resolved_group = group_id if group_id is not None else get_finalized_upload_group_id(raw_id)
+
+    if resolved_group is not None:
+        with _get_conn() as conn:
+            group_row = conn.execute(
+                """SELECT status, merged_file_path
+                   FROM merge_groups WHERE id = ?""",
+                (resolved_group,),
+            ).fetchone()
+        if group_row is None or (group_row["status"] or "") != "done":
+            return None
+        canonical = str(group_row["merged_file_path"] or "").strip()
+        return canonical or None
+
+    if not raw_id:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT file_path FROM live_sessions WHERE live_id = ?",
+            (raw_id,),
+        ).fetchone()
+    return str(row["file_path"]) if row and _nonempty_file(row["file_path"]) else None
+
+
+def get_session_by_file_path(file_path: str) -> Optional[sqlite3.Row]:
+    """Return the newest session row that points at an exact local file path."""
+    raw = (file_path or "").strip()
+    if not raw:
+        return None
+    normalized = str(Path(raw).expanduser().resolve())
+    candidates = {
+        raw,
+        str(Path(raw)),
+        normalized,
+    }
+    candidates.discard("")
+    if not candidates:
+        return None
+    placeholders = ",".join("?" for _ in candidates)
+    with _get_conn() as conn:
+        row = conn.execute(
+            f"""SELECT * FROM live_sessions
+                WHERE file_path IN ({placeholders})
+                ORDER BY id DESC LIMIT 1""",
+            tuple(candidates),
+        ).fetchone()
+    return row
+
+
 def get_session(live_id: str) -> Optional[sqlite3.Row]:
     """Fetch a single session row by live_id."""
     with _get_conn() as conn:
@@ -598,6 +723,163 @@ def clean_interrupted_downloads() -> None:
         conn.execute(
             "DELETE FROM live_sessions WHERE status IN ('detected', 'downloading')"
         )
+
+
+def recover_interrupted_uploads() -> int:
+    """Reconcile upload rows after a restart without losing completed work.
+
+    ``uploading_telegram`` and ``uploading_youtube`` are in-flight markers, not
+    terminal states.  A hard PM2 kill can leave one behind forever.  The same
+    reconciliation also covers pending rows whose file was cleaned up: if both
+    destination markers already exist the content is complete; otherwise a
+    missing file is an actual failure and is marked ``failed``.
+
+    Merge groups are treated atomically only after ``close_merge_group()`` has
+    recorded a canonical merged artifact.  A concat-failed group keeps its
+    historical ID but represents independent segment uploads, so recovery must
+    reconcile each of those rows on its own.
+    """
+    changed = 0
+    with _get_conn() as conn:
+        # Older code could persist a finalized merge group before all session
+        # rows reached the upload-ready state.  Normalize only *finalized*
+        # groups (status=done + canonical artifact); segment_done rows belonging
+        # to a waiting or concat-failed group must remain independent segments.
+        legacy_finalized = conn.execute(
+            """SELECT s.live_id, g.merged_file_path, g.merged_live_id
+               FROM live_sessions AS s
+               JOIN merge_groups AS g ON g.id = s.merge_group_id
+               WHERE s.status = 'segment_done'
+                 AND g.status = 'done'
+                 AND g.merged_file_path IS NOT NULL
+                 AND g.merged_file_path != ''
+               ORDER BY s.id ASC"""
+        ).fetchall()
+        for legacy in legacy_finalized:
+            merged_live_id = str(legacy["merged_live_id"] or "").strip()
+            conn.execute(
+                """UPDATE live_sessions
+                   SET file_path = ?,
+                       status = 'download_complete',
+                       content_uid = CASE WHEN ? != '' THEN ? ELSE content_uid END
+                   WHERE live_id = ? AND status = 'segment_done'""",
+                (
+                    legacy["merged_file_path"],
+                    merged_live_id,
+                    merged_live_id,
+                    legacy["live_id"],
+                ),
+            )
+            changed += 1
+
+        rows = conn.execute(
+            """SELECT live_id, merge_group_id, file_path, status
+               FROM live_sessions
+               WHERE status IN (
+                   'uploading_telegram', 'uploading_youtube',
+                   'pending_upload', 'download_complete'
+               )
+               ORDER BY id ASC"""
+        ).fetchall()
+
+        for row in rows:
+            raw_group_id = row["merge_group_id"]
+            group_id = None
+            group_row = None
+            if raw_group_id is not None:
+                group_row = conn.execute(
+                    """SELECT status, merged_file_path
+                       FROM merge_groups WHERE id = ?""",
+                    (raw_group_id,),
+                ).fetchone()
+                if (
+                    group_row is not None
+                    and (group_row["status"] or "") == "done"
+                    and str(group_row["merged_file_path"] or "").strip()
+                ):
+                    group_id = int(raw_group_id)
+
+            if group_id is not None:
+                state = conn.execute(
+                    """SELECT MAX(COALESCE(telegram_message_ids, '')) AS telegram_ids,
+                              MAX(COALESCE(telegram_message_id, 0)) AS singular_tg,
+                              MAX(COALESCE(youtube_video_id, '')) AS youtube_id
+                       FROM live_sessions
+                       WHERE merge_group_id = ?""",
+                    (group_id,),
+                ).fetchone()
+                # A finalized group has exactly one canonical source.  Do not
+                # accept a stale segment path as a substitute: doing so would
+                # publish a partial reconnect recording as the complete live.
+                canonical = str(group_row["merged_file_path"] or "").strip()
+                file_candidates = [canonical] if canonical else []
+            else:
+                state = conn.execute(
+                    """SELECT COALESCE(telegram_message_ids, '') AS telegram_ids,
+                              COALESCE(telegram_message_id, 0) AS singular_tg,
+                              COALESCE(youtube_video_id, '') AS youtube_id
+                       FROM live_sessions
+                       WHERE live_id = ?""",
+                    (row["live_id"],),
+                ).fetchone()
+                file_candidates = [row["file_path"] or ""]
+
+            telegram_done = bool(str(state["telegram_ids"] or "").strip())
+            youtube_done = bool(str(state["youtube_id"] or "").strip())
+
+            file_exists = any(_nonempty_file(candidate) for candidate in file_candidates)
+
+            if file_exists:
+                # In-flight rows become retryable; existing pending rows stay
+                # pending and are not rewritten merely by every bot restart.
+                if row["status"] in ("uploading_telegram", "uploading_youtube"):
+                    if group_id is not None:
+                        conn.execute(
+                            """UPDATE live_sessions
+                               SET status = 'pending_upload',
+                                   error_message = 'Recovered interrupted upload after restart'
+                               WHERE merge_group_id = ?""",
+                            (group_id,),
+                        )
+                    else:
+                        conn.execute(
+                            """UPDATE live_sessions
+                               SET status = 'pending_upload',
+                                   error_message = 'Recovered interrupted upload after restart'
+                               WHERE live_id = ?""",
+                            (row["live_id"],),
+                        )
+                    changed += 1
+                continue
+
+            # The local source is gone.  Never erase a completed pipeline just
+            # because a later retry row still points at the cleaned path.
+            next_status = "done_youtube" if telegram_done and youtube_done else "failed"
+            next_error = (
+                None
+                if next_status == "done_youtube"
+                else "File missing after interrupted upload"
+            )
+            if group_id is not None:
+                conn.execute(
+                    """UPDATE live_sessions
+                       SET status = ?, error_message = ?
+                       WHERE merge_group_id = ?""",
+                    (next_status, next_error, group_id),
+                )
+            else:
+                conn.execute(
+                    """UPDATE live_sessions
+                       SET status = ?, error_message = ?
+                       WHERE live_id = ?""",
+                    (next_status, next_error, row["live_id"]),
+                )
+            changed += 1
+
+    if changed:
+        logger.warning("Reconciled %d interrupted/pending upload row(s) at startup", changed)
+    return changed
+
 
 
 # ─── Merge Groups ──────────────────────────────────────────────────────────────
@@ -776,13 +1058,32 @@ def update_sessions_by_merge_group(group_id: int, status: str, **kwargs) -> None
 
 
 def close_merge_group(group_id: int, merged_file_path: str, merged_live_id: str) -> None:
-    """Mark a merge group as done with the merged file path."""
+    """Mark a merge group as done with the merged file path.
+
+    Store the upload source on every session as well.  Recovery can then find
+    the actual merged file even if an older row still points to a deleted
+    segment. The merge-manager callback writes the group-wide upload markers.
+    """
     with _get_conn() as conn:
         conn.execute(
             """UPDATE merge_groups
                SET status = 'done', merged_file_path = ?, merged_live_id = ?
                WHERE id = ?""",
             (merged_file_path, merged_live_id, group_id),
+        )
+        conn.execute(
+            """UPDATE live_sessions
+               SET file_path = ?,
+                   status = CASE
+                       WHEN status IN ('segment_done', 'download_complete', 'merging')
+                       THEN 'download_complete'
+                       ELSE status
+                   END
+               WHERE merge_group_id = ? AND status IN (
+                   'segment_done', 'download_complete', 'merging',
+                   'uploading_telegram', 'uploading_youtube', 'pending_upload'
+               )""",
+            (merged_file_path, group_id),
         )
 
 
@@ -913,9 +1214,10 @@ def upsert_member_hls(
     confirmed: bool = False,
 ) -> None:
     """Insert or update member HLS and display name.
-    
-    Set confirmed=True when the HLS URL is permanently known (e.g. from seed).
-    Confirmed members are never re-probed via IDN GraphQL.
+
+    Set confirmed=True when the HLS URL is a known baseline (e.g. from seed).
+    Confirmed URLs are still eligible for best-effort refresh if IDN reports a
+    different playback URL for an active session.
     """
     username = username.strip().lower()
     with _get_conn() as conn:

@@ -223,7 +223,13 @@ def print_status() -> None:
 
 
 def run_cleanup(hours: int = 24, dry_run: bool = False) -> None:
-    """Hapus file video lama (download_complete / failed) yang lebih tua dari `hours` jam."""
+    """Hapus hanya artefak video yang sudah terminal dan aman.
+
+    ``pending_upload`` dan ``download_complete`` sengaja tidak pernah ikut
+    dibersihkan: keduanya masih membutuhkan file lokal untuk Telegram/YouTube
+    pipeline.  Cleanup juga melindungi file yang direferensikan row belum
+    selesai, termasuk ketika beberapa segmen/merge group memakai path yang sama.
+    """
     database.init_db()
 
     # Cutoff dihitung di SQL memakai julianday (UTC vs UTC) agar tidak
@@ -252,8 +258,17 @@ def run_cleanup(hours: int = 24, dry_run: bool = False) -> None:
         }
         rows = conn.execute(
             """SELECT * FROM live_sessions
-               WHERE status IN ('download_complete', 'failed', 'pending_upload')
+               WHERE status = 'failed'
                  AND (julianday('now') - julianday(created_at)) * 24 > ?
+                 AND file_path IS NOT NULL AND file_path != ''
+                 AND NOT EXISTS (
+                     SELECT 1 FROM live_sessions AS active
+                     WHERE active.file_path = live_sessions.file_path
+                       AND active.status IN (
+                           'pending_upload', 'download_complete',
+                           'uploading_telegram', 'uploading_youtube'
+                       )
+                 )
                ORDER BY created_at ASC""",
             (hours_param,),
         ).fetchall()

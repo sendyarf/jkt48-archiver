@@ -99,12 +99,12 @@ def should_resume_showroom(
     room_live: Optional[bool],
 ) -> bool:
     """
-    Keputusan lanjut merekam setelah yt-dlp berhenti (error atau keluar lebih
+    Keputusan lanjut merekam setelah ffmpeg berhenti (error atau keluar lebih
     awal) padahal live Showroom belum tentu berakhir.
 
     True  → lanjut: room terbukti masih live, ATAU statusnya tidak diketahui
             (API hiccup / debounce offline belum terkonfirmasi). Lanjut itu
-            aman: kalau stream memang sudah mati, yt-dlp gagal cepat dan
+            aman: kalau stream memang sudah mati, ffmpeg gagal cepat dan
             putusan berikutnya dipakai.
     False → berhenti: live terbukti offline (sudah melewati konfirmasi
             berturut-turut) atau kuota percobaan habis.

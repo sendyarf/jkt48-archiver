@@ -6,12 +6,12 @@ Bot Python otomatis untuk memantau, merekam, dan mendistribusikan siaran langsun
 
 ## 🚀 Fitur & Keunggulan
 
-- **Direct HLS Recording**: Merekam langsung dari URL HLS permanen member (AWS IVS), tidak bergantung pada polling endpoint website IDN.
-- **HLS Seed Database**: URL HLS channel tiap member bersifat permanen — disimpan sekali via `seed_hls.py`, bot tidak perlu query IDN API untuk member yang sudah diketahui.
-- **Smart HLS Discovery**: Untuk member baru yang belum diketahui HLS-nya, bot otomatis mendeteksi URL via IDN GraphQL saat member tersebut live, lalu menyimpannya permanen ke DB.
+- **Direct HLS Recording**: Merekam langsung dari URL HLS member (AWS IVS) menggunakan `ffmpeg` dan menulis fragmented MP4 secara bertahap, sehingga file dapat dipantau dan diselamatkan saat koneksi putus.
+- **HLS Seed Database + Refresh**: URL HLS yang sudah disimpan menjadi baseline; playback URL yang berubah dari feed IDN diperbarui di latar belakang tanpa menunggu polling ulang.
+- **Smart HLS Discovery**: Untuk member baru, bot mencari URL HLS via IDN GraphQL; untuk member lama, URL playback aktif juga di-refresh bila IDN melaporkan URL baru.
 - **Telegram Direct Video Upload**: Mengirim file video rekaman langsung ke channel Telegram via Telegram API / Telethon dengan dukungan video streaming dan preview thumbnail otomatis.
 - **Auto-Splitting (>2GB)**: Untuk mengatasi batas 2GB akun Telegram, video yang berukuran > 2GB (default: 1950 MB) otomatis di-split menjadi beberapa part (`[Part 1/N]`) secara lossless dan cepat menggunakan FFmpeg stream copy (`-c copy`).
-- **YouTube Unlisted (Opsional)**: Opsi upload ke YouTube unlisted dengan rotasi multi-channel pool tetap tersedia jika sewaktu-waktu ingin digunakan kembali (`UPLOAD_TARGET=youtube`).
+- **Two-Destination Live Archive**: Setiap rekaman live diunggah ke Telegram sebagai arsip/download (dengan split bila >2 GB) lalu ke YouTube Unlisted untuk playback website. File lokal baru dihapus setelah kedua marker upload selesai.
 - **Pending Video Uploader**: Tersedia alat CLI `python3 -m bot.upload_pending` untuk mengunggah antrean video lama yang menumpuk di VPS.
 - **Auto-Merge Reconnect (Satu Live = Satu Video)**: Segmen akibat lag/reconnect digabung ke satu video. Selesai dideteksi dari 4 pemicu (window sejak segmen terakhir, IDN "tidak live", idle HLS, hard cap) sehingga upload rata-rata hanya ±10–30 menit setelah live berakhir. Live **baru** dibedakan dari reconnect lewat slug sesi IDN (opsional) agar tidak tercampur.
 - **IDN Lookup Opsional (HLS-first)**: Bot tetap berfungsi penuh tanpa IDN. Lookup IDN (best-effort, timeout 8s, cache 30s, tidak pernah melempar error) hanya dipakai untuk membedakan reconnect vs live baru dan mengambil judul live.
@@ -31,14 +31,14 @@ members.txt
 SQLite (member_hls)
      ↓
 [Member sudah diketahui HLS-nya? (hls_confirmed)]
-  → Ya : Langsung HTTP Health Check ke HLS URL (tanpa IDN API)
+  → Ya : HTTP GET health check; playback URL di-refresh bila IDN aktif berubah
   → Tidak: IDN GraphQL query → simpan HLS ke DB jika member sedang live
      ↓
 HTTP Health Check ke HLS URL tiap 15 detik (concurrent, max 20 paralel)
      ↓
 Member Live Terdeteksi (HTTP 200 + #EXTM3U)
      ↓
-Rekam dengan yt-dlp secara concurrent
+Rekam HLS dengan ffmpeg secara concurrent (fragmented MP4)
      ↓
 Stream Selesai → Merge Manager (Window 1 Jam)
      ↓
@@ -46,9 +46,10 @@ Stream Selesai → Merge Manager (Window 1 Jam)
   → Ya : Lanjut rekam segmen berikutnya & reset timer
   → Tidak: Gabung segmen (FFmpeg Concat) jika > 1 part
      ↓
-Upload ke YouTube Unlisted (pilih channel dengan upload paling sedikit)
-  → Kuota Habis: Simpan di VPS, masuk antrian pending_upload
-  → Berhasil: Kirim notifikasi link ke Telegram & hapus file lokal
+Upload ke Telegram (arsip/download; split bila >2 GB)
+  → Berhasil: upload ke YouTube Unlisted (playback website)
+  → Kuota YouTube habis: file tetap di VPS, hanya tahap YouTube masuk antrian
+  → Kedua upload berhasil: notifikasi best-effort, lalu file lokal boleh dihapus
 ```
 
 ---
@@ -61,7 +62,7 @@ Upload ke YouTube Unlisted (pilih channel dengan upload paling sedikit)
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y ffmpeg python3 python3-pip python3-venv git
 
-# Install yt-dlp terbaru
+# yt-dlp tetap dipakai untuk media TikTok; rekaman HLS utama memakai ffmpeg.
 sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
 sudo chmod +x /usr/local/bin/yt-dlp
 ```
@@ -136,7 +137,8 @@ nano .env
 ---
 
 ```dotenv
-# Pilih satu: "telegram" atau "youtube". Berlaku GLOBAL untuk IDN dan Showroom.
+# Nilai ini hanya kompatibilitas konfigurasi lama. Pipeline live tetap
+# Telegram (arsip/download) → YouTube (playback website).
 UPLOAD_TARGET=youtube
 
 # Zona waktu hanya untuk TAMPILAN. Waktu di database selalu UTC, sehingga
@@ -153,12 +155,13 @@ hanya dilakukan saat menampilkan. Baris lama tanpa penanda tetap ambigu — bila
 lama diketahui, isi `LEGACY_NAIVE_TIME_OFFSET_HOURS` (mis. `8` atau `9`) agar nilai lama
 dibaca benar.
 
-**Catatan `UPLOAD_TARGET`.** Katalog website dibangun dari `live_sessions.youtube_video_id`.
-Dengan `UPLOAD_TARGET=telegram`, rekaman baru **tidak akan pernah muncul di website**.
-Rekaman YouTube diunggah sebagai **unlisted**, dan tetap tersembunyi dari situs sampai
-diterbitkan admin atau lewat `AUTO_PUBLISH_AFTER_HOURS`. Rekaman **Showroom**
-langsung tampil di situs tanpa menunggu ambang (aturan web
-`AUTO_PUBLISH_AFTER_HOURS_SHOWROOM`, default `0`).
+**Catatan `UPLOAD_TARGET`.** Nilai ini dipertahankan hanya untuk kompatibilitas
+konfigurasi lama; ia tidak mematikan salah satu tujuan live. Setiap rekaman live
+wajib melalui **Telegram → YouTube**. `telegram_message_ids` menyimpan arsip
+Telegram untuk download/replay, sedangkan `youtube_video_id` enables playback
+website. YouTube tetap **unlisted** dan visibilitas website mengikuti aturan
+`AUTO_PUBLISH_AFTER_HOURS`/publikasi admin. Rekaman Showroom mengikuti pipeline
+yang sama.
 
 **Diagnostik `.env` saat start.** Bot memeriksa `.env` sekali setiap start dan
 menulis PERINGATAN untuk dua masalah yang dulu berjalan diam-diam:
@@ -285,7 +288,7 @@ python3 -m bot.member_cli set-hls jkt48_lulu "https://...channel.XXXX.m3u8"
 - **STOP** → `enabled = 0` + baris `members.txt` ditandai `# STOPPED: <username>`.
   Berlaku pada siklus poll berikutnya (±15 detik) **tanpa restart**.
   Rekaman yang sedang berjalan dibatalkan seketika hanya lewat `/stop` Telegram
-  (SIGTERM graceful ke yt-dlp; segmen yang sudah terekam tetap diupload setelah
+  (SIGTERM graceful ke ffmpeg; segmen yang sudah terekam tetap diupload setelah
   merge window). Dari CLI, rekaman aktif dibiarkan selesai sampai live berakhir.
 - **TAMBAH** → baris `member_hls` dibuat dengan `enabled = 1`. Bila HLS belum
   diketahui, bot auto-discovery via IDN GraphQL saat member tersebut live
@@ -370,7 +373,7 @@ dengan HLS + jeda waktu saja.
   menyerah ke mode "kirim segmen terpisah".
 - **Stream hang** (playlist masih HTTP 200 tapi tidak ada data baru) tidak menunda
   upload tanpa batas berkat hard cap.
-- **`pm2 restart` aman**: bot menghentikan yt-dlp secara graceful (SIGTERM) dan
+- **`pm2 restart` aman**: bot menghentikan ffmpeg secara graceful (SIGTERM) dan
   menunggu segmen tersimpan (`GRACEFUL_SHUTDOWN_SECONDS`, default ±25s) sebelum
   keluar, sehingga segmen parsial tidak hilang. Grup `waiting` dijadwalkan ulang
   otomatis saat boot.
@@ -378,7 +381,7 @@ dengan HLS + jeda waktu saja.
   `shutdown()` membatalkan semua task rekaman seketika dan `GRACEFUL_SHUTDOWN_SECONDS`
   tidak dipakai sama sekali: sesi masih berstatus `downloading`, lalu dihapus
   `clean_interrupted_downloads()` saat boot, sehingga file yang sudah ditutup rapi
-  oleh yt-dlp tidak pernah diupload. Sekarang urutannya: SIGTERM ke setiap yt-dlp →
+  oleh ffmpeg tidak pernah diupload. Sekarang urutannya: SIGTERM ke setiap ffmpeg →
   tunggu task selesai maksimal `GRACEFUL_SHUTDOWN_SECONDS` → batalkan paksa sisanya →
   **selamatkan file parsial** yang tertinggal (≥ 5 MB) sebagai segmen sah dan
   masukkan ke merge group yang sama.
@@ -416,7 +419,7 @@ tidak mengalami ini karena arsip Showroom selalu mulai dari detik pertama.
 Sekarang task rekaman Showroom **tetap tinggal** sampai live benar-benar
 berakhir:
 
-* Kalau yt-dlp berhenti lebih awal (HLS belum feeding, token kadaluarsa,
+* Kalau ffmpeg berhenti lebih awal (HLS belum feeding, token kadaluarsa,
   hiccup CDN), task resume dengan URL HLS segar dari API Showroom; setiap
   potongan resume jadi `live_id` `_r<N>` tersendiri dan tetap masuk **satu
   merge group** yang sama.
@@ -461,7 +464,7 @@ Showroom — berisiko rate-limit. Karena itu Showroom memakai interval sendiri.
 ### ⚠️ Yang belum terverifikasi
 
 - **Rekaman Showroom nyata belum pernah dijalankan.** Saat dikerjakan, tidak ada
-  satu pun room yang sedang live (58/58 offline), sehingga jalur `yt-dlp` →
+  satu pun room yang sedang live (58/58 offline), sehingga jalur `ffmpeg` →
   Showroom HLS **belum diuji terhadap stream sungguhan**. Semua logika lain
   (deteksi, debounce, identitas sesi, pemisahan grup) diuji dengan scraper palsu.
 - Format/bitrate video Showroom (landscape) belum diukur, jadi perkiraan disk
@@ -619,7 +622,7 @@ python3 -m bot.tiktok_monitor --dry-run           # hanya deteksi, tanpa unduh
 
 ## 🌱 Seed HLS Database (Penting — Jalankan Sekali)
 
-URL HLS channel AWS IVS tiap member bersifat **permanen** (tidak berubah antar sesi live). Jalankan seed sekali agar bot tidak perlu query IDN API untuk member yang sudah diketahui:
+URL HLS channel AWS IVS tiap member disimpan sebagai baseline. IDN dapat mengubah playback URL saat member live, dan bot akan me-refresh URL tersebut di latar belakang. Jalankan seed sekali agar member baru dapat ditemukan dengan cepat:
 
 ```bash
 python3 -m bot.seed_hls
@@ -663,8 +666,8 @@ Catatan:
 | `SHOWROOM_TIMEOUT_SECONDS` | `8` | Timeout satu panggilan API Showroom |
 | `SHOWROOM_OFFLINE_CONFIRMATIONS` | `3` | Jumlah pembacaan offline berturut-turut sebelum offline dianggap sah (debounce) |
 | `SHOWROOM_ROOMS_FILE` | `showroom_rooms.json` | Sumber daftar room untuk seed |
-| `SHOWROOM_EMPTY_RETRIES` | `30` | Percobaan ulang yt-dlp saat HLS belum menghasilkan output (task tetap menunggu stream feeding) |
-| `SHOWROOM_MAX_RESUMES` | `40` | Maksimal resume per sesi saat yt-dlp berhenti lebih awal padahal live masih jalan |
+| `SHOWROOM_EMPTY_RETRIES` | `30` | Percobaan ulang ffmpeg saat HLS belum menghasilkan output (task tetap menunggu stream feeding) |
+| `SHOWROOM_MAX_RESUMES` | `40` | Maksimal resume per sesi saat ffmpeg berhenti lebih awal padahal live masih jalan |
 | `SHOWROOM_RESUME_DELAY_SECONDS` | `10` | Jeda sebelum tiap percobaan resume |
 | `SHOWROOM_LATE_START_WARN_SECONDS` | `60` | Log peringatan bila mulai merekam N detik setelah live resmi dimulai |
 

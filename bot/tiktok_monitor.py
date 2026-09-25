@@ -485,7 +485,12 @@ class TikTokMonitor:
         )
         database.update_tiktok_post(item.id, status="uploading_youtube")
         try:
-            video_id, channel_label = pool.upload_video(media.video_path, title, description)
+            video_id, channel_label = await asyncio.to_thread(
+                pool.upload_video,
+                media.video_path,
+                title,
+                description,
+            )
         except Exception as exc:  # noqa: BLE001 - termasuk kuota YouTube habis
             logger.warning("Upload YouTube untuk TikTok %s dilewati: %s", item.id, exc)
             return ""
@@ -498,9 +503,15 @@ class TikTokMonitor:
         thumb_path = None
         try:
             if Config.THUMBNAIL_COLLAGE_ENABLED:
-                thumb_path = build_collage(media.video_path)
+                thumb_path = await asyncio.to_thread(build_collage, media.video_path)
                 if thumb_path is not None:
-                    if not pool.set_thumbnail(video_id, thumb_path, channel_label=channel_label):
+                    ok_thumb = await asyncio.to_thread(
+                        pool.set_thumbnail,
+                        video_id,
+                        thumb_path,
+                        channel_label=channel_label,
+                    )
+                    if not ok_thumb:
                         logger.warning(
                             "Thumbnail TikTok gagal terpasang ke YouTube %s.",
                             video_id,

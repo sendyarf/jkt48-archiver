@@ -227,12 +227,55 @@ export const AUTO_PUBLISH_AFTER_HOURS_SHOWROOM: number = (() => {
  *   2. web_publications pada youtube_video_id (/admin/publications)
  *   3. Aturan auto-publish per platform.
  */
+function telegramReadySql(alias = 'ls'): string {
+  return `(
+    (${alias}.telegram_message_ids IS NOT NULL AND ${alias}.telegram_message_ids != '')
+    OR EXISTS (
+      SELECT 1 FROM live_sessions peer
+      WHERE ${alias}.merge_group_id IS NOT NULL
+        AND peer.merge_group_id = ${alias}.merge_group_id
+        AND peer.telegram_message_ids IS NOT NULL
+        AND peer.telegram_message_ids != ''
+    )
+  )`;
+}
+
+function youtubeReadySql(alias = 'ls'): string {
+  return `(
+    (${alias}.youtube_video_id IS NOT NULL AND ${alias}.youtube_video_id != '')
+    OR EXISTS (
+      SELECT 1 FROM live_sessions peer
+      WHERE ${alias}.merge_group_id IS NOT NULL
+        AND peer.merge_group_id = ${alias}.merge_group_id
+        AND peer.youtube_video_id IS NOT NULL
+        AND peer.youtube_video_id != ''
+    )
+  )`;
+}
+
+function archiveReadySql(alias = 'ls'): string {
+  return `(${youtubeReadySql(alias)} OR ${telegramReadySql(alias)})`;
+}
+
 function publicVisibilitySql(alias = 'ls'): string {
-  const contentKey = `COALESCE(NULLIF(${alias}.youtube_video_id, ''), ${alias}.content_uid)`;
-  const overrideHide = `EXISTS (SELECT 1 FROM web_video_overrides vo WHERE vo.content_key = ${contentKey} AND vo.content_key != '' AND vo.published = 0)`;
-  const overrideShow = `EXISTS (SELECT 1 FROM web_video_overrides vo WHERE vo.content_key = ${contentKey} AND vo.content_key != '' AND vo.published = 1)`;
+  // `content_uid` adalah identitas stabil yang dibuat bot.  Fallback ke
+  // YouTube ID hanya berlaku untuk baris lama yang belum dimigrasikan; begitu
+  // content_uid tersedia, URL dan override admin tidak lagi berubah ketika
+  // upload YouTube selesai.
+  const contentKey = `COALESCE(NULLIF(${alias}.content_uid, ''), NULLIF(${alias}.youtube_video_id, ''), NULLIF(${alias}.live_id, ''))`;
+  const legacyKey = `NULLIF(${alias}.youtube_video_id, '')`;
+  const overrideHide = `EXISTS (SELECT 1 FROM web_video_overrides vo
+    WHERE (vo.content_key = ${contentKey} OR (${legacyKey} != '' AND vo.content_key = ${legacyKey}))
+      AND vo.content_key != '' AND vo.published = 0)`;
+  const overrideShow = `EXISTS (SELECT 1 FROM web_video_overrides vo
+    WHERE (vo.content_key = ${contentKey} OR (${legacyKey} != '' AND vo.content_key = ${legacyKey}))
+      AND vo.content_key != '' AND vo.published = 1)`;
   const explicitOn = `EXISTS (SELECT 1 FROM web_publications p WHERE p.youtube_video_id = ${alias}.youtube_video_id AND p.youtube_video_id != '' AND p.published = 1)`;
   const withheld = `EXISTS (SELECT 1 FROM web_publications p0 WHERE p0.youtube_video_id = ${alias}.youtube_video_id AND p0.youtube_video_id != '' AND p0.published = 0)`;
+  // Arsip Telegram-first sudah merupakan konten yang dapat ditemukan dan diunduh,
+  //meskipun YouTube belum tersedia. Visibility tetap tunduk pada override admin
+  // (published=0) di atas; status YouTube hanya menentukan playback.
+  const telegramReady = `(${alias}.telegram_message_ids IS NOT NULL AND ${alias}.telegram_message_ids != '')`;
   const elapsedHours = `(julianday('now') - julianday(COALESCE(${alias}.download_ended_at, ${alias}.created_at))) * 24`;
   // Showroom: 0 = langsung tampil (konstanta 1, tanpa jeda), negatif = nonaktif,
   // positif = terjadwal N jam. Nilai positif sebelumnya diperlakukan sama dengan 0
@@ -245,7 +288,11 @@ function publicVisibilitySql(alias = 'ls'): string {
   const idnAuto = AUTO_PUBLISH_AFTER_HOURS > 0
     ? `(${elapsedHours} >= ${AUTO_PUBLISH_AFTER_HOURS})`
     : '0';
-  const fallback = `(${explicitOn} OR (NOT ${withheld} AND (CASE WHEN COALESCE(${alias}.platform, 'idn') = 'showroom' THEN ${showroomAuto} ELSE ${idnAuto} END)))`;
+  const autoVisibility = `(CASE WHEN COALESCE(${alias}.platform, 'idn') = 'showroom' THEN ${showroomAuto} ELSE ${idnAuto} END)`;
+  // Telegram-ready berarti arsip sudah dapat dibuka/diunduh.  YouTube hanya
+  // menambah playback; ia tidak boleh menjadi syarat agar katalog menemukan
+  // konten.  `withheld` tetap menang agar keputusan admin tidak ditimpa.
+  const fallback = `(${explicitOn} OR (NOT ${withheld} AND (${telegramReady} OR ${autoVisibility})))`;
   return `((NOT ${overrideHide}) AND (${overrideShow} OR ${fallback}))`;
 }
 
@@ -280,7 +327,20 @@ export interface VideoItem {
   publish_at?: string;
 }
 
-/** Format detik → "H:MM:SS" atau "M:SS". */
+/**
+ * Identitas URL publik stabil.  `content_uid` selalu menjadi identitas utama; fallback
+ * hanya untuk data lama yang belum memiliki UID.  YouTube ID tidak lagi
+ * menentukan URL setelah upload selesai.
+ */
+function canonicalWatchId(contentUid: string, youtubeId: string, fallback: string): string {
+  const content = (contentUid || '').trim();
+  if (content) return content;
+  const youtube = (youtubeId || '').trim();
+  // Data lama belum punya content_uid: pertahankan URL YouTube tersamar agar
+  // deep-link yang sudah dibagikan tidak berubah/404.
+  if (youtube) return encodeWatchId(youtube);
+  return fallback;
+}
 function formatDuration(totalSeconds: number): string {
   const s = Math.max(0, Math.round(totalSeconds));
   const h = Math.floor(s / 3600);
@@ -336,6 +396,7 @@ function normalizePlatform(value: string | null | undefined): VideoItem['platfor
 }
 
 interface VideoRow {
+  id: number;
   platform: string | null;
   member_username: string;
   streamer_name: string | null;
@@ -351,11 +412,26 @@ interface VideoRow {
 }
 
 /**
- * Kunci pengelompokan konten di katalog: YouTube ID bila sudah ada (prioritas
- * lama & web_publications), selain itu `content_uid` (arsip TG-first, YT belum).
- * Baris tanpa keduanya tidak lolos WHERE — aman untuk GROUP BY.
+ * Kunci pengelompokan konten: `content_uid` stabil dan menjadi identitas URL.
+ * Fallback ke YouTube/live_id hanya untuk baris lama yang belum dimigrasikan.
  */
-const CONTENT_KEY_SQL = `COALESCE(NULLIF(ls.youtube_video_id, ''), ls.content_uid)`;
+const CONTENT_KEY_SQL = `COALESCE(NULLIF(ls.content_uid, ''), NULLIF(ls.youtube_video_id, ''), NULLIF(ls.live_id, ''))`;
+
+/** Kanal untuk agregasi marker/ID grup:ambil nilai yang benar-benar ada. */
+const CONTENT_YT_SQL = `COALESCE(MAX(NULLIF(ls.youtube_video_id, '')), '')`;
+const CONTENT_UID_SQL = `COALESCE(
+  MAX(NULLIF(ls.content_uid, '')),
+  COALESCE(MAX(NULLIF(ls.youtube_video_id, '')), MAX(ls.live_id))
+)`;
+
+/** Syarat satu baris sudah menjadi arsip yang bisa ditemukan pengguna.
+ *  Telegram adalah sumber arsip/download; YouTube hanya sumber playback.
+ *  `content_uid` hanya stabilitas identitas, bukan syarat marker Telegram.
+ */
+const ARCHIVE_READY_SQL = `(
+  (ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != '')
+  OR (ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != '')
+)`;
 
 export function getAllVideos(options: {
   search?: string;
@@ -372,27 +448,25 @@ export function getAllVideos(options: {
   // `platform` berasal dari kolom bot (2026). Baris lama dan database pra-migrasi
   // tidak punya nilainya, jadi selalu jatuh ke 'idn' — bukan ditebak dari judul.
   let baseQuery = `
-    SELECT 
-      COALESCE(NULLIF(ls.platform, ''), 'idn') as platform,
-      ls.member_username,
-      COALESCE(NULLIF(ls.member_name, ''), NULLIF(mh.display_name, ''), ls.member_username) as streamer_name,
-      COALESCE(NULLIF(mg.live_title, ''), '') as title,
+    SELECT
+      MIN(ls.id) AS id,
+      COALESCE(NULLIF(MAX(ls.platform), ''), 'idn') as platform,
+      MIN(ls.member_username) AS member_username,
+      COALESCE(NULLIF(MAX(ls.member_name), ''), NULLIF(MAX(mh.display_name), ''), MIN(ls.member_username)) as streamer_name,
+      COALESCE(NULLIF(MAX(mg.live_title), ''), '') as title,
       MIN(ls.started_at) as started_at,
       MAX(ls.created_at) as created_at,
-      ls.youtube_video_id,
-      ${CONTENT_KEY_SQL} as content_uid,
+      ${CONTENT_YT_SQL} AS youtube_video_id,
+      ${CONTENT_UID_SQL} AS content_uid,
       MAX(CASE WHEN ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != '' THEN 1 ELSE 0 END) as has_tg,
+      MAX(COALESCE(NULLIF(ls.telegram_message_ids, ''), '')) AS telegram_message_ids,
       MIN(ls.download_started_at) as dur_start,
       MAX(ls.download_ended_at) as dur_end
     FROM live_sessions ls
     LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id
     LEFT JOIN member_hls mh ON ls.member_username = mh.username
     WHERE (
-      (ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != '')
-      OR (
-        ls.content_uid IS NOT NULL AND ls.content_uid != ''
-        AND ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != ''
-      )
+      ${ARCHIVE_READY_SQL}
     )
       AND ${publicVisibilitySql('ls')}
   `;
@@ -461,9 +535,9 @@ export function getAllVideos(options: {
     const ytId = (r.youtube_video_id || '').trim();
     const contentUid = (r.content_uid || '').trim();
     const durSec = durationFromRange(r.dur_start, r.dur_end);
-    const watchKey = ytId || contentUid;
+    const watchKey = canonicalWatchId(contentUid, ytId, String(r.id));
     return {
-      id: ytId || contentUid,
+      id: watchKey,
       platform: platform,
       streamer_username: r.member_username,
       streamer_name: dispName,
@@ -474,7 +548,7 @@ export function getAllVideos(options: {
       duration_formatted: durSec > 0 ? formatDuration(durSec) : '',
       youtube_video_id: ytId,
       content_uid: contentUid,
-      watch_id: ytId ? encodeWatchId(ytId) : watchKey,
+      watch_id: watchKey,
       thumbnail_url: ytId
         ? `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`
         : '',
@@ -504,6 +578,8 @@ export interface UpcomingOptions {
   member?: string;
   /** Saring per platform ('idn'/'showroom'); kosong = semua platform. */
   platform?: string;
+  /** Saring dengan kata kunci seperti katalog utama. */
+  search?: string;
 }
 
 /**
@@ -531,12 +607,15 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
     // Pra-rilis: YT sudah ada ATAU arsip TG siap (content_uid terisi) — konten
     // TG-first tetap bisa tampil sebagai "Segera" sebelum YouTube ready.
     `(
-      (ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != '')
-      OR (
-        ls.content_uid IS NOT NULL AND ls.content_uid != ''
-        AND ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != ''
-      )
+      ${ARCHIVE_READY_SQL}
     )`,
+    // Arsip TG-first yang sudah lolos publicVisibilitySql sudah ada di
+    // getAllVideos(). Jangan masukkan ulang sebagai "Segera" (duplikasi kartu).
+    // Yang tersisa di sini hanya konten YT-only yang masih pra-rilis.
+    `NOT EXISTS (SELECT 1 FROM live_sessions visible
+      WHERE visible.content_uid IS NOT NULL AND visible.content_uid != ''
+        AND visible.content_uid = ls.content_uid
+        AND ${publicVisibilitySql('visible')})`,
     // Ditahan admin (published = 0) / terbit manual (published = 1) bukan pra-rilis.
     // Baik keputusan publications (YT) maupun override /admin/videos (content_key).
     `NOT EXISTS (SELECT 1 FROM web_publications pw WHERE pw.youtube_video_id = ls.youtube_video_id AND ls.youtube_video_id != '' AND pw.published = 0)`,
@@ -565,14 +644,15 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
   // membatasi jumlah, yang terambil adalah rekaman pra-rilis paling baru.
   const rows = db.prepare(`
     SELECT
-      COALESCE(NULLIF(ls.platform, ''), 'idn') as platform,
-      ls.member_username,
-      COALESCE(NULLIF(ls.member_name, ''), NULLIF(mh.display_name, ''), ls.member_username) as streamer_name,
-      COALESCE(NULLIF(mg.live_title, ''), '') as title,
+      MIN(ls.id) AS id,
+      COALESCE(NULLIF(MAX(ls.platform), ''), 'idn') as platform,
+      MIN(ls.member_username) AS member_username,
+      COALESCE(NULLIF(MAX(ls.member_name), ''), NULLIF(MAX(mh.display_name), ''), MIN(ls.member_username)) as streamer_name,
+      COALESCE(NULLIF(MAX(mg.live_title), ''), '') as title,
       MIN(ls.started_at) as started_at,
       MAX(ls.created_at) as created_at,
-      ls.youtube_video_id,
-      ${CONTENT_KEY_SQL} as content_uid,
+      ${CONTENT_YT_SQL} AS youtube_video_id,
+      ${CONTENT_UID_SQL} AS content_uid,
       MAX(CASE WHEN ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != '' THEN 1 ELSE 0 END) as has_tg,
       MAX(COALESCE(ls.download_ended_at, ls.created_at)) as last_end,
       CASE
@@ -598,9 +678,9 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
     const title = buildDisplayTitle(platform, dispName, startedAt);
     const ytId = (r.youtube_video_id || '').trim();
     const contentUid = (r.content_uid || '').trim();
-    const watchKey = ytId || contentUid;
+    const watchKey = canonicalWatchId(contentUid, ytId, String(r.id));
     return {
-      id: ytId || contentUid,
+      id: watchKey,
       platform,
       streamer_username: r.member_username,
       streamer_name: dispName,
@@ -611,7 +691,7 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
       duration_formatted: '',
       youtube_video_id: ytId,
       content_uid: contentUid,
-      watch_id: ytId ? encodeWatchId(ytId) : watchKey,
+      watch_id: watchKey,
       thumbnail_url: ytId
         ? `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`
         : '',
@@ -624,6 +704,7 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
 }
 
 interface VideoDetailRow {
+  id: number;
   platform: string | null;
   member_username: string;
   streamer_name: string | null;
@@ -655,6 +736,7 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   const publishAtSql = (hours: number) => `datetime(COALESCE(ls.download_ended_at, ls.created_at), '+${hours} hours')`;
   const sql = `
     SELECT
+      ls.id AS id,
       COALESCE(NULLIF(ls.platform, ''), 'idn') as platform,
       ls.member_username,
       COALESCE(NULLIF(ls.member_name, ''), NULLIF(mh.display_name, ''), ls.member_username) as streamer_name,
@@ -675,14 +757,37 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     FROM live_sessions ls
     LEFT JOIN merge_groups mg ON ls.merge_group_id = mg.id
     LEFT JOIN member_hls mh ON ls.member_username = mh.username
+    -- Hanya baris yang sudah memiliki arsip Telegram atau YouTube yang boleh
+    -- dibuka lewat /watch. UID dari session yang belum diarsipkan akan
+    -- menghasilkan halaman kosong/player tak terduga.
     WHERE (ls.youtube_video_id = ? OR ls.live_id = ? OR ls.id = ? OR ls.content_uid = ?)
+      AND (
+        (ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != '')
+        OR EXISTS (
+          -- Ketersediaan arsip dinilai per GRUP, bukan per baris: content_uid,
+          -- marker Telegram, dan marker YouTube bisa tersimpan pada segmen
+          -- yang berbeda dari segmen yang membawa content_uid. Diperiksa lewat
+          -- merge group yang sama atau content_uid yang sama supaya
+          -- /watch/<uid> tidak 404 padahal katalog menampilkannya.
+          SELECT 1 FROM live_sessions ready
+          WHERE ready.telegram_message_ids IS NOT NULL AND ready.telegram_message_ids != ''
+            AND (
+              (ls.merge_group_id IS NOT NULL AND ready.merge_group_id = ls.merge_group_id)
+              OR (
+                ls.content_uid IS NOT NULL AND ls.content_uid != ''
+                AND ready.content_uid = ls.content_uid
+              )
+            )
+        )
+      )
       AND NOT EXISTS (
         SELECT 1 FROM web_publications pw
         WHERE pw.youtube_video_id = ls.youtube_video_id AND ls.youtube_video_id != '' AND pw.published = 0
       )
       AND NOT EXISTS (
         SELECT 1 FROM web_video_overrides wo
-        WHERE wo.content_key = COALESCE(NULLIF(ls.youtube_video_id, ''), ls.content_uid)
+        WHERE (wo.content_key = ${CONTENT_KEY_SQL}
+          OR (NULLIF(ls.youtube_video_id, '') IS NOT NULL AND wo.content_key = ls.youtube_video_id))
           AND wo.content_key != '' AND wo.published = 0
       )
     ORDER BY ls.id DESC
@@ -691,7 +796,6 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   const stmt = db.prepare(sql);
   const r = stmt.get(lookupId, videoIdOrLiveId, videoIdOrLiveId, lookupId) as unknown as VideoDetailRow | undefined;
   if (!r) return null;
-
   const dispName = cleanDisplayName(r.member_username, r.streamer_name || undefined);
   const startedAt = r.started_at || r.created_at || '';
   const platform = normalizePlatform(r.platform);
@@ -704,8 +808,9 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   // agar diparse sebagai UTC, bukan waktu lokal browser.
   const publishAt = r.publish_at ? r.publish_at.replace(' ', 'T') + 'Z' : '';
 
+  const watchKey = canonicalWatchId(contentUid, ytId, String(r.id));
   return {
-    id: ytId || contentUid,
+    id: watchKey,
     platform: platform,
     streamer_username: r.member_username,
     streamer_name: dispName,
@@ -716,7 +821,7 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     duration_formatted: durSec > 0 ? formatDuration(durSec) : '',
     youtube_video_id: ytId,
     content_uid: contentUid,
-    watch_id: ytId ? encodeWatchId(ytId) : contentUid,
+    watch_id: watchKey,
     thumbnail_url: ytId ? `https://img.youtube.com/vi/${ytId}/maxresdefault.jpg` : '',
     created_at: r.created_at || '',
     telegram_archived: !!(r.telegram_message_ids && r.telegram_message_ids.trim()),

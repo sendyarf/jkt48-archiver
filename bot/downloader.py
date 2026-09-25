@@ -1,14 +1,10 @@
 """
-downloader.py - HLS stream downloader using yt-dlp.
+downloader.py - HLS stream recorder backed by ffmpeg.
 
-yt-dlp handles:
-  - Auto-selecting best quality from HLS master playlist
-  - Reconnect & segment retry automatically
-  - Bearer token / custom headers passthrough
-  - Proper muxing via ffmpeg (still required as a dependency)
-
-ffmpeg is still needed on the system for muxing, but the
-download logic, quality selection, and retry are managed by yt-dlp.
+The IDN/Showroom HLS endpoints are live playlists. ffmpeg writes a
+fragmented-MP4 stream incrementally and handles reconnects at the HTTP/HLS
+layer. The process remains cancellable through ``_active_processes``; a
+non-empty partial file left after SIGTERM is used as a salvage segment.
 """
 import asyncio
 import contextlib
@@ -24,9 +20,49 @@ from bot.config import Config
 
 logger = logging.getLogger(__name__)
 
+# ffmpeg writes an MP4 `ftyp` box before the media fragments.  A non-empty
+# file without that header is usually an HTTP/CDN error body, not a recording.
+_MIN_OUTPUT_BYTES = 16
+_MP4_SUFFIXES = {".mp4", ".m4v"}
+
+
+def _is_usable_recording(path: Optional[Path]) -> bool:
+    """Return whether a recorder output is plausibly a usable media file.
+
+    ffmpeg may create only the ``ftyp``/``moov`` header before the first media
+    fragment arrives.  Treating that header-only file as a completed recording
+    would lose a recording when a live task is stopped during startup, so an
+    MP4 must also contain at least one media box (``moof`` or ``mdat``).
+    """
+    if path is None:
+        return False
+    try:
+        if not path.is_file() or path.stat().st_size < _MIN_OUTPUT_BYTES:
+            return False
+        suffix = path.suffix.lower()
+        is_mp4 = (
+            suffix in _MP4_SUFFIXES
+            or path.name.lower().endswith(tuple(ext + ".part" for ext in _MP4_SUFFIXES))
+        )
+        if is_mp4:
+            with path.open("rb") as handle:
+                header = handle.read(256 * 1024)
+            return (
+                b"ftyp" in header
+                and (b"moof" in header or b"mdat" in header)
+            )
+        if suffix == ".ts":
+            # MPEG-TS starts with the 0x47 sync byte; this rejects a large
+            # HTML/JSON error body left with a media-looking suffix.
+            with path.open("rb") as handle:
+                return handle.read(1) == b"G"
+        return suffix in {".mkv", ".webm"}
+    except OSError:
+        return False
+
 
 class DownloadError(Exception):
-    """Raised when yt-dlp exits with a non-zero code."""
+    """Raised when ffmpeg exits without producing a usable recording."""
 
 
 # Maps live_id -> asyncio.subprocess.Process for live cancel control
@@ -35,9 +71,9 @@ _active_processes: dict[str, asyncio.subprocess.Process] = {}
 
 def _terminate_process(process: asyncio.subprocess.Process) -> None:
     """
-    Kirim SIGTERM ke proses yt-dlp (best-effort, tanpa await).
+    Kirim SIGTERM ke proses ffmpeg (best-effort, tanpa await).
 
-    SIGTERM membuat yt-dlp/ffmpeg menutup container file dengan rapi sehingga
+    SIGTERM membuat ffmpeg menutup container file dengan rapi sehingga
     segmen parsial tetap bisa dibaca (bukan file rusak).
     """
     if process is None or process.returncode is not None:
@@ -63,18 +99,20 @@ async def terminate_process_async(
     if process.returncode is None:
         with contextlib.suppress(Exception):
             process.kill()
+        with contextlib.suppress(Exception):
+            await process.wait()
 
 
 def cancel_download(live_id: str) -> bool:
     """
-    Gracefully terminate the yt-dlp download process for a specific live_id.
+    Gracefully terminate the ffmpeg process for a specific live_id.
     Returns True if process was found and terminated, False otherwise.
     """
     proc = _active_processes.get(live_id)
     if proc and proc.returncode is None:
-        logger.info("🛑 Manually terminating yt-dlp process for live_id=%s", live_id)
+        logger.info("🛑 Manually terminating ffmpeg process for live_id=%s", live_id)
         try:
-            proc.terminate()  # SIGTERM allows yt-dlp / ffmpeg to cleanly close the file container
+            proc.terminate()  # SIGTERM allows ffmpeg to cleanly close the file container
             return True
         except Exception as exc:
             logger.warning("Error terminating process for %s: %s", live_id, exc)
@@ -96,7 +134,10 @@ async def _wait_for_hls_url(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/150.0.0.0 Safari/537.36"
-        )
+        ),
+        "Accept": "*/*",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
     if auth_token:
         headers["Authorization"] = f"Bearer {auth_token}"
@@ -106,8 +147,20 @@ async def _wait_for_hls_url(
             try:
                 resp = await client.get(hls_url, headers=headers)
                 if resp.status_code == 200:
-                    logger.info("HLS URL is active (HTTP 200) on attempt %d", attempt)
-                    return True
+                    text = resp.text[:200].lstrip()
+                    if "#EXTM3U" in text:
+                        logger.info(
+                            "HLS URL is active (HTTP 200 with playlist) on attempt %d",
+                            attempt,
+                        )
+                        return True
+                    logger.warning(
+                        "HLS URL returned HTTP 200 without #EXTM3U on attempt %d/%d",
+                        attempt, max_attempts,
+                    )
+                    # A CDN error page is not a live stream; do not start a
+                    # recorder against it.
+                    return False
                 logger.warning(
                     "HLS URL returned HTTP %d on attempt %d/%d. Waiting for stream to initialize...",
                     resp.status_code,
@@ -139,7 +192,7 @@ def has_enough_disk_space(min_mb: Optional[int] = None) -> bool:
     """
     True bila space bebas di DOWNLOAD_DIR masih di atas ambang MIN_FREE_DISK_MB.
 
-    Dipanggil sebelum mulai recording supaya yt-dlp/ffmpeg tidak gagal di
+    Dipanggil sebelum mulai recording supaya ffmpeg tidak gagal di
     tengah jalan karena disk penuh (insiden yang tercatat di SHOWROOM-PLAN §6.1).
     """
     threshold_mb = Config.MIN_FREE_DISK_MB if min_mb is None else min_mb
@@ -159,8 +212,8 @@ def has_enough_disk_space(min_mb: Optional[int] = None) -> bool:
 
 def _output_path(member_username: str, live_id: str) -> Path:
     """
-    Build a deterministic output file path (WITHOUT extension).
-    yt-dlp will append the correct extension automatically.
+    Build a deterministic output base path (without extension).
+    ffmpeg appends the configured ``.mp4`` extension.
 
     Example: /tmp/jkt48-lives/jkt48_fritzy_20250729_143022_live123
     """
@@ -171,19 +224,31 @@ def _output_path(member_username: str, live_id: str) -> Path:
 
 def _find_output_file(base_path: Path) -> Optional[Path]:
     """
-    Find the actual output file created by yt-dlp.
-    yt-dlp appends .mp4, .mkv, etc. — we search for whichever was created.
+    Find the actual output file created by the recorder.
+    ffmpeg writes the configured ``.mp4`` path directly; the fallback also
+    accepts a non-empty partial file left by an interrupted process.
     """
+    # `ftyp` check prevents a CDN error page from being accepted as media.
     for ext in (".mp4", ".mkv", ".ts", ".m4v"):
-        candidate = base_path.with_suffix(ext)
-        if candidate.exists() and candidate.stat().st_size > 0:
-            return candidate
-    # Fallback: search parent dir for files matching the stem
+        candidate = Path(f"{base_path}{ext}")
+        try:
+            if _is_usable_recording(candidate):
+                return candidate
+        except OSError:
+            continue
+    # Fallback: search parent dir for files matching the stem.  A non-empty
+    # partial file left after SIGTERM is still useful as a salvage segment.
     parent = base_path.parent
     stem = base_path.name
-    matches = sorted(parent.glob(f"{stem}.*"), key=lambda p: p.stat().st_size, reverse=True)
+    matches = []
+    for candidate in parent.glob(f"{stem}.*"):
+        try:
+            if _is_usable_recording(candidate):
+                matches.append(candidate)
+        except OSError:
+            continue
     if matches:
-        return matches[0]
+        return max(matches, key=lambda p: p.stat().st_size)
     return None
 
 
@@ -192,7 +257,7 @@ async def _read_output(
     live_id: str,
     on_progress: Optional[Callable[[str], None]] = None,
 ) -> None:
-    """Read yt-dlp stdout/stderr in the background for logging and progress."""
+    """Read ffmpeg stdout/stderr in the background for logging and progress."""
     while True:
         line = await stream.readline()
         if not line:
@@ -201,16 +266,16 @@ async def _read_output(
         if not decoded:
             continue
 
-        # yt-dlp progress lines look like:
-        # [download]  23.4% of ~  1.50GiB at   4.20MiB/s ETA 00:17
-        if "[download]" in decoded and "%" in decoded:
+        # ffmpeg progress lines look like:
+        # frame= 1234 fps= ... time=00:00:41.00 ...
+        if "frame=" in decoded and "time=" in decoded:
             if on_progress:
                 on_progress(decoded.strip())
-            logger.debug("[yt-dlp][%s] %s", live_id, decoded)
+            logger.debug("[ffmpeg][%s] %s", live_id, decoded)
         elif "ERROR" in decoded or "error" in decoded.lower():
-            logger.warning("[yt-dlp][%s] %s", live_id, decoded)
+            logger.warning("[ffmpeg][%s] %s", live_id, decoded)
         else:
-            logger.debug("[yt-dlp][%s] %s", live_id, decoded)
+            logger.debug("[ffmpeg][%s] %s", live_id, decoded)
 
 
 async def download_stream(
@@ -224,7 +289,7 @@ async def download_stream(
     url_refresher: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
 ) -> Path:
     """
-    Download a live HLS stream to a local .mp4 file using yt-dlp.
+    Download a live HLS stream to a local MP4 file using ffmpeg.
 
     Args:
         hls_url:          The .m3u8 URL from IDN API.
@@ -242,26 +307,19 @@ async def download_stream(
         Path to the recorded video file (.mp4).
 
     Raises:
-        DownloadError: If yt-dlp exits with a non-zero return code.
-        FileNotFoundError: If yt-dlp or ffmpeg is not installed.
+        DownloadError: If ffmpeg exits without producing a non-empty file.
+        FileNotFoundError: If ffmpeg is not installed.
     """
-    if not shutil.which("yt-dlp"):
-        raise FileNotFoundError(
-            "yt-dlp not found. Install it with:\n"
-            "  pip install yt-dlp\n"
-            "  or: sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod +x /usr/local/bin/yt-dlp"
-        )
     if not shutil.which("ffmpeg"):
         raise FileNotFoundError(
-            "ffmpeg not found (required by yt-dlp for muxing).\n"
+            "ffmpeg not found (required for HLS recording).\n"
             "Install: sudo apt install ffmpeg"
         )
 
     # A reconnect/restart segment often starts while the member's HLS stream is
-    # momentarily not feeding (e.g. right after a lag). yt-dlp then exits with
-    # code 1 and produces NO output file. Instead of failing immediately, retry
-    # a few times with a short backoff so the segment is captured once the
-    # stream resumes, and it can still be merged with the earlier part.
+    # momentarily not feeding (e.g. right after a lag). ffmpeg then exits
+    # without producing a usable file. Retry a few times so the segment can be
+    # captured once the stream resumes and still be merged with the earlier part.
     MAX_EMPTY_RETRIES = max(1, int(max_empty_retries))
     RETRY_DELAY = max(0, float(empty_retry_delay))
 
@@ -287,52 +345,45 @@ async def download_stream(
         if not hls_active:
             logger.warning(
                 "Stream URL did not become active after checking (attempt %d/%d). "
-                "Starting yt-dlp anyway as fallback.",
+                "Starting ffmpeg anyway as fallback.",
                 attempt, MAX_EMPTY_RETRIES,
             )
 
-        # Fresh output path per attempt (timestamped) to avoid stale files.
+        # Fresh path per attempt prevents a retry from colliding with a
+        # prior attempt's output.
         base_path = _output_path(member_username, live_id)
-        # yt-dlp output template — %(ext)s will be replaced by yt-dlp
-        output_template = str(base_path) + ".%(ext)s"
-
+        # Never use with_suffix here: a live_id may itself contain a dot and
+        # with_suffix would replace part of the identifier instead of appending
+        # the recorder extension.
+        output_path = Path(f"{base_path}.mp4")
         logger.info(
-            "Starting download (attempt %d/%d): %s → %s.*",
-            attempt, MAX_EMPTY_RETRIES, member_username, base_path.name,
+            "Starting ffmpeg HLS recording (attempt %d/%d): %s → %s",
+            attempt, MAX_EMPTY_RETRIES, member_username, output_path.name,
         )
 
         cmd = [
-            "yt-dlp",
-            # ── Quality ─────────────────────────────────────────────
-            # Pick best video + best audio; merge into mp4 via ffmpeg
-            "--format", "bestvideo+bestaudio/best",
-            "--merge-output-format", "mp4",
-            # ── Output ──────────────────────────────────────────────
-            "--output", output_template,
-            # No .part files (we want a clean path search afterwards)
-            "--no-part",
-            # ── Live stream handling ─────────────────────────────────
-            # Give the HLS playlist more time to start producing segments
-            "--wait-for-video", "15",
-            # ── Network resilience ──────────────────────────────────
-            # Retry individual fragments up to 50 times (helps survive stream lag/buffering)
-            "--fragment-retries", "50",
-            "--skip-unavailable-fragments",
-            # Retry the whole download up to 10 times on fatal error
-            "--retries", "10",
-            # Keep retrying on connection error
-            "--retry-sleep", "5",
-            # ── Misc ────────────────────────────────────────────────
-            "--no-playlist",
-            "--no-warnings",
-            "--newline",       # one progress line per line (easier to parse)
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel", "warning",
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "10",
+            "-i", hls_url,
+            "-map", "0:v:0?",
+            "-map", "0:a:0?",
+            "-c", "copy",
+            "-bsf:a", "aac_adtstoasc",
+            # Fragmented MP4 remains playable while a live recording is still
+            # being written and is also safe to concatenate after reconnect.
+            "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+            "-f", "mp4",
+            "-y", str(output_path),
         ]
 
-        # Pass Bearer token as HTTP header if provided
+        # Pass Bearer token as an HTTP header if provided.
         if auth_token:
-            cmd += ["--add-header", f"Authorization:Bearer {auth_token}"]
-
-        cmd.append(hls_url)
+            cmd[1:1] = ["-headers", f"Authorization: Bearer {auth_token}\r\n"]
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -348,9 +399,13 @@ async def download_stream(
         )
 
         # ── Inactivity timeout ─────────────────────────────────────────
-        # Kill yt-dlp if no new data is written for INACTIVE_TIMEOUT seconds.
+        # Kill ffmpeg if no new data is written for INACTIVE_TIMEOUT seconds.
         # This recovers from stream lag/disconnect without waiting forever.
+        # Some downloader backends create the destination only after ffmpeg has
+        # opened the live input. Give the process a longer first-data grace,
+        # then apply the inactivity timeout once media has started arriving.
         INACTIVE_TIMEOUT = 120
+        FIRST_DATA_GRACE = max(INACTIVE_TIMEOUT, 180)
         last_size = 0
         stalled = 0
 
@@ -361,31 +416,35 @@ async def download_stream(
                     return_code = ret
                     break
                 except asyncio.TimeoutError:
-                    # Check if yt-dlp is making progress
+                    # Check if ffmpeg is making progress
                     current_size = 0
-                    if base_path.parent.exists():
-                        matches = list(base_path.parent.glob(f"{base_path.name}.*"))
-                        if matches:
-                            current_size = max(p.stat().st_size for p in matches)
+                    try:
+                        if output_path.is_file():
+                            current_size = output_path.stat().st_size
+                    except OSError:
+                        pass
 
                     if current_size > last_size:
                         stalled = 0
                         last_size = current_size
                     else:
                         stalled += 5
-                        if stalled >= INACTIVE_TIMEOUT:
+                        # Do not kill a live downloader during startup merely
+                        # because ffmpeg has not created its destination yet.
+                        limit = INACTIVE_TIMEOUT if last_size > 0 else FIRST_DATA_GRACE
+                        if stalled >= limit:
                             logger.warning(
-                                "[%s] No progress for %ds — killing yt-dlp",
+                                "[%s] No progress for %ds — killing ffmpeg",
                                 live_id, stalled,
                             )
                             process.kill()
                             return_code = await process.wait()
                             break
         except asyncio.CancelledError:
-            # Task dibatalkan (hard shutdown): pastikan yt-dlp benar-benar mati agar
+            # Task dibatalkan (hard shutdown): pastikan ffmpeg benar-benar mati agar
             # tidak jadi proses orphan yang terus menulis file & memakai bandwidth.
-            logger.info("[%s] Download task dibatalkan — menghentikan yt-dlp", live_id)
-            _terminate_process(process)
+            logger.info("[%s] Download task dibatalkan — menghentikan ffmpeg", live_id)
+            await terminate_process_async(process)
             output_task.cancel()
             with contextlib.suppress(Exception):
                 await output_task
@@ -394,33 +453,47 @@ async def download_stream(
             _active_processes.pop(live_id, None)
             # Jaring pengaman: kalau proses masih hidup karena sebab lain, hentikan.
             if process.returncode is None:
-                _terminate_process(process)
+                await terminate_process_async(process)
 
         with contextlib.suppress(Exception):
             await output_task
 
-        # Note: exit code 1 or negative (SIGTERM -15) are valid when manually
-        # cancelled or the stream ends.
-        if return_code not in (0, 1, -15, -9) and return_code >= 0:
-            raise DownloadError(
-                f"yt-dlp exited with code {return_code} for live_id={live_id}"
-            )
-
-        # Find the actual output file
-        out_path = _find_output_file(base_path)
-        if out_path:
+        # A usable partial recording is valuable even when ffmpeg exits with a
+        # non-zero code after SIGTERM or an HLS disconnect.  Check the file
+        # before classifying the exit as a hard failure.
+        out_path = output_path if _is_usable_recording(output_path) else None
+        if out_path is None:
+            out_path = _find_output_file(base_path)
+        if _is_usable_recording(out_path):
+            assert out_path is not None
             size_mb = out_path.stat().st_size / (1024 * 1024)
-            logger.info(
-                "Download complete: %s (%.1f MB) → %s",
-                member_username, size_mb, out_path.name,
-            )
+            if return_code not in (0, 1, -15, -9) and return_code >= 0:
+                logger.warning(
+                    "[%s] ffmpeg keluar code %s tetapi file parsial %s "
+                    "tetap digunakan (%.1f MB)",
+                    live_id, return_code, out_path.name, size_mb,
+                )
+            else:
+                logger.info(
+                    "Download complete: %s (%.1f MB) → %s",
+                    member_username, size_mb, out_path.name,
+                )
             return out_path
 
-        # No output produced → stream probably not feeding yet.
-        last_error = (
-            f"Output file not found after yt-dlp completed. "
-            f"Searched for: {base_path}.*"
-        )
+        # Treat an unexpected exit like an empty output: a later retry can
+        # recover from a transient 404/CDN disconnect instead of making one
+        # failed ffmpeg invocation terminal for the whole recording.
+        if return_code not in (0, 1, -15, -9) and return_code >= 0:
+            # Preserve the process diagnosis; don't replace it with a generic
+            # "file not found" message on the final attempt.
+            last_error = (
+                f"ffmpeg exited with code {return_code} for live_id={live_id}"
+            )
+        else:
+            last_error = (
+                f"Output file not found after ffmpeg completed. "
+                f"Searched for: {output_path}"
+            )
         if attempt < MAX_EMPTY_RETRIES:
             logger.warning(
                 "[%s] No output produced on attempt %d/%d. "

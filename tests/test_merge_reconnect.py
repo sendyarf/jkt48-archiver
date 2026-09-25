@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import subprocess
 import unittest
+from unittest.mock import AsyncMock, patch
 from datetime import datetime
 from pathlib import Path
 
@@ -496,6 +497,45 @@ class TestSegmentFiltering(MergeTestCase):
         # Segmen rusak ditandai failed (tidak diadopsi ulang selamanya)
         self.assertEqual(database.get_session("seg-missing")["status"], "failed")
         self.assertEqual(database.get_session("seg-empty")["status"], "failed")
+
+
+    def test_source_segments_kept_until_two_destination_pipeline_completes(self):
+        gid = database.create_merge_group(MEMBER, NAME, datetime.now().isoformat())
+        first = self._dummy_video("part-a.mp4", 2048)
+        second = self._dummy_video("part-b.mp4", 2048)
+        merged = self.scratch / f"{MEMBER}_merged_{gid}.mp4"
+        merged.write_bytes(b"merged" * 512)
+
+        for live_id, path in (("part-a", first), ("part-b", second)):
+            database.insert_live(
+                live_id=live_id,
+                member_username=MEMBER,
+                member_name=NAME,
+                started_at=datetime.now().isoformat(),
+                hls_url=HLS_LULU,
+            )
+            database.update_status(
+                live_id,
+                "segment_done",
+                file_path=str(path),
+                file_size_bytes=path.stat().st_size,
+                download_ended_at=datetime.now().isoformat(),
+            )
+            database.set_session_merge_group(live_id, gid)
+
+        self.mgr._on_upload_ready = AsyncMock(return_value=False)  # e.g. YouTube quota
+        self.mgr._concat_files = AsyncMock(return_value=str(merged))
+        old_auto_delete = Config.AUTO_DELETE_AFTER_UPLOAD
+        Config.AUTO_DELETE_AFTER_UPLOAD = True
+        try:
+            asyncio.run(self.mgr._merge_and_upload(gid, MEMBER))
+        finally:
+            Config.AUTO_DELETE_AFTER_UPLOAD = old_auto_delete
+
+        self.assertTrue(first.exists(), "source segment jangan dihapus saat YT pending")
+        self.assertTrue(second.exists(), "source segment jangan dihapus saat YT pending")
+        self.assertTrue(merged.exists(), "canonical merged file wajib ada untuk retry YT")
+        self.assertEqual(database.get_merge_group(gid)["status"], "done")
 
 
 class TestConcatFiles(MergeTestCase):

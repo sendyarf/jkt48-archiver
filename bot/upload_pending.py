@@ -9,8 +9,8 @@ Usage on VPS:
 """
 import argparse
 import asyncio
+import hashlib
 import logging
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,8 +26,7 @@ import colorlog
 from bot.config import Config
 from bot import database
 from bot import timeutil
-from bot.downloader import delete_file, get_file_size_bytes
-from bot.telegram_sender import TelegramSender
+from bot.main import JKT48LiveBot
 from bot.video_splitter import get_default_max_bytes, get_video_metadata
 
 logger = logging.getLogger("upload_pending")
@@ -64,11 +63,75 @@ def fmt_size(b: Optional[int]) -> str:
     return f"{b:.1f} TB"
 
 
+def _safe_stat_size(path: Path) -> int:
+    """Return a file size without letting a disappearing file abort a queue."""
+    try:
+        if path.is_file():
+            return path.stat().st_size
+    except OSError:
+        pass
+    return 0
+
+
+def _register_untracked_file(item: dict) -> str:
+    """Persist a scanned file so partial Telegram/YouTube work survives retry.
+
+    The scanner historically passed a path straight to the upload callback
+    without creating a ``live_sessions`` row.  If Telegram succeeded and YouTube
+    hit quota, the next scan had no marker and uploaded Telegram again.  A
+    deterministic ID keeps the row stable across repeated ``--scan-dir`` runs.
+    """
+    path = Path(item["file_path"]).resolve()
+    existing = database.get_session_by_file_path(str(path))
+    if existing is not None:
+        item["source"] = "db"
+        item["live_id"] = str(existing["live_id"])
+        item["db_status"] = existing["status"]
+        return str(existing["live_id"])
+
+    digest = hashlib.sha1(str(path).encode("utf-8", errors="replace")).hexdigest()[:16]
+    live_id = f"untracked_{digest}"
+    database.insert_live(
+        live_id=live_id,
+        member_username=item["member_username"],
+        member_name=item["member_name"],
+        started_at=item["started_at"],
+        platform=item.get("platform") or "idn",
+    )
+    database.update_status(
+        live_id,
+        "pending_upload",
+        file_path=str(path),
+        file_size_bytes=_safe_stat_size(path),
+        error_message="",
+    )
+    item["source"] = "db"
+    item["live_id"] = live_id
+    item["db_status"] = "pending_upload"
+    return live_id
+
+
+
+
+def _get_effective_upload_state(live_id: str) -> dict:
+    """Return markers from a finalized group, or from this row alone.
+
+    A concat-failed merge group keeps its historical ``merge_group_id`` on every
+    segment, but those segments are independent uploads.  Reading the raw group
+    ID would let one completed segment make the others appear complete.
+    """
+    group_id = database.get_finalized_upload_group_id(live_id)
+    return database.get_group_upload_state(live_id, group_id)
+
 async def collect_pending_items(scan_dir: bool = False) -> list[dict]:
     """
     Collect all pending videos from DB and optionally directly from DOWNLOAD_DIR.
     """
     database.init_db()
+    # CLI dapat dijalankan setelah bot mati mendadak. Reconcile first so a
+    # missing source file is not silently skipped and a completed pipeline is
+    # not retried forever.
+    database.recover_interrupted_uploads()
     items: list[dict] = []
     seen_paths: set[str] = set()
 
@@ -78,23 +141,21 @@ async def collect_pending_items(scan_dir: bool = False) -> list[dict]:
         fp = s.get("file_path")
         if not fp:
             continue
-        p = Path(fp)
-        if p.exists():
-            resolved = str(p.resolve())
-            if resolved not in seen_paths:
-                seen_paths.add(resolved)
+        resolved = database.get_available_upload_path(s.get("live_id") or "")
+        p = Path(resolved or fp)
+        if _safe_stat_size(p) > 0:
+            resolved_key = str(p.resolve())
+            if resolved_key not in seen_paths:
+                seen_paths.add(resolved_key)
                 items.append({
                     "source": "db",
                     "live_id": s.get("live_id"),
                     "member_username": s.get("member_username") or "jkt48",
                     "member_name": s.get("member_name") or s.get("member_username") or "JKT48 Member",
                     "started_at": s.get("started_at") or s.get("created_at") or timeutil.utc_now_iso(),
-                    # Platform menentukan label header di Telegram (IDN/SHOWROOM).
-                    # Kolom platform bisa kosong di baris lama → fallback ke
-                    # get_platform_for_live() (prefix live_id / database).
                     "platform": s.get("platform") or database.get_platform_for_live(s.get("live_id") or ""),
                     "file_path": p,
-                    "size_bytes": p.stat().st_size,
+                    "size_bytes": _safe_stat_size(p),
                     "db_status": s.get("status"),
                 })
 
@@ -103,7 +164,8 @@ async def collect_pending_items(scan_dir: bool = False) -> list[dict]:
         download_dir = Path(Config.DOWNLOAD_DIR)
         if download_dir.exists():
             for f in sorted(download_dir.iterdir()):
-                if f.is_file() and f.suffix.lower() in (".mp4", ".mkv", ".ts"):
+                size_bytes = _safe_stat_size(f)
+                if size_bytes > 0 and f.suffix.lower() in (".mp4", ".mkv", ".ts"):
                     resolved = str(f.resolve())
                     # Skip temporary files or split parts
                     if "_tgpart_" in f.name or "_thumb.jpg" in f.name or f.name.startswith("merge_"):
@@ -127,7 +189,7 @@ async def collect_pending_items(scan_dir: bool = False) -> list[dict]:
                     ).isoformat(),
                             "platform": database.get_platform_for_live(f.stem),
                             "file_path": f,
-                            "size_bytes": f.stat().st_size,
+                            "size_bytes": size_bytes,
                             "db_status": "untracked",
                         })
 
@@ -135,12 +197,19 @@ async def collect_pending_items(scan_dir: bool = False) -> list[dict]:
 
 
 async def process_uploads(items: list[dict], dry_run: bool = False, keep_files: bool = False) -> None:
+    """Run the same Telegram-then-YouTube pipeline used by the main bot.
+
+    ``items`` may contain database rows or untracked files.  Database rows are
+    updated through the normal idempotent markers; untracked files are uploaded
+    once but have no durable row to update.
+    """
     max_bytes = get_default_max_bytes()
     total_size = sum(item["size_bytes"] for item in items)
 
     print("\n" + "=" * 70)
     print("  📋 JKT48 Live - Pending Videos Queue")
-    print(f"  Target Upload    : Telegram Channel ({Config.TELEGRAM_CHANNEL_ID})")
+    print("  Target Upload    : Telegram archive → YouTube playback")
+    print(f"  Telegram Channel : {Config.TELEGRAM_ARCHIVE_CHANNEL_ID or Config.TELEGRAM_CHANNEL_ID}")
     print(f"  Split Threshold  : {Config.TELEGRAM_MAX_FILE_SIZE_MB} MB")
     print(f"  Total Videos     : {len(items)}")
     print(f"  Total File Size  : {fmt_size(total_size)}")
@@ -150,7 +219,7 @@ async def process_uploads(items: list[dict], dry_run: bool = False, keep_files: 
 
     for i, item in enumerate(items, start=1):
         p: Path = item["file_path"]
-        size = item["size_bytes"]
+        size = _safe_stat_size(p)
         split_note = " (akan di-split > 2GB)" if size > max_bytes else ""
         print(f"  {i}. [{item['source'].upper()}] {item['member_name']} ({item['member_username']})")
         print(f"     File : {p.name} ({fmt_size(size)}){split_note}")
@@ -162,68 +231,112 @@ async def process_uploads(items: list[dict], dry_run: bool = False, keep_files: 
         print("✅ Dry-run selesai. Jalankan tanpa --dry-run untuk memulai upload.\n")
         return
 
-    # Initialize Telegram sender
-    tg = TelegramSender()
-    print("Connecting to Telegram...")
-    await tg.connect()
-
+    bot = JKT48LiveBot()
     successful = 0
     failed = 0
 
     try:
-        for idx, item in enumerate(items, start=1):
+        for item in items:
             p: Path = item["file_path"]
+            live_id = str(item.get("live_id") or "")
+            current_size = _safe_stat_size(p)
+            if current_size <= 0:
+                # The file can disappear after collection (manual cleanup,
+                # cleanup race, or a merge group being finalized). Reconcile
+                # the durable row and try the canonical group artifact once
+                # more before declaring the item lost.
+                if item.get("source") == "db" and live_id:
+                    database.recover_interrupted_uploads()
+                    resolved = database.get_available_upload_path(live_id)
+                    if resolved and _safe_stat_size(Path(resolved)) > 0:
+                        p = Path(resolved)
+                        item["file_path"] = p
+                        current_size = _safe_stat_size(p)
+                    else:
+                        row = database.get_session(live_id)
+                        state = _get_effective_upload_state(live_id)
+                        if (
+                            row is not None
+                            and row.get("status") == "done_youtube"
+                            and bool((state.get("telegram_message_ids") or "").strip())
+                            and bool((state.get("youtube_video_id") or "").strip())
+                        ):
+                            successful += 1
+                            print(f"  ✅ {live_id} sudah lengkap; file lokal sudah dibersihkan.")
+                        else:
+                            failed += 1
+                            logger.warning(
+                                "File pending hilang atau kosong setelah dikumpulkan: %s",
+                                p,
+                            )
+                        continue
+                else:
+                    failed += 1
+                    logger.warning("File pending hilang atau kosong, dilewati: %s", p)
+                    continue
+            if item["source"] != "db":
+                try:
+                    _register_untracked_file(item)
+                except Exception as exc:
+                    failed += 1
+                    logger.exception("Gagal registering file untracked %s: %s", p, exc)
+                    continue
             live_id = item["live_id"]
             name = item["member_name"]
             username = item["member_username"]
             started = item["started_at"]
-
-            print(f"\n[{idx}/{len(items)}] Mengunggah video untuk {name} ({p.name} - {fmt_size(p.stat().st_size)})...")
-
-            if item["source"] == "db":
-                database.update_status(live_id, "uploading_telegram")
+            print(
+                f"\n[{successful + failed + 1}/{len(items)}] Memproses video "
+                f"{name} ({p.name} - {fmt_size(current_size)})..."
+            )
 
             try:
-                msg_ids = await tg.upload_video_with_splitting(
-                    file_path=p,
-                    member_name=name,
+                pipeline_complete = await bot.handle_upload_ready(
+                    live_id=live_id,
                     member_username=username,
+                    member_name=name,
                     started_at=started,
+                    file_path=str(p),
                     platform=item.get("platform") or "",
+                    keep_file=keep_files,
                 )
 
-                if msg_ids:
+                if item["source"] == "db":
+                    row = database.get_session(live_id)
+                    state = _get_effective_upload_state(live_id)
+                    complete = (
+                        bool(pipeline_complete)
+                        and row is not None
+                        and row.get("status") == "done_youtube"
+                        and bool((state.get("telegram_message_ids") or "").strip())
+                        and bool((state.get("youtube_video_id") or "").strip())
+                    )
+                else:
+                    # For untracked files there is no durable row to inspect;
+                    # trust the pipeline's return value instead of guessing
+                    # from AUTO_DELETE or file existence.
+                    complete = bool(pipeline_complete)
+
+                if complete:
                     successful += 1
-                    print(f"  ✅ Sukses terkirim ke Telegram! Message ID: {msg_ids}")
-
-                    if item["source"] == "db":
-                        database.update_status(
-                            live_id,
-                            "done_telegram",
-                            telegram_message_id=msg_ids[0],
-                        )
-
-                    # Delete original file if auto-delete enabled and not overridden
-                    if Config.AUTO_DELETE_AFTER_UPLOAD and not keep_files:
-                        delete_file(p)
-                        print(f"  🗑️  File lokal dihapus dari VPS: {p.name}")
+                    print("  ✅ Telegram + YouTube selesai.")
                 else:
                     failed += 1
-                    print(f"  ❌ Gagal mengunggah {p.name}: Tidak ada message ID returned.")
-                    if item["source"] == "db":
-                        database.update_status(live_id, "pending_upload", error_message="Upload failed")
-
+                    print("  ⚠️ Pipeline belum selesai; file tetap disimpan untuk retry.")
             except Exception as exc:
                 failed += 1
-                logger.exception("Error saat mengunggah %s: %s", p.name, exc)
+                logger.exception("Error saat memproses %s: %s", p.name, exc)
                 if item["source"] == "db":
-                    database.update_status(live_id, "pending_upload", error_message=str(exc))
-
+                    database.update_status(
+                        live_id,
+                        "pending_upload",
+                        error_message=str(exc),
+                    )
     finally:
-        await tg.disconnect()
+        await bot.tg.disconnect()
 
     print("\n" + "=" * 70)
-    print(f"  Upload Selesai: {successful} berhasil, {failed} gagal.")
+    print(f"  Pipeline Selesai: {successful} lengkap, {failed} tertunda.")
     print("=" * 70 + "\n")
 
 

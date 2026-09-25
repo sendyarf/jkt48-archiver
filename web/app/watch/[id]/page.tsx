@@ -3,7 +3,6 @@ import Link from 'next/link';
 import Image from 'next/image';
 import type { Metadata } from 'next';
 import { getVideoById, getAllVideos } from '@/lib/db';
-import { encodeWatchId, isRawYoutubeId } from '@/lib/codec';
 import { formatWibLong } from '@/lib/wib';
 import VideoPlayer from '@/components/VideoPlayer';
 import TelegramDownloadButton from '@/components/TelegramDownloadButton';
@@ -66,14 +65,15 @@ export default async function WatchPage({ params }: WatchPageProps) {
     notFound();
   }
 
-  // URL kanonis memakai ID tersamar. Bila dibuka pakai YouTube ID mentah
-  // (link lama / dibagikan manual), arahkan permanen (308) ke bentuk tersamar.
-  if (isRawYoutubeId(id) && video.youtube_video_id === id) {
-    permanentRedirect(`/watch/${encodeWatchId(id)}`);
+  const canonicalId = video.watch_id || video.content_uid || video.youtube_video_id || String(video.id);
+  // URL lama (YouTube mentah/tersamar) dan ID numerik tetap kompatibel, tetapi
+  // setelah ditemukan diarahkan ke identitas content_uid yang stabil.
+  if (id !== canonicalId) {
+    permanentRedirect(`/watch/${encodeURIComponent(canonicalId)}`);
   }
 
-  // Kunci konten: YouTube ID bila ada; selain itu content_uid (arsip TG-first).
-  const contentKey = video.youtube_video_id || video.content_uid || '';
+  // Telegram deep-link memakai content UID agar tidak berubah saat YouTube selesai.
+  const contentKey = video.content_uid || video.youtube_video_id || canonicalId;
 
   // Related: same member first, pad with recent other-member videos if <6.
   const { videos: memberVideos } = getAllVideos({
@@ -205,7 +205,7 @@ export default async function WatchPage({ params }: WatchPageProps) {
               </div>
             </div>
 
-            {!isPrerelease && video.telegram_archived && (
+            {video.telegram_archived && (
               <div style={{ marginTop: '14px' }}>
                 <TelegramDownloadButton
                   youtubeVideoId={video.youtube_video_id}

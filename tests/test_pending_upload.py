@@ -152,6 +152,10 @@ class HandleUploadReadyTestCase(MemberManagerTestCase):
                 lid, "pending_upload", file_path=str(path), **extra
             )
             database.set_session_merge_group(lid, gid)
+        # The group is finalized before the callback is invoked in production;
+        # mirror that invariant in the fixture so tests exercise the same
+        # canonical-path and atomic-marker path as the bot.
+        database.close_merge_group(gid, str(path), "merged_1")
         return gid
 
     def _group_rows(self, _gid: int):
@@ -281,6 +285,81 @@ class TestHandleUploadDualDestination(HandleUploadReadyTestCase):
             self.assertEqual(row["status"], "done_youtube")
             self.assertEqual(row["youtube_video_id"], "ytOLD")
             self.assertEqual(row["telegram_message_ids"], "31")
+
+    def test_concat_failed_group_segments_are_uploaded_independently(self):
+        """A failed concat keeps the historical group ID but not shared state."""
+        bot = self._make_bot()
+        path_a = Path(self._tmp.name) / "segment_a.mp4"
+        path_b = Path(self._tmp.name) / "segment_b.mp4"
+        path_a.write_bytes(b"a" * 128)
+        path_b.write_bytes(b"b" * 128)
+        gid = database.create_merge_group(
+            "jkt48_daisy", "Daisy", "2026-09-22T13:00:00+00:00"
+        )
+        for live_id, path in (("fallback_a", path_a), ("fallback_b", path_b)):
+            database.insert_live(
+                live_id=live_id,
+                member_username="jkt48_daisy",
+                member_name="Daisy",
+                started_at="2026-09-22T13:00:00+00:00",
+            )
+            database.update_status(
+                live_id, "pending_upload", file_path=str(path)
+            )
+            database.set_session_merge_group(live_id, gid)
+        database.fail_merge_group(gid)
+
+        bot.tg.upload_video_with_splitting = AsyncMock(return_value=[51])
+        bot.tg.send_message = AsyncMock(return_value=61)
+        bot.yt_pool.upload_video = Mock(return_value=("ytA", "channel"))
+
+        complete = asyncio.run(bot.handle_upload_ready(
+            live_id="fallback_a",
+            member_username="jkt48_daisy",
+            member_name="Daisy",
+            started_at="2026-09-22T13:00:00+00:00",
+            file_path=str(path_a),
+            platform="idn",
+        ))
+
+        self.assertTrue(complete)
+        row_a = database.get_session("fallback_a")
+        row_b = database.get_session("fallback_b")
+        assert row_a is not None and row_b is not None
+        self.assertEqual(row_a["youtube_video_id"], "ytA")
+        self.assertEqual(row_a["telegram_message_ids"], "51")
+        self.assertEqual(row_a["status"], "done_youtube")
+        # The other segment must remain pending and must not inherit markers.
+        self.assertEqual(row_b["status"], "pending_upload")
+        self.assertIsNone(row_b["youtube_video_id"])
+        self.assertIsNone(row_b["telegram_message_ids"])
+        self.assertTrue(path_b.exists())
+
+    def test_notification_exception_does_not_requeue_completed_uploads(self):
+        bot = self._make_bot()
+        path = self._write_video()
+        self._insert_session_for_upload(path)
+
+        bot.tg.upload_video_with_splitting = AsyncMock(return_value=[71])
+        bot.tg.send_message = AsyncMock(side_effect=RuntimeError("network down"))
+        bot.yt_pool.upload_video = Mock(return_value=("ytN", "channel"))
+        with patch("bot.main.Config.THUMBNAIL_COLLAGE_ENABLED", False):
+            complete = asyncio.run(bot.handle_upload_ready(
+                live_id="merged_1",
+                member_username="jkt48_daisy",
+                member_name="Daisy",
+                started_at="2026-09-22T13:00:00+00:00",
+                file_path=str(path),
+                platform="idn",
+            ))
+
+        self.assertTrue(complete)
+        self.assertTrue(path.exists())
+        for row in self._group_rows(1):
+            self.assertEqual(row["status"], "done_youtube")
+            self.assertEqual(row["youtube_video_id"], "ytN")
+            self.assertEqual(row["telegram_message_ids"], "71")
+
 
 
 class RetryLoopTestCase(HandleUploadReadyTestCase):

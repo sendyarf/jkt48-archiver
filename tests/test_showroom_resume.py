@@ -39,7 +39,7 @@ class TestDetectionGapSeconds(unittest.TestCase):
 
 
 class TestShouldResumeShowroom(unittest.TestCase):
-    """Keputusan lanjut merekam setelah yt-dlp berhenti lebih awal."""
+    """Keputusan lanjut merekam setelah ffmpeg berhenti lebih awal."""
 
     def test_resume_when_room_live(self):
         self.assertTrue(should_resume_showroom(0, 40, True))

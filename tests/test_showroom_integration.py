@@ -201,7 +201,7 @@ class TestRecordShowroomTask(ShowroomIntegrationTestCase):
 
         bot.merge_mgr.add_segment = fake_add_segment
 
-        # Task kini probe liveness room setelah yt-dlp selesai — stub agar tes
+        # Task kini probe liveness room setelah ffmpeg selesai — stub agar tes
         # tidak memanggil API Showroom sungguhan (room dianggap sudah berakhir).
         async def fake_room_offline(room_id):
             return False
@@ -273,22 +273,18 @@ class TestRecordShowroomTask(ShowroomIntegrationTestCase):
         asyncio.run(bot._check_showroom())
         self.assertEqual(bot.active_showroom, set())
 
-    def test_resume_setelah_ytdlp_berhenti_awal(self):
-        """
-        yt-dlp berhenti (error) padahal live masih jalan → task resume dengan
-        bagian baru `_r1` memakai URL HLS segar, lalu berhenti saat room
-        terbukti offline. Ini pencegah kehilangan potongan awal/tengah live
-        seperti insiden 18 Sep 2026 (Sona).
-        """
+    def test_resume_setelah_ffmpeg_berhenti_awal(self):
+        """ffmpeg berhenti tetapi room masih live ? resume dengan URL HLS segar."""
         bot = self._make_bot()
         video = Path(self._tmp.name) / "seg2.mp4"
         video.write_bytes(b"\x00" * 1024)
         segmented = []
-        downloads = {"count": 0}
+        downloads = {"count": 0, "urls": []}
         probes = {"count": 0}
 
         async def fake_download(hls_url, member_username, live_id, **kwargs):
             downloads["count"] += 1
+            downloads["urls"].append(hls_url)
             if downloads["count"] == 1:
                 raise bot_main.DownloadError("stream belum feeding")
             return video
@@ -298,8 +294,6 @@ class TestRecordShowroomTask(ShowroomIntegrationTestCase):
 
         async def counting_is_room_live(room_id):
             probes["count"] += 1
-            # Probe pertama (setelah kegagalan) → masih live;
-            # probe kedua (setelah bagian kedua selesai) → berakhir.
             return probes["count"] <= 1
 
         async def fake_fresh_url(room_id):
@@ -320,11 +314,17 @@ class TestRecordShowroomTask(ShowroomIntegrationTestCase):
         with patch("bot.main.download_stream", side_effect=fake_download):
             asyncio.run(bot._record_showroom_task(room, live_id))
 
-        # Dua kali percobaan download: gagal → resume sukses.
         self.assertEqual(downloads["count"], 2)
-        # Hanya bagian kedua yang sampai ke merge manager (bagian 1 kosong dihapus).
         self.assertEqual(
-            [s["live_id"] for s in segmented], [f"{live_id}_r1"]
+            downloads["urls"],
+            [
+                "https://cdn.showroom.example/room.m3u8",
+                "https://cdn.showroom.example/fresh.m3u8",
+            ],
+        )
+        self.assertEqual(
+            [s["live_id"] for s in segmented],
+            [f"{live_id}_r1"],
         )
         row0 = database.get_session(live_id)
         row1 = database.get_session(f"{live_id}_r1")
@@ -334,7 +334,6 @@ class TestRecordShowroomTask(ShowroomIntegrationTestCase):
         )
         assert row1 is not None
         self.assertEqual(row1["status"], "segment_done")
-        # Bagian resume memakai URL HLS segar dari API Showroom.
         self.assertEqual(row1["hls_url"], "https://cdn.showroom.example/fresh.m3u8")
         self.assertNotIn("jkt48_feri", bot.active_showroom)
 

@@ -497,7 +497,7 @@ def stop_member(raw: str, keep_marker: bool = True) -> dict:
 
     HLS URL tetap disimpan sehingga `resume_member` langsung aktif.
     Rekaman yang SEDANG berjalan tidak dibatalkan di sini — pemanggil
-    (main.py lewat admin bot) yang membatalkan proses yt-dlp-nya.
+    (main.py lewat admin bot) yang membatalkan proses ffmpeg-nya.
     """
     row, error = resolve_member_token(raw)
     username = row["username"] if row else normalize_username(raw)
