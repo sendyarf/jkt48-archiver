@@ -37,6 +37,20 @@ from bot.video_splitter import (
 logger = logging.getLogger(__name__)
 
 
+class MediaRejectedError(Exception):
+    """Raised when Telegram permanently refuses a media (not retryable)."""
+
+
+class TelegramFloodExhausted(RuntimeError):
+    """Upload besar kehabisan jatah retry flood; akun sedang kena rate limit.
+
+    Turunan dari RuntimeError agar jalur penanganan yang sudah ada tetap aman.
+    Caller (retry worker) memakai exception ini untuk memberi COOLDOWN pada
+    file tersebut: mencoba lagi terlalusoon hanya membuang bandwidth
+    (1.638 request × 819 MB per percobaan) tanpa peluang berhasil.
+    """
+
+
 def _flood_wait_seconds(exc: BaseException, default: int = 30) -> int:
     """Durasi tunggu (detik) yang diminta Telegram pada error flood.
 
@@ -251,12 +265,11 @@ class TelegramSender:
                 # Jatah habis → berhenti sebelum mencoba upload lagi. File tetap
                 # di disk dan kembali ke antrean pada siklus retry berikutnya.
                 if flood_attempts >= Config.TELEGRAM_FLOOD_MAX_RETRIES:
-                    logger.error(
-                        "Upload %s gagal: Telegram tetap flood setelah %d percobaan "
-                        "— file tetap disimpan dan akan di-retry siklus berikutnya.",
-                        path.name, flood_attempts,
+                    size_mb = path.stat().st_size / (1024 * 1024)
+                    raise TelegramFloodExhausted(
+                        f"Telegram tetap flood setelah {flood_attempts} percobaan "
+                        f"untuk {path.name} ({size_mb:.0f} MB)"
                     )
-                    return None
                 # Durasi dari Telegram adalah batas minimum. Rate limit naik
                 # saat request menumpuk, jadi jeda diperpanjang bertahap.
                 wait = max(

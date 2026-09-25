@@ -89,13 +89,20 @@ class Config:
     # Retry khusus flood (FLOOD_PREMIUM_WAIT_* / FloodWaitError) saat upload
     # file besar. Rate limit naik seiring request menumpuk, sehingga jeda
     # diperpanjang eksponensial: 15 → 30 → 60 → 120 … (cap 900 detik).
-    # Setelah jatah habis, file tetap di disk dan kembali ke antrean pada
-    # siklus retry berikutnya — tidak ada data yang hilang.
     TELEGRAM_FLOOD_MAX_RETRIES: int = int(
         os.getenv("TELEGRAM_FLOOD_MAX_RETRIES", "6")
     )
     TELEGRAM_FLOOD_BACKOFF_BASE_SECONDS: int = int(
         os.getenv("TELEGRAM_FLOOD_BACKOFF_BASE_SECONDS", "15")
+    )
+
+    # Berapa lama file yang sudah kehabisan jatah flood DIDIAMKAN sebelum
+    # dicoba lagi (menit). Bukti dari VPS 26 Sep 2026: backoff sampai 240
+    # detik tidak pernah mengubah hasil (upload selalu flood di 0,1%),
+    # sementara tiap percobaan membuang ~819 MB bandwidth. Tanpa cooldown,
+    # tiap siklus retry membuang ~5 GB untuk file yang sama.
+    TELEGRAM_FLOOD_COOLDOWN_MINUTES: int = int(
+        os.getenv("TELEGRAM_FLOOD_COOLDOWN_MINUTES", "90")
     )
 
     # ─── YouTube Data API v3 ────────────────────────────────────────────

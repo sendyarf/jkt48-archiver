@@ -15,6 +15,7 @@ import contextlib
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -44,7 +45,11 @@ from bot.hls_discovery import HLSDiscovery
 from bot.hls_monitor import HLSMonitor
 from bot.idn_lookup import IDNLookup
 from bot.merger import MergeManager
-from bot.telegram_sender import TelegramSender, build_youtube_notification
+from bot.telegram_sender import (
+    TelegramFloodExhausted,
+    TelegramSender,
+    build_youtube_notification,
+)
 from bot.replay_bot import ReplayBot
 from bot.tiktok_monitor import TikTokMonitor
 from bot.youtube_uploader import YouTubeChannelPool, YouTubeQuotaExceeded
@@ -122,6 +127,10 @@ class JKT48LiveBot:
         self._retry_task: Optional[asyncio.Task] = None
         self._tiktok_retry_task: Optional[asyncio.Task] = None
         self._hls_refresh_task: Optional[asyncio.Task] = None
+        # live_id -> monotonic deadline. File yang kehabisan jatah flood diberi
+        # cooldown agar tidak dicoba ulang di setiap siklus (setiap percobaan
+        # membuang ~819 MB bandwidth dan memperpanjang penalty akun).
+        self._flood_cooldown: dict[str, float] = {}
         self.admin_bot: Optional[AdminBot] = None
         self.replay_bot: Optional[ReplayBot] = None
         # Arsip TikTok (OPSIONAL): hanya dibuat bila TIKTOK_ENABLED=true,
@@ -624,6 +633,11 @@ class JKT48LiveBot:
             )
             logger.info("Archived to Telegram (%s). Message IDs: %s", live_id, msg_ids)
             return True, ""
+        except TelegramFloodExhausted:
+            # Rate limit masih aktif setelah jatah retry habis. Teruskan ke
+            # retry worker supaya file ini diberi cooldown, bukan langsung
+            # dicoba lagi pada siklus berikutnya (membuang ~819 MB sia-sia).
+            raise
         except Exception as exc:
             logger.exception("Error archiving %s to Telegram: %s", live_id, exc)
             # ``on_part_sent`` already persisted the successful prefix.  Keep it
@@ -1184,6 +1198,20 @@ class JKT48LiveBot:
                 continue
             seen_files.add(resolved)
 
+            # File yang baru saja kehabisan jatah flood diberi cooldown.
+            # Mencoba lagi sekarang hanya membuang ~819 MB bandwidth dan
+            # memperpanjang penalty akun tanpa peluang berhasil.
+            deadline = self._flood_cooldown.get(live_id)
+            if deadline is not None:
+                if time.monotonic() < deadline:
+                    remaining = int(deadline - time.monotonic())
+                    logger.info(
+                        "Cooldown flood untuk %s masih aktif (%d menit lagi)",
+                        live_id, max(1, remaining // 60),
+                    )
+                    continue
+                del self._flood_cooldown[live_id]
+
             username = sess["member_username"]
             name = sess["member_name"] or username
             started_at = sess["started_at"] or sess["created_at"]
@@ -1197,6 +1225,14 @@ class JKT48LiveBot:
                     member_name=name,
                     started_at=started_at,
                     file_path=str(path),
+                )
+            except TelegramFloodExhausted as exc:
+                minutes = max(1, int(Config.TELEGRAM_FLOOD_COOLDOWN_MINUTES))
+                self._flood_cooldown[live_id] = time.monotonic() + minutes * 60
+                logger.error(
+                    "%s — file di-cooldown %d menit (tetap aman di disk). "
+                    "Lanjut ke file berikutnya tanpa membuang bandwidth.",
+                    exc, minutes,
                 )
             except Exception as exc:
                 logger.exception(

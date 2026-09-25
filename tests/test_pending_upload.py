@@ -9,12 +9,14 @@ Cakup:
     retry tidak mengulang tujuan yang sudah selesai
 """
 import asyncio
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 from bot import database, main as bot_main
 from bot.config import Config
+from bot.telegram_sender import TelegramFloodExhausted
 from bot.youtube_uploader import YouTubeQuotaExceeded
 from tests.test_member_manager import MemberManagerTestCase
 
@@ -360,6 +362,78 @@ class TestHandleUploadDualDestination(HandleUploadReadyTestCase):
             self.assertEqual(row["youtube_video_id"], "ytN")
             self.assertEqual(row["telegram_message_ids"], "71")
 
+
+
+class FloodCooldownTestCase(HandleUploadReadyTestCase):
+    """File yang kehabisan jatah flood harus DIDIAMKAN, bukan digiling terus.
+
+    Bukti dari VPS 26 Sep 2026: backoff sampai 240 detik tidak pernah
+    mengubah hasil (upload selalu flood di 0,1%), sementara tiap percobaan
+    membuang ~819 MB. Tanpa cooldown, satu file memblokir seluruh antrean
+    dan membuang ~5 GB per siklus retry.
+    """
+
+    def _make_pending(self, live_id: str) -> Path:
+        path = Path(self._tmp.name) / f"{live_id}.mp4"
+        path.write_bytes(b"\x00" * 64)
+        database.insert_live(
+            live_id=live_id,
+            member_username="jkt48_daisy",
+            member_name="Daisy",
+            started_at="2026-09-22T13:00:00+00:00",
+        )
+        database.update_status(live_id, "pending_upload", file_path=str(path))
+        return path
+
+    def _run_worker(self, bot, attempted: list[str], handler=None) -> None:
+        async def _handle(**kwargs):
+            attempted.append(kwargs["live_id"])
+            if handler is not None:
+                return await handler(**kwargs)
+            return None
+
+        bot.handle_upload_ready = _handle  # type: ignore[method-assign]
+        asyncio.run(bot.retry_pending_uploads())
+
+    def test_flood_marks_cooldown_and_continues_to_next_file(self):
+        bot = self._make_bot()
+        bot._flood_cooldown = {}
+        self._make_pending("flooded")
+        self._make_pending("healthy")
+
+        attempted: list[str] = []
+
+        async def handler(**kwargs):
+            if kwargs["live_id"] == "flooded":
+                raise TelegramFloodExhausted("flood 6/6 untuk 819 MB")
+
+        old_cooldown = Config.TELEGRAM_FLOOD_COOLDOWN_MINUTES
+        Config.TELEGRAM_FLOOD_COOLDOWN_MINUTES = 90
+        try:
+            self._run_worker(bot, attempted, handler)
+            self.assertEqual(set(attempted), {"flooded", "healthy"})
+            self.assertIn("flooded", bot._flood_cooldown)
+
+            # Siklus berikutnya: file ber-cooldown dilewati, sisanya dicoba.
+            attempted.clear()
+            self._run_worker(bot, attempted)
+            self.assertNotIn(
+                "flooded", attempted,
+                "file ber-cooldown tidak boleh diulang di siklus berikutnya",
+            )
+            self.assertIn("healthy", attempted)
+        finally:
+            Config.TELEGRAM_FLOOD_COOLDOWN_MINUTES = old_cooldown
+
+    def test_cooldown_expires_and_file_is_retried_again(self):
+        bot = self._make_bot()
+        bot._flood_cooldown = {"gone": time.monotonic() - 10}
+        self._make_pending("gone")
+
+        attempted: list[str] = []
+        self._run_worker(bot, attempted)
+        self.assertIn("gone", attempted, "cooldown yang sudah lewat harus dilepas")
+        self.assertNotIn("gone", bot._flood_cooldown)
 
 
 class RetryLoopTestCase(HandleUploadReadyTestCase):
