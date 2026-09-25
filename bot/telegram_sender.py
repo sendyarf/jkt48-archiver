@@ -98,6 +98,28 @@ class TelegramSender:
         )
         self._connected = False
 
+    def _upload_guard(self) -> asyncio.Lock:
+        """Lock yang dibuat lazy untuk MENYERIALISKAN upload ke Telegram.
+
+        Rate limit Telegram dihitung per AKUN, bukan per file. Rekaman live
+        (1 GB ≈ 1.638 request 512 KB) dan arsip TikTok berjalan pada task
+        berbeda; bila keduanya upload bersamaan, keduanya memakai kuota
+        request yang sama dan file besar kena flood jauh lebih awal.
+
+        Bukti dari log VPS 26 Sep 2026: upload 819 MB mulai 02:29:33,
+        tiga story TikTok terkirim 02:29:34–02:29:57, lalu file live
+        kena flood pada 37,5 MB (4,6%) — bukan pada 800 MB. Setelah
+        serialisasi, tiap upload mendapat kuota penuh.
+
+        Dibuat lazy (bukan di __init__) agar instance yang dibangun lewat
+        `TelegramSender.__new__` pada test tetap punya lock.
+        """
+        lock = getattr(self, "_upload_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._upload_lock = lock
+        return lock
+
     async def connect(self) -> None:
         """Connect and authenticate with Telegram."""
         if self._connected:
@@ -203,16 +225,19 @@ class TelegramSender:
         flood_attempts = 0
         for attempt in range(max_attempts):
             try:
-                msg = await self._client.send_file(
-                    target,
-                    file=str(path),
-                    caption=caption,
-                    parse_mode="html",
-                    attributes=attributes,
-                    thumb=thumb,
-                    supports_streaming=True,
-                    progress_callback=_default_progress,
-                )
+                # Lock menahan upload lain (mis. arsip TikTok) sampai file ini
+                # selesai, supaya file besar mendapat kuota request penuh.
+                async with self._upload_guard():
+                    msg = await self._client.send_file(
+                        target,
+                        file=str(path),
+                        caption=caption,
+                        parse_mode="html",
+                        attributes=attributes,
+                        thumb=thumb,
+                        supports_streaming=True,
+                        progress_callback=_default_progress,
+                    )
                 logger.info("Successfully uploaded video %s to %d (Message ID: %d)", path.name, target, msg.id)
                 return msg.id
 
@@ -490,12 +515,13 @@ class TelegramSender:
         # sebagai media biasa agar tidak pernah ditolak.
         if len(paths) == 1:
             try:
-                msg = await self._client.send_file(
-                    target,
-                    paths[0],
-                    caption=caption,
-                    parse_mode="html",
-                )
+                async with self._upload_guard():
+                    msg = await self._client.send_file(
+                        target,
+                        paths[0],
+                        caption=caption,
+                        parse_mode="html",
+                    )
                 logger.info(
                     "Media tunggal TikTok terkirim ke %d (Message ID: %d): %s",
                     target, msg.id, Path(paths[0]).name,
@@ -513,12 +539,13 @@ class TelegramSender:
 
         for attempt in range(3):
             try:
-                result = await self._client.send_file(
-                    target,
-                    paths,
-                    caption=caption,
-                    parse_mode="html",
-                )
+                async with self._upload_guard():
+                    result = await self._client.send_file(
+                        target,
+                        paths,
+                        caption=caption,
+                        parse_mode="html",
+                    )
                 messages = result if isinstance(result, list) else [result]
                 ids = [m.id for m in messages if m is not None]
                 logger.info(

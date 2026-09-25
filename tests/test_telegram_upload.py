@@ -392,6 +392,56 @@ class TestTelegramFloodHandling(unittest.TestCase):
             finally:
                 Config.TELEGRAM_FLOOD_MAX_RETRIES = old_retries
 
+    def test_large_upload_and_story_do_not_overlap(self):
+        """Upload besar dan story TikTok harus BERURUTAN, bukan bersamaan.
+
+        Rate limit Telegram per-akuan: bila keduanya jalan bersamaan, file
+        besar flood jauh lebih awal (log 26 Sep 2026: flood di 4,6%).
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            big = Path(directory) / "big.mp4"
+            big.write_bytes(b"0" * 32)
+            photo = Path(directory) / "01.webp"
+            photo.write_bytes(b"x")
+
+            sender = TelegramSender.__new__(TelegramSender)
+            sender._connected = True
+            sender._client = AsyncMock()
+
+            overlap = {"detected": False}
+            active = {"count": 0}
+
+            async def slow_send(*args, **kwargs):
+                active["count"] += 1
+                if active["count"] > 1:
+                    overlap["detected"] = True
+                await asyncio.sleep(0.05)
+                active["count"] -= 1
+                # send_video_file mengoper `file=` sebagai keyword, sedangkan
+                # _send_media_album mengoper path/list sebagai argumen posisi.
+                media = kwargs.get("file", args[1] if len(args) > 1 else None)
+                if isinstance(media, list):
+                    return [_fake_message(2), _fake_message(3)]
+                return _fake_message(1)
+
+            sender._client.send_file = AsyncMock(side_effect=slow_send)
+
+            async def run():
+                results = await asyncio.gather(
+                    sender.send_video_file(big, caption="live"),
+                    sender._send_media_album([photo], "story", -100123),
+                )
+                return results
+
+            results = asyncio.run(run())
+            # Kedua upload harus benar-benar berhasil (bukan gagal diam-diam).
+            self.assertEqual(results[0], 1)
+            self.assertEqual(results[1], [1])
+            self.assertFalse(
+                overlap["detected"],
+                "upload Telegram harus serial (satu per satu), bukan paralel",
+            )
+
     def test_media_empty_error_is_not_retried(self):
         with tempfile.TemporaryDirectory() as directory:
             video = Path(directory) / "story.mp4"
