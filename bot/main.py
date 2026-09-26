@@ -51,6 +51,9 @@ from bot.merger import MergeManager
 from bot.telegram_sender import (
     TelegramFloodExhausted,
     TelegramSender,
+    _dot_at,
+    _format_size,
+    _platform_label,
     build_youtube_notification,
 )
 from bot.replay_bot import ReplayBot
@@ -95,6 +98,33 @@ def _setup_logging() -> None:
 
 
 logger = logging.getLogger("jkt48_bot")
+
+
+def _admin_live_message(
+    headline: str,
+    *,
+    platform: str = "",
+    member_name: str = "",
+    member_username: str = "",
+    live_id: str = "",
+    detail: str = "",
+) -> str:
+    """Susun notifikasi admin (HTML) untuk satu tahap pipeline live.
+
+    Header memakai label platform yang sama dengan caption/notifikasi publik
+    (`_platform_label`) supaya rekaman Showroom tidak pernah dilaporkan sebagai
+    IDN. Semua bagian opsional — hanya yang terisi yang ikut dikirim.
+    """
+    lines = [headline + (f" · <b>{_platform_label(platform)}</b>" if platform else "")]
+    if member_name and member_username:
+        lines.append(f"👤 <b>{member_name}</b> ({_dot_at(member_username)})")
+    elif member_name or member_username:
+        lines.append(f"👤 <b>{member_name or member_username}</b>")
+    if live_id:
+        lines.append(f"🆔 <code>{live_id}</code>")
+    if detail:
+        lines.append(detail)
+    return "\n".join(lines)
 
 
 # ─── Flood cooldown persisten ────────────────────────────────────────────────
@@ -172,6 +202,7 @@ class JKT48LiveBot:
             on_upload_ready=self._handle_upload_ready_serialized,
             probe_active=self._probe_member_active,
             fetch_live=self._fetch_member_live,
+            on_notify=self._notify_admin,
         )
 
         self.active_recordings: set[str] = set()  # username IDN yang sedang direkam
@@ -306,6 +337,27 @@ class JKT48LiveBot:
                 "Segmen yang sudah terekam tetap akan diupload setelah merge window."
             )
         return "⚠️ Proses rekaman tidak ditemukan (mungkin sudah selesai)."
+
+    async def _notify_admin(self, text: str) -> None:
+        """Kirim notifikasi progres live ke admin (best-effort, tak pernah raise).
+
+        Rute utama adalah admin bot BotFather (`AdminBot.notify_admins`) ke
+        ADMIN_CHAT_ID + TELEGRAM_ADMIN_IDS. Bila token bot tidak ada (mis.
+        hanya userbot Telethon yang dikonfigurasi), pesan dikirim lewat userbot
+        ke ADMIN_CHAT_ID saja. Kegagalan apa pun diabaikan — notifikasi TIDAK
+        boleh menggagalkan/menahan proses record, merge, atau upload.
+        """
+        if not Config.ADMIN_LIVE_NOTIFY_ENABLED:
+            return
+        try:
+            admin_bot = self.admin_bot
+            if admin_bot is not None and Config.TELEGRAM_BOT_TOKEN and Config.admin_ids():
+                await admin_bot.notify_admins(text, parse_mode="HTML")
+                return
+            if Config.ADMIN_CHAT_ID:
+                await self.tg.send_message(text, channel_id=Config.ADMIN_CHAT_ID)
+        except Exception as exc:
+            logger.debug("Notifikasi admin dilewati: %s", exc)
 
     async def _probe_member_active(self, username: str, platform: str = "idn") -> Optional[bool]:
         """
@@ -460,6 +512,16 @@ class JKT48LiveBot:
                 return True
             else:
                 set_status("failed", error_message="File not found on disk")
+                await self._notify_admin(
+                    _admin_live_message(
+                        "❌ <b>FILE HILANG</b>",
+                        platform=plat,
+                        member_name=member_name or member_username,
+                        member_username=member_username,
+                        live_id=live_id,
+                        detail=f"⚠️ File tidak ditemukan: <code>{path}</code>",
+                    )
+                )
                 return False
 
         file_size = get_file_size_bytes(path)
@@ -471,6 +533,16 @@ class JKT48LiveBot:
                 "uploading_telegram",
                 file_path=str(path),
                 file_size_bytes=file_size,
+            )
+            await self._notify_admin(
+                _admin_live_message(
+                    "📤 <b>UPLOAD TELEGRAM</b>",
+                    platform=plat,
+                    member_name=member_name or member_username,
+                    member_username=member_username,
+                    live_id=live_id,
+                    detail=f"💾 {_format_size(file_size)} → channel arsip",
+                )
             )
             # Both live destinations are mandatory.  Prefer the private archive
             # channel, but retain the regular channel as a migration fallback.
@@ -491,12 +563,35 @@ class JKT48LiveBot:
                 errors.append(archive_error)
             if archive_ok:
                 logger.info("Telegram archive selesai untuk %s; lanjut ke YouTube", live_id)
+                await self._notify_admin(
+                    _admin_live_message(
+                        "✅ <b>TELEGRAM SELESAI</b>",
+                        platform=plat,
+                        member_name=member_name or member_username,
+                        member_username=member_username,
+                        live_id=live_id,
+                        detail="📦 Arsip aman di channel → lanjut YouTube",
+                    )
+                )
             else:
                 # Telegram is the download archive.  Do not send the same local
                 # file to YouTube until this mandatory first stage is safe.
                 logger.warning(
                     "Telegram archive belum selesai untuk %s; YouTube ditunda",
                     live_id,
+                )
+                await self._notify_admin(
+                    _admin_live_message(
+                        "⚠️ <b>TELEGRAM GAGAL</b>",
+                        platform=plat,
+                        member_name=member_name or member_username,
+                        member_username=member_username,
+                        live_id=live_id,
+                        detail=(
+                            f"⚠️ {str(archive_error or '')[:300]}\n"
+                            "⏳ Masuk antrean retry otomatis (YouTube ditunda)"
+                        ),
+                    )
                 )
                 set_status(
                     "pending_upload",
@@ -518,6 +613,16 @@ class JKT48LiveBot:
                 started_at,
                 plat,
             )
+            await self._notify_admin(
+                _admin_live_message(
+                    "📤 <b>UPLOAD YOUTUBE</b>",
+                    platform=plat,
+                    member_name=member_name or member_username,
+                    member_username=member_username,
+                    live_id=live_id,
+                    detail=f"💾 {_format_size(file_size)}\n📌 {title[:120]}",
+                )
+            )
             logger.info("Uploading video to YouTube for %s (%s): %s", member_name, live_id, title)
             try:
                 video_id, channel_label = await asyncio.to_thread(
@@ -529,6 +634,16 @@ class JKT48LiveBot:
                 if not video_id:
                     errors.append("YouTube upload returned no video ID")
                     youtube_ok = False
+                    await self._notify_admin(
+                        _admin_live_message(
+                            "⚠️ <b>YOUTUBE GAGAL</b>",
+                            platform=plat,
+                            member_name=member_name or member_username,
+                            member_username=member_username,
+                            live_id=live_id,
+                            detail="⚠️ Upload tidak mengembalikan video ID\n⏳ Menunggu retry otomatis",
+                        )
+                    )
                 else:
                     youtube_video_id = str(video_id)
                     youtube_ok = True
@@ -537,6 +652,19 @@ class JKT48LiveBot:
                         "Successfully uploaded to YouTube (%s). Video ID: %s",
                         channel_label,
                         video_id,
+                    )
+                    await self._notify_admin(
+                        _admin_live_message(
+                            "✅ <b>YOUTUBE SELESAI</b>",
+                            platform=plat,
+                            member_name=member_name or member_username,
+                            member_username=member_username,
+                            live_id=live_id,
+                            detail=(
+                                f"📺 {channel_label} · <code>{youtube_video_id}</code>\n"
+                                f"▶️ https://youtu.be/{youtube_video_id}"
+                            ),
+                        )
                     )
 
                     # Thumbnail is best effort and runs off the event loop.
@@ -564,18 +692,34 @@ class JKT48LiveBot:
                 youtube_ok = False
                 errors.append(str(exc))
                 logger.warning("YouTube quota limit reached for %s: %s", live_id, exc)
-                if Config.ADMIN_CHAT_ID:
-                    with contextlib.suppress(Exception):
-                        await self.tg.send_message(
-                            "⚠️ <b>YouTube Quota Alert</b>\n"
-                            f"Video <b>{member_name or member_username}</b> sudah aman di Telegram, "
-                            "tetapi YouTube menunggu kuota harian.",
-                            channel_id=Config.ADMIN_CHAT_ID,
-                        )
+                await self._notify_admin(
+                    _admin_live_message(
+                        "⚠️ <b>YOUTUBE KUOTA HABIS</b>",
+                        platform=plat,
+                        member_name=member_name or member_username,
+                        member_username=member_username,
+                        live_id=live_id,
+                        detail=(
+                            "📦 Video sudah aman di Telegram\n"
+                            f"⚠️ {str(exc)[:300]}\n"
+                            "⏳ Upload YouTube menunggu kuota harian (retry otomatis)"
+                        ),
+                    )
+                )
             except Exception as exc:
                 youtube_ok = False
                 errors.append(f"YouTube: {exc}")
                 logger.exception("Unexpected error uploading %s to YouTube: %s", live_id, exc)
+                await self._notify_admin(
+                    _admin_live_message(
+                        "⚠️ <b>YOUTUBE GAGAL</b>",
+                        platform=plat,
+                        member_name=member_name or member_username,
+                        member_username=member_username,
+                        live_id=live_id,
+                        detail=f"⚠️ {str(exc)[:300]}\n⏳ Menunggu retry otomatis",
+                    )
+                )
 
         # ---- Stage 3: notification, only after both required uploads ----
         if telegram_ok and youtube_ok:
@@ -733,6 +877,15 @@ class JKT48LiveBot:
         )
         database.update_status(live_id, "downloading", download_started_at=started_at)
         self.merge_mgr.download_started(username, "idn")
+        await self._notify_admin(
+            _admin_live_message(
+                "🔴 <b>REC MULAI</b>",
+                platform="idn",
+                member_name=display_name,
+                member_username=username,
+                live_id=live_id,
+            )
+        )
 
         # Best-effort: ambil slug + judul live dari IDN secara paralel (tidak menambah
         # keterlambatan mulai merekam). Slug unik per sesi live → dipakai untuk
@@ -803,13 +956,46 @@ class JKT48LiveBot:
                 live_slug=live_slug,
                 platform="idn",
             )
+            await self._notify_admin(
+                _admin_live_message(
+                    "⏺ <b>SEGMEN SELESAI</b>",
+                    platform="idn",
+                    member_name=display_name,
+                    member_username=username,
+                    live_id=live_id,
+                    detail=(
+                        f"💾 {_format_size(file_size)} → menunggu merge window\n"
+                        "⏳ Upload otomatis setelah live selesai"
+                    ),
+                )
+            )
 
         except DownloadError as exc:
             logger.warning("Download error for %s: %s", username, exc)
             database.update_status(live_id, "failed", error_message=str(exc))
+            await self._notify_admin(
+                _admin_live_message(
+                    "❌ <b>REC GAGAL</b>",
+                    platform="idn",
+                    member_name=display_name,
+                    member_username=username,
+                    live_id=live_id,
+                    detail=f"⚠️ {str(exc)[:300]}",
+                )
+            )
         except Exception as exc:
             logger.exception("Unexpected recording error for %s: %s", username, exc)
             database.update_status(live_id, "failed", error_message=str(exc))
+            await self._notify_admin(
+                _admin_live_message(
+                    "❌ <b>REC GAGAL</b>",
+                    platform="idn",
+                    member_name=display_name,
+                    member_username=username,
+                    live_id=live_id,
+                    detail=f"⚠️ {str(exc)[:300]}",
+                )
+            )
         finally:
             if slug_task is not None and not slug_task.done():
                 slug_task.cancel()
@@ -884,6 +1070,24 @@ class JKT48LiveBot:
             platform="showroom",
         )
         self.merge_mgr.download_started(username, "showroom")
+        rec_detail = f"🏠 room <code>{room_id}</code>"
+        if room_name:
+            rec_detail += f" · {room_name}"
+        if gap is not None and gap >= Config.SHOWROOM_LATE_START_WARN_SECONDS:
+            rec_detail += (
+                f"\n⚠️ Mulai {int(gap)}s setelah live dimulai — "
+                "potongan awal tidak terekam"
+            )
+        await self._notify_admin(
+            _admin_live_message(
+                "🔴 <b>REC MULAI</b>",
+                platform="showroom",
+                member_name=display_name,
+                member_username=username,
+                live_id=live_id,
+                detail=rec_detail,
+            )
+        )
 
         # Holder URL HLS: downloader bisa mengganti URL di tengah retry lewat
         # `url_refresher`; holder memastikan bagian resume berikutnya melanjutkan
@@ -958,6 +1162,19 @@ class JKT48LiveBot:
                         hls_url=hls_url,
                         platform="showroom",
                     )
+                    await self._notify_admin(
+                        _admin_live_message(
+                            "🔁 <b>REC LANJUT</b>",
+                            platform="showroom",
+                            member_name=display_name,
+                            member_username=username,
+                            live_id=part_id,
+                            detail=(
+                                f"Bagian resume #{resumes_done} — ffmpeg berhenti "
+                                "padahal live masih jalan"
+                            ),
+                        )
+                    )
                     continue
 
                 file_size = get_file_size_bytes(output_file)
@@ -986,6 +1203,19 @@ class JKT48LiveBot:
                     live_title=room_name,
                     live_slug="",          # Showroom tidak punya slug IDN
                     platform="showroom",
+                )
+                await self._notify_admin(
+                    _admin_live_message(
+                        "⏺ <b>SEGMEN SELESAI</b>",
+                        platform="showroom",
+                        member_name=display_name,
+                        member_username=username,
+                        live_id=part_id,
+                        detail=(
+                            f"💾 {_format_size(file_size)} "
+                            f"(bagian {resumes_done + 1}) → menunggu merge window"
+                        ),
+                    )
                 )
 
                 # ffmpeg keluar "bersih" padahal live masih jalan (mis. playlist
@@ -1023,12 +1253,45 @@ class JKT48LiveBot:
                     hls_url=hls_url,
                     platform="showroom",
                 )
+                await self._notify_admin(
+                    _admin_live_message(
+                        "🔁 <b>REC LANJUT</b>",
+                        platform="showroom",
+                        member_name=display_name,
+                        member_username=username,
+                        live_id=part_id,
+                        detail=(
+                            f"Bagian resume #{resumes_done} — masih live setelah "
+                            "bagian sebelumnya selesai"
+                        ),
+                    )
+                )
 
         except DownloadError as exc:
             logger.warning("Showroom download error for %s: %s", username, exc)
+            await self._notify_admin(
+                _admin_live_message(
+                    "❌ <b>REC GAGAL</b>",
+                    platform="showroom",
+                    member_name=display_name,
+                    member_username=username,
+                    live_id=part_id,
+                    detail=f"⚠️ {str(exc)[:300]}",
+                )
+            )
         except Exception as exc:
             logger.exception("Unexpected Showroom recording error for %s: %s", username, exc)
             database.update_status(part_id, "failed", error_message=str(exc))
+            await self._notify_admin(
+                _admin_live_message(
+                    "❌ <b>REC GAGAL</b>",
+                    platform="showroom",
+                    member_name=display_name,
+                    member_username=username,
+                    live_id=part_id,
+                    detail=f"⚠️ {str(exc)[:300]}",
+                )
+            )
         finally:
             self.merge_mgr.download_ended(username, "showroom")
             self.active_showroom.discard(username)

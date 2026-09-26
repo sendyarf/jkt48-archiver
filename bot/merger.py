@@ -53,6 +53,7 @@ from bot.database import (
 )
 from bot.downloader import delete_file, has_enough_disk_space
 from bot.idn_lookup import live_key_from
+from bot.telegram_sender import _format_size, _platform_label
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class MergeManager:
         on_upload_ready: Optional[Callable] = None,
         probe_active: Optional[Callable[..., Awaitable[Optional[bool]]]] = None,
         fetch_live: Optional[Callable[..., Awaitable[Optional[dict]]]] = None,
+        on_notify: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> None:
         """
         on_upload_ready: async callback function signature:
@@ -88,15 +90,29 @@ class MergeManager:
           (username, platform)
           -> None (tidak diketahui) / {"slug": ""} (tidak live) / {"slug": "..."} (live)
 
+        on_notify (OPSIONAL): async callback (text) untuk notifikasi progres merge
+          ke admin Telegram (teks HTML). Best-effort — error apa pun diabaikan
+          agar pipeline merge tidak pernah gagal hanya karena notifikasi.
+
         `platform` ('idn' | 'showroom') diteruskan ke callback supaya member yang
         punya dua platform sekaligus di-probe pada sumber yang benar.
         """
         self._on_upload_ready = on_upload_ready
         self._probe_active = probe_active
         self._fetch_live = fetch_live
+        self._on_notify = on_notify
         self._timers: dict[str, asyncio.Task] = {}  # scope -> timer task
         self._active_downloads: dict[str, int] = {}  # scope -> count of in-flight downloads
         self._lock = asyncio.Lock()
+
+    async def _notify(self, text: str) -> None:
+        """Kirim notifikasi progres merge ke admin (best-effort, tak pernah raise)."""
+        if self._on_notify is None:
+            return
+        try:
+            await self._on_notify(text)
+        except Exception as exc:  # pragma: no cover - jalur notifikasi
+            logger.debug("Notifikasi merge dilewati: %s", exc)
 
     @staticmethod
     def _scope(member_username: str, platform: str = "idn") -> str:
@@ -507,6 +523,11 @@ class MergeManager:
         file_paths = [s["file_path"] for s in segments]
         if not file_paths:
             logger.warning("Merge group %d has no valid file paths", group_id)
+            await self._notify(
+                "⚠️ <b>MERGE GAGAL</b>\n"
+                f"👤 <b>{member_username}</b>\n"
+                f"Semua segmen grup {group_id} hilang/kosong — tidak ada yang bisa diupload."
+            )
             fail_merge_group(group_id)
             return
 
@@ -553,9 +574,22 @@ class MergeManager:
                 return
             logger.info("%s: concatenating %d segments for group %d...",
                         member_username, len(file_paths), group_id)
+            await self._notify(
+                "🧩 <b>MERGE MULAI</b> · "
+                f"<b>{_platform_label(group_platform)}</b>\n"
+                f"👤 <b>{meta_member_name}</b>\n"
+                f"🎞 {len(file_paths)} segmen → concat (grup {group_id})"
+            )
             merged_path = await self._concat_files(file_paths, member_username, group_id)
             if not merged_path:
                 logger.error("%s: concat failed, dispatching segments individually", member_username)
+                await self._notify(
+                    "⚠️ <b>MERGE GAGAL</b> · "
+                    f"<b>{_platform_label(group_platform)}</b>\n"
+                    f"👤 <b>{meta_member_name}</b>\n"
+                    f"Concat {len(file_paths)} segmen gagal (grup {group_id}) — "
+                    "segmen diupload terpisah."
+                )
                 for seg in segments:
                     set_session_fields(live_id=seg["live_id"], content_uid=seg["live_id"])
                     if self._on_upload_ready:
@@ -576,6 +610,17 @@ class MergeManager:
 
         close_merge_group(group_id, merged_path, merged_live_id)
         set_session_fields(group_id=group_id, content_uid=merged_live_id)
+        try:
+            merged_size = Path(merged_path).stat().st_size
+        except OSError:
+            merged_size = 0
+        await self._notify(
+            "✅ <b>MERGE SELESAI</b> · "
+            f"<b>{_platform_label(group_platform)}</b>\n"
+            f"👤 <b>{meta_member_name}</b>\n"
+            f"🎞 {len(file_paths)} segmen → {_format_size(merged_size)}\n"
+            f"🆔 <code>{merged_live_id}</code> → lanjut upload"
+        )
 
         pipeline_complete: Optional[bool] = None
         if self._on_upload_ready:

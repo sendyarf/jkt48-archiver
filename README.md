@@ -268,6 +268,22 @@ Listener ini otomatis berjalan di dalam `python -m bot.main`. Untuk menjalankann
 terpisah: `python3 -m bot.admin_bot` (jangan jalankan bersamaan dengan bot utama,
 karena Telegram hanya mengizinkan satu long-polling per token).
 
+#### Notifikasi progres live (record / merge / upload)
+
+Bot mengirim laporan tiap tahap ke admin (`ADMIN_CHAT_ID` + `TELEGRAM_ADMIN_IDS`)
+untuk **kedua platform (IDN & Showroom)**, lewat admin bot BotFather — atau
+userbot bila `TELEGRAM_BOT_TOKEN` kosong:
+
+| Tahap | Pesan |
+|---|---|
+| Record | `🔴 REC MULAI` (termasuk room Showroom & peringatan telat mulai), `⏺ SEGMEN SELESAI`, `🔁 REC LANJUT` (bagian resume Showroom), `❌ REC GAGAL` |
+| Merge | `🧩 MERGE MULAI` (concat N segmen), `✅ MERGE SELESAI`, `⚠️ MERGE GAGAL` (segmen diupload terpisah) |
+| Upload | `📤 UPLOAD TELEGRAM` / `✅ TELEGRAM SELESAI` / `⚠️ TELEGRAM GAGAL`, `📤 UPLOAD YOUTUBE` / `✅ YOUTUBE SELESAI` (+ link) / `⚠️ YOUTUBE GAGAL` / `⚠️ YOUTUBE KUOTA HABIS`, `❌ FILE HILANG` |
+
+Semua notifikasi bersifat **best-effort**: kegagalan mengirim pesan tidak pernah
+menggagalkan/menahan record, merge, atau upload. Matikan dengan
+`ADMIN_LIVE_NOTIFY_ENABLED=false` di `.env`.
+
 ### B. Via CLI (tanpa Telegram)
 
 ```bash

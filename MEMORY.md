@@ -375,6 +375,33 @@ ini, dan jangan menaruh kode TikTok di jalur IDN/Showroom.
     berubah. `avatar_url` ditulis dengan `COALESCE` — foto hasil koreksi manual
     tidak ditimpa seed ulang.
 
+## Notifikasi Admin (fitur 26 Sep 2026)
+
+Saklar utama: **`ADMIN_LIVE_NOTIFY_ENABLED` (default `true`)**. Berlaku untuk
+semua proses live IDN & Showroom; set `false` untuk membisukan tanpa mengubah
+pipeline.
+
+1. **Satu pintu pengiriman: `JKT48LiveBot._notify_admin(text)`** (HTML). Rutenya:
+   `AdminBot.notify_admins()` (BotFather → `ADMIN_CHAT_ID` + `TELEGRAM_ADMIN_IDS`)
+   bila `TELEGRAM_BOT_TOKEN` ada; fallback userbot Telethon ke `ADMIN_CHAT_ID`
+   bila token bot kosong. Tanpa tujuan yang terisi → no-op.
+2. **Best-effort mutlak**: `_notify_admin` menelan SEMUA exception (log DEBUG).
+   Jangan pernah menambah `raise`/`await` yang bisa menggagalkan record, merge,
+   atau upload hanya karena notifikasi.
+3. **MergeManager memakai callback `on_notify`** (di-wire ke `_notify_admin` di
+   `bot/main.py`). Jangan import `AdminBot`/`main` dari `merger.py` — arah
+   dependensinya tetap satu arah.
+4. **Label platform wajib ikut** (`_platform_label`): rekaman Showroom tidak
+   boleh dilaporkan sebagai IDN. Pesan dibentuk lewat `_admin_live_message()`
+   supaya formatnya konsisten.
+5. **Cakupan pesan**: REC MULAI / SEGMEN SELESAI / REC LANJUT (resume Showroom) /
+   REC GAGAL; MERGE MULAI / SELESAI / GAGAL; UPLOAD TELEGRAM dan YOUTUBE
+   (mulai/selesai/gagal), YOUTUBE KUOTA HABIS, FILE HILANG. Retry mengirim ulang
+   notifikasi tahap yang belum selesai (memang disengaja agar terlihat di admin).
+6. **Tes**: `tests/test_live_admin_notifications.py` (16 tes). Tes lama yang
+   meng-assert jumlah `tg.send_message` menetapkan `Config.ADMIN_CHAT_ID = 0`
+   (`tests/test_pending_upload.py`) — pertahankan pola itu saat menambah tes.
+
 ## Kesalahan masa lalu yang sudah diperbaiki
 
 1. **Merge di-upload sebelum live selesai** — timer merge tidak ter-reset saat

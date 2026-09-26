@@ -37,6 +37,13 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       `bot/main.py` dan hanya menerima ADMIN_CHAT_ID/TELEGRAM_ADMIN_IDS.
 - [x] **Stop rekam seketika**: `/stop` di Telegram → `cancel_download()` (SIGTERM
       graceful ke yt-dlp) sehingga segmen yang sudah terekam tetap ikut merge & upload.
+- [x] **Notifikasi progres live ke admin**: `ADMIN_LIVE_NOTIFY_ENABLED` (default
+      true) → record (mulai/segmen selesai/resume/gagal, IDN & Showroom), merge
+      (mulai/selesai/gagal via `MergeManager(on_notify=...)`), dan upload
+      (Telegram/YouTube per tahap, kuota habis, file hilang). Dikirim lewat admin
+      bot (`notify_admins`) atau fallback userbot ke `ADMIN_CHAT_ID`; semua
+      best-effort sehingga tak pernah menahan pipeline. Tes:
+      `tests/test_live_admin_notifications.py` (16 tes).
 - [x] `members.txt` disinkronkan otomatis (entry baru / marker `# STOPPED:`), dan
       `get_members_without_hls()` kini mengabaikan member `enabled = 0` agar channel
       yang di-stop tidak di-discovery ulang.

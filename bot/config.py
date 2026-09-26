@@ -46,6 +46,14 @@ class Config:
         os.getenv("ADMIN_BOT_ENABLED", "true").lower() == "true"
     )
 
+    # Notifikasi progres live (record / merge / upload) ke admin via Telegram.
+    # Dikirim oleh main.py + merger.py ke ADMIN_CHAT_ID/TELEGRAM_ADMIN_IDS:
+    # record mulai/selesai/gagal (IDN & Showroom), merge, dan tiap tahap upload.
+    # Matikan bila admin merasa terlalu ramai; perilaku pipeline tidak berubah.
+    ADMIN_LIVE_NOTIFY_ENABLED: bool = (
+        os.getenv("ADMIN_LIVE_NOTIFY_ENABLED", "true").lower() == "true"
+    )
+
     # ─── Telegram Replay Bot (publik, BotFather token) ──────────────────
     # Bot publik untuk fitur "Download via Bot Telegram" di halaman watch.
     # User menekan tombol → t.me/<bot>?start=<youtube_video_id> → bot
