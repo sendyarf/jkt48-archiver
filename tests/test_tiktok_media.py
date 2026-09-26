@@ -12,16 +12,21 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from bot.config import Config
 from bot.tiktok_client import TikTokItem
 from bot.tiktok_media import (
     MediaError,
+    MediaPermanentError,
     _ffconcat_escape,
+    _ytdlp_config_args,
     build_slideshow,
     cleanup_media,
     copy_fixture_video,
     download_images,
+    download_video,
+    is_permanent_media_error,
     prepare_post_media,
     split_image_paths,
 )
@@ -254,6 +259,174 @@ class TestPreparePostMedia(unittest.TestCase):
             finally:
                 Config.DOWNLOAD_DIR = original
 
+
+
+class _FakeProcess:
+    """Proses yt-dlp tiruan untuk uji tanpa memanggil yt-dlp sungguhan."""
+
+    def __init__(self, returncode: int = 1, stdout: bytes = b"", hang: bool = False):
+        self.returncode = returncode
+        self._stdout = stdout
+        self._hang = hang
+        self.killed = False
+        self.waited = False
+
+    async def communicate(self):
+        if self._hang:
+            await asyncio.sleep(30)  # tidak pernah selesai → memicu timeout
+        return self._stdout, None
+
+    def kill(self):
+        self.killed = True
+        if self.returncode is None:
+            self.returncode = -9
+
+    async def wait(self):
+        self.waited = True
+        return self.returncode
+
+
+class TestDownloadVideoYtdlp(unittest.TestCase):
+    """Perilaku jalur yt-dlp di download_video (proses dimock)."""
+
+    def _item(self) -> TikTokItem:
+        return TikTokItem(
+            id="video-x", unique_id="indahjkt48", kind="video",
+            source_url="https://www.tiktok.com/@indahjkt48/video/123", video_url="",
+        )
+
+    def test_timeout_kills_ytdlp_process(self):
+        """
+        Timeout unduhan: proses yt-dlp harus di-KILL (tidak bocor jadi orphan),
+        lalu alur lanjut ke fallback (berujung MediaError karena tak ada sumber lain).
+        """
+        captured: dict = {}
+
+        async def fake_exec(*cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            fake = _FakeProcess(hang=True)
+            captured["process"] = fake
+            return fake
+
+        async def fake_embed(*args, **kwargs):
+            return {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(asyncio, "create_subprocess_exec", fake_exec), \
+                 mock.patch("bot.tiktok_media.fetch_embed_post_media", fake_embed):
+                with self.assertRaises(MediaError):
+                    asyncio.run(download_video(self._item(), dest_dir=tmp, timeout_seconds=0.05))
+        process = captured["process"]
+        self.assertTrue(process.killed, "proses yt-dlp harus di-kill saat timeout")
+        self.assertTrue(process.waited, "proses yt-dlp harus di-await setelah kill")
+
+    def test_config_args_appended_before_url(self):
+        """Cookies/proxy/extra args dari Config disisipkan sebelum URL."""
+        captured: dict = {}
+
+        async def fake_exec(*cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            return _FakeProcess(returncode=1, stdout=b"gagal biasa")
+
+        async def fake_embed(*args, **kwargs):
+            return {}
+
+        saved = (
+            Config.TIKTOK_YTDLP_COOKIES_FILE,
+            Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER,
+            Config.TIKTOK_YTDLP_PROXY,
+            Config.TIKTOK_YTDLP_EXTRA_ARGS,
+        )
+        Config.TIKTOK_YTDLP_COOKIES_FILE = "C:/tmp/cookies.txt"
+        Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER = ""
+        Config.TIKTOK_YTDLP_PROXY = "http://user:pass@127.0.0.1:8080"
+        Config.TIKTOK_YTDLP_EXTRA_ARGS = "--sleep-requests 2"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(asyncio, "create_subprocess_exec", fake_exec), \
+                     mock.patch("bot.tiktok_media.fetch_embed_post_media", fake_embed):
+                    with self.assertRaises(MediaError):
+                        asyncio.run(download_video(self._item(), dest_dir=tmp, timeout_seconds=5))
+        finally:
+            (
+                Config.TIKTOK_YTDLP_COOKIES_FILE,
+                Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER,
+                Config.TIKTOK_YTDLP_PROXY,
+                Config.TIKTOK_YTDLP_EXTRA_ARGS,
+            ) = saved
+
+        cmd = captured["cmd"]
+        url = cmd[-1]
+        self.assertTrue(url.startswith("https://www.tiktok.com/"))
+        self.assertIn("--cookies", cmd)
+        self.assertIn("C:/tmp/cookies.txt", cmd)
+        self.assertIn("--proxy", cmd)
+        self.assertIn("http://user:pass@127.0.0.1:8080", cmd)
+        self.assertIn("--sleep-requests", cmd)
+        # Argumen konfigurasi berada sebelum URL.
+        self.assertLess(cmd.index("--cookies"), len(cmd) - 1)
+
+    def test_ip_block_raises_media_permanent_error(self):
+        """Pesan blokir IP dari yt-dlp diklasifikasikan kegagalan PERMANEN."""
+        stderr = (
+            b"ERROR: [TikTok] 123: Your IP address is blocked from accessing this post"
+        )
+
+        async def fake_exec(*cmd, **kwargs):
+            return _FakeProcess(returncode=1, stdout=stderr)
+
+        embed_called = {"count": 0}
+
+        async def fake_embed(*args, **kwargs):
+            embed_called["count"] += 1
+            return {"video_url": "https://cdn.example.com/fresh.mp4"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(asyncio, "create_subprocess_exec", fake_exec), \
+                 mock.patch("bot.tiktok_media.fetch_embed_post_media", fake_embed):
+                with self.assertRaises(MediaPermanentError) as caught:
+                    asyncio.run(download_video(self._item(), dest_dir=tmp, timeout_seconds=5))
+        # Tidak layak mencoba fallback embed — blokir IP berlaku untuk post yang sama.
+        self.assertEqual(embed_called["count"], 0)
+        self.assertTrue(caught.exception.permanent)
+        self.assertTrue(is_permanent_media_error(caught.exception))
+
+    def test_generic_media_error_is_not_permanent(self):
+        self.assertFalse(MediaError("x").permanent)
+        self.assertFalse(is_permanent_media_error(MediaError("x")))
+        self.assertFalse(is_permanent_media_error(ValueError("x")))
+
+    def test_ytdlp_config_args_noop_when_unset(self):
+        saved = (
+            Config.TIKTOK_YTDLP_COOKIES_FILE,
+            Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER,
+            Config.TIKTOK_YTDLP_PROXY,
+            Config.TIKTOK_YTDLP_EXTRA_ARGS,
+        )
+        Config.TIKTOK_YTDLP_COOKIES_FILE = ""
+        Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER = ""
+        Config.TIKTOK_YTDLP_PROXY = ""
+        Config.TIKTOK_YTDLP_EXTRA_ARGS = ""
+        try:
+            self.assertEqual(_ytdlp_config_args(), [])
+        finally:
+            (
+                Config.TIKTOK_YTDLP_COOKIES_FILE,
+                Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER,
+                Config.TIKTOK_YTDLP_PROXY,
+                Config.TIKTOK_YTDLP_EXTRA_ARGS,
+            ) = saved
+
+    def test_ytdlp_config_args_browser_cookie(self):
+        saved = Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER
+        Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER = "firefox"
+        try:
+            args = _ytdlp_config_args()
+        finally:
+            Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER = saved
+        if Config.TIKTOK_YTDLP_COOKIES_FILE or Config.TIKTOK_YTDLP_PROXY or Config.TIKTOK_YTDLP_EXTRA_ARGS:
+            self.skipTest("lingkungan uji mengisi variabel yt-dlp lain")
+        self.assertEqual(args, ["--cookies-from-browser", "firefox"])
 
 
 class TestCleanup(unittest.TestCase):

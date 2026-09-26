@@ -6,6 +6,7 @@ If all channels hit quota limits, marks the upload as pending so it can be retri
 """
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -28,6 +29,80 @@ YOUTUBE_API_VERSION = "v3"
 
 class YouTubeQuotaExceeded(Exception):
     """Raised when all available YouTube channels have hit their upload quota."""
+
+
+# Reason HTTP yang berarti KUOTA habis → rotasi ke channel berikutnya.
+# 403 polos (mis. insufficientPermissions) BUKAN kuota dan tidak boleh
+# membakar rotasi kuota channel.
+_QUOTA_REASONS = {
+    "quotaExceeded",
+    "dailyLimitExceeded",
+    "uploadLimitExceeded",
+    "userRateLimitExceeded",
+}
+
+# Backoff untuk error transient (429/5xx/network) pada resumable upload.
+_UPLOAD_RETRY_DELAYS = [5, 10, 20, 40]  # total ≤ 5 percobaan
+
+
+def _http_error_reasons(exc: HttpError) -> set:
+    """Kumpulkan `reason` dari error_details; fallback ke teks mentah."""
+    reasons = set()
+    try:
+        for detail in exc.error_details or []:
+            reason = detail.get("reason")
+            if reason:
+                reasons.add(str(reason))
+    except Exception:  # pragma: no cover - struktur detail bisa berubah
+        pass
+    if not reasons:
+        text = str(exc)
+        for known in _QUOTA_REASONS | {"insufficientPermissions", "rateLimitExceeded"}:
+            if known in text:
+                reasons.add(known)
+    return reasons
+
+
+def _next_chunk_with_retry(request, label: str):
+    """
+    next_chunk() dengan retry untuk error transient (429/5xx, koneksi/timeout).
+
+    Resumable upload YouTube memang dirancang untuk di-resume: next_chunk()
+    yang gagal bisa dipanggil ulang pada request yang SAMA dan melanjutkan
+    dari chunk terakhir yang diterima server. Error kuota (quotaExceeded
+    dsb.) langsung dilempar supaya channel bisa dirotasi tanpa membuang
+    waktu retry; error transient di-backoff 5→10→20→40s (maks 5 percobaan).
+    """
+    attempt = 0
+    while True:
+        try:
+            return request.next_chunk()
+        except HttpError as exc:
+            status = int(getattr(exc.resp, "status", 0) or 0)
+            reasons = _http_error_reasons(exc)
+            if reasons & _QUOTA_REASONS:
+                raise  # kuota → rotasi channel, jangan bakar retry
+            attempt += 1
+            if (status == 429 or status >= 500) and attempt < len(_UPLOAD_RETRY_DELAYS) + 1:
+                delay = _UPLOAD_RETRY_DELAYS[min(attempt - 1, len(_UPLOAD_RETRY_DELAYS) - 1)]
+                logger.warning(
+                    "[%s] Upload chunk gagal sementara (HTTP %d) — retry %d/%d dalam %ds",
+                    label, status, attempt, len(_UPLOAD_RETRY_DELAYS), delay,
+                )
+                time.sleep(delay)
+                continue
+            raise
+        except (ConnectionError, TimeoutError) as exc:
+            attempt += 1
+            if attempt < len(_UPLOAD_RETRY_DELAYS) + 1:
+                delay = _UPLOAD_RETRY_DELAYS[min(attempt - 1, len(_UPLOAD_RETRY_DELAYS) - 1)]
+                logger.warning(
+                    "[%s] Upload chunk gagal sementara (%r) — retry %d/%d dalam %ds",
+                    label, exc, attempt, len(_UPLOAD_RETRY_DELAYS), delay,
+                )
+                time.sleep(delay)
+                continue
+            raise
 
 
 class YouTubeChannelPool:
@@ -152,7 +227,7 @@ class YouTubeChannelPool:
 
                 response = None
                 while response is None:
-                    status, response = request.next_chunk()
+                    status, response = _next_chunk_with_retry(request, label)
                     if status:
                         pct = int(status.progress() * 100)
                         if pct % 20 == 0:
@@ -167,13 +242,17 @@ class YouTubeChannelPool:
 
             except HttpError as exc:
                 reason = str(exc)
-                if "quotaExceeded" in reason or "uploadLimitExceeded" in reason or exc.resp.status in (403, 429):
+                reasons = _http_error_reasons(exc)
+                # Hanya reason kuota sungguhan yang merotasi channel. 403 polos
+                # (mis. insufficientPermissions) BUKAN kuota: channel dianggap
+                # gagal biasa supaya tidak ikut membakar rotasi kuota.
+                if reasons & _QUOTA_REASONS or "quotaExceeded" in reason or "uploadLimitExceeded" in reason:
                     logger.warning(
                         "Quota exceeded for channel '%s' (uploads_today=%d, "
                         "quota_or_limit_in_response=%s). Trying next channel...",
                         label,
                         ch.get("uploads_today", 0),
-                        "uploadLimitExceeded" in reason or "quotaExceeded" in reason,
+                        True,
                     )
                     continue
                 else:

@@ -4,6 +4,7 @@ Unit tests for recovery, video splitting, Telegram multipart, and config.
 test_telegram_upload.py - Unit tests for video splitter, telegram captions, and config.
 """
 import asyncio
+import json
 import os
 import subprocess
 import tempfile
@@ -21,7 +22,7 @@ from bot.telegram_sender import (
     TelegramFloodExhausted,
     _format_size,
     _flood_wait_seconds,
-    _flood_backoff_seconds,
+    _flood_wait_with_jitter,
 )
 from bot.video_splitter import (
     VideoPart,
@@ -290,9 +291,13 @@ class TestTelegramFloodHandling(unittest.TestCase):
         exc = FloodWaitError(request=None, capture=42)
         self.assertEqual(_flood_wait_seconds(exc), 47)
 
-    def test_premium_wait_variant_is_parsed_from_message(self):
+    def test_premium_wait_variant_uses_premium_floor(self):
+        # FLOOD_PREMIUM_WAIT_3 = kuota premium lelah: 3 detik di pesan bukan
+        # penalti sebenarnya → digenjot ke TELEGRAM_FLOOD_PREMIUM_WAIT_SECONDS.
         exc = FloodError(request=None, message="FLOOD_PREMIUM_WAIT_3")
-        self.assertEqual(_flood_wait_seconds(exc), 8)
+        self.assertEqual(
+            _flood_wait_seconds(exc), Config.TELEGRAM_FLOOD_PREMIUM_WAIT_SECONDS
+        )
 
     def test_unknown_flood_falls_back_to_default(self):
         exc = FloodError(request=None, message="FLOOD")
@@ -317,23 +322,25 @@ class TestTelegramFloodHandling(unittest.TestCase):
                 waits.append(seconds)
 
             async def run():
-                with patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep):
+                with (
+                    patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep),
+                    patch("bot.telegram_sender.random.uniform", return_value=0.0),
+                ):
                     return await sender.send_video_file(video)
 
             self.assertEqual(asyncio.run(run()), 77)
             self.assertEqual(waits, [30], "harus menunggu sesuai flood, bukan 5 detik")
             self.assertEqual(sender._client.send_file.await_count, 2)
 
-    def test_flood_backoff_doubles_and_caps(self):
-        self.assertEqual(_flood_backoff_seconds(15, 1), 15)
-        self.assertEqual(_flood_backoff_seconds(15, 2), 30)
-        self.assertEqual(_flood_backoff_seconds(15, 3), 60)
-        self.assertEqual(_flood_backoff_seconds(15, 4), 120)
-        # Cap menahan backoff agar tidak tumbuh tanpa batas.
-        self.assertEqual(_flood_backoff_seconds(15, 20, cap=900), 900)
+    def test_flood_wait_applies_random_jitter(self):
+        """Jeda flood = durasi Telegram + jitter acak 0–30%."""
+        with patch("bot.telegram_sender.random.uniform", return_value=0.3):
+            self.assertEqual(_flood_wait_with_jitter(100), 130)
+        with patch("bot.telegram_sender.random.uniform", return_value=0.0):
+            self.assertEqual(_flood_wait_with_jitter(100), 100)
 
-    def test_upload_backoff_grows_across_flood_retries(self):
-        """Tiga flood berturut-turut harus menunggu 15/30/60, bukan 8/8/8."""
+    def test_premium_flood_waits_use_premium_floor_on_upload(self):
+        """FLOOD_PREMIUM_WAIT_* menunggu TELEGRAM_FLOOD_PREMIUM_WAIT_SECONDS."""
         with tempfile.TemporaryDirectory() as directory:
             video = Path(directory) / "big.mp4"
             video.write_bytes(b"0" * 32)
@@ -342,8 +349,6 @@ class TestTelegramFloodHandling(unittest.TestCase):
             sender._client = AsyncMock()
             sender._client.send_file = AsyncMock(
                 side_effect=[
-                    FloodError(request=None, message="FLOOD_PREMIUM_WAIT_3"),
-                    FloodError(request=None, message="FLOOD_PREMIUM_WAIT_3"),
                     FloodError(request=None, message="FLOOD_PREMIUM_WAIT_3"),
                     _fake_message(99),
                 ]
@@ -354,12 +359,17 @@ class TestTelegramFloodHandling(unittest.TestCase):
                 waits.append(seconds)
 
             async def run():
-                with patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep):
+                with (
+                    patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep),
+                    patch("bot.telegram_sender.random.uniform", return_value=0.0),
+                ):
                     return await sender.send_video_file(video)
 
             self.assertEqual(asyncio.run(run()), 99)
             self.assertEqual(
-                waits, [15, 30, 60], "jeda flood harus memanjang, bukan konstan"
+                waits,
+                [Config.TELEGRAM_FLOOD_PREMIUM_WAIT_SECONDS],
+                "FLOOD_PREMIUM_WAIT_* harus menunggu floor premium, bukan 8 detik",
             )
 
     def test_upload_gives_up_after_flood_budget(self):
@@ -573,15 +583,218 @@ class TestTelegramFloodHandling(unittest.TestCase):
                 waits.append(seconds)
 
             async def run():
-                with patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep):
+                with (
+                    patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep),
+                    patch("bot.telegram_sender.random.uniform", return_value=0.0),
+                ):
                     return await sender._send_media_album(
                         [first, second], "caption", -100123
                     )
 
             self.assertEqual(asyncio.run(run()), [88, 89])
             self.assertEqual(
-                waits, [8], "durasi FLOOD_PREMIUM_WAIT_3 harus dipakai, bukan default"
+                waits,
+                [Config.TELEGRAM_FLOOD_PREMIUM_WAIT_SECONDS],
+                "FLOOD_PREMIUM_WAIT_3 harus menunggu floor premium, bukan 8 detik",
             )
+
+    def test_album_flood_exhaustion_raises(self):
+        """Jatah flood habis pada album → TelegramFloodExhausted (transien),
+        bukan [] diam-diam (yang akan dianggap kegagalan permanen)."""
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "1.jpg"
+            second = Path(directory) / "2.jpg"
+            first.write_bytes(b"x")
+            second.write_bytes(b"y")
+            old_retries = Config.TELEGRAM_FLOOD_MAX_RETRIES
+            Config.TELEGRAM_FLOOD_MAX_RETRIES = 1
+            try:
+                sender = TelegramSender.__new__(TelegramSender)
+                sender._connected = True
+                sender._client = AsyncMock()
+                sender._client.send_file = AsyncMock(
+                    side_effect=FloodError(request=None, message="FLOOD_WAIT_5")
+                )
+
+                async def fake_sleep(seconds):
+                    return None
+
+                async def run():
+                    with patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep):
+                        await sender._send_media_album(
+                            [first, second], "caption", -100123
+                        )
+
+                with self.assertRaises(TelegramFloodExhausted):
+                    asyncio.run(run())
+                self.assertEqual(sender._client.send_file.await_count, 1)
+            finally:
+                Config.TELEGRAM_FLOOD_MAX_RETRIES = old_retries
+
+    def test_single_media_flood_exhaustion_raises(self):
+        """Fast path 1-berkas juga melempar TelegramFloodExhausted saat habis."""
+        with tempfile.TemporaryDirectory() as directory:
+            only = Path(directory) / "story.jpg"
+            only.write_bytes(b"x")
+            old_retries = Config.TELEGRAM_FLOOD_MAX_RETRIES
+            Config.TELEGRAM_FLOOD_MAX_RETRIES = 1
+            try:
+                sender = TelegramSender.__new__(TelegramSender)
+                sender._connected = True
+                sender._client = AsyncMock()
+                sender._client.send_file = AsyncMock(
+                    side_effect=FloodError(request=None, message="FLOOD_WAIT_5")
+                )
+
+                async def fake_sleep(seconds):
+                    return None
+
+                async def run():
+                    with patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep):
+                        await sender._send_media_album([only], "caption", -100123)
+
+                with self.assertRaises(TelegramFloodExhausted):
+                    asyncio.run(run())
+            finally:
+                Config.TELEGRAM_FLOOD_MAX_RETRIES = old_retries
+
+
+class _FakeUploadClient:
+    """Client Telethon palsu untuk jalur resume: callable (SaveBigFilePart)
+    + send_file untuk pengiriman akhir."""
+
+    def __init__(self, fail_at_part=None):
+        self.requests = []
+        self.fail_at_part = fail_at_part
+        self.failed_once = False
+        self.send_file = AsyncMock(return_value=_fake_message(123))
+
+    async def __call__(self, request):
+        self.requests.append(request)
+        part = getattr(request, "file_part", None)
+        if (
+            not self.failed_once
+            and self.fail_at_part is not None
+            and part is not None
+            and part >= self.fail_at_part
+        ):
+            self.failed_once = True
+            raise FloodError(request=None, message="FLOOD_WAIT_5")
+        return True
+
+
+class TestTelegramIntraFileResume(unittest.TestCase):
+    """File >= ambang resume: upload per-part + sidecar, retry me-resume."""
+
+    def _make_sender(self, client):
+        sender = TelegramSender.__new__(TelegramSender)
+        sender._connected = True
+        sender._client = client
+        return sender
+
+    def test_resume_mid_file_does_not_resend_uploaded_parts(self):
+        """Gagal di 60% → flood; retry melanjutkan part berikutnya, dan
+        sidecar dihapus setelah sukses."""
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "big.mp4"
+            # 10 part × 4 KB = 40 KB; ambang resume dan part size di-empot.
+            video.write_bytes(b"0" * (10 * 4096))
+            client = _FakeUploadClient(fail_at_part=6)
+            sender = self._make_sender(client)
+            sidecar = Path(str(video) + ".tgup.json")
+
+            async def fake_sleep(seconds):
+                return None
+
+            async def run():
+                with (
+                    patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep),
+                    patch("bot.telegram_sender.random.uniform", return_value=0.0),
+                    patch("bot.telegram_sender._RESUME_MIN_SIZE_BYTES", 1024),
+                    patch(
+                        "bot.telegram_sender.utils.get_appropriated_part_size",
+                        return_value=4,
+                    ),
+                ):
+                    return await sender.send_video_file(video)
+
+            self.assertEqual(asyncio.run(run()), 123)
+            part_indexes = [r.file_part for r in client.requests]
+            first_window = part_indexes[:7]
+            self.assertEqual(first_window, [0, 1, 2, 3, 4, 5, 6],
+                             "part 0–5 terkirim sebelum flood di part 6")
+            self.assertEqual(
+                part_indexes[7:], [6, 7, 8, 9],
+                "retry harus resume dari part 6, bukan mengulang part 0–5",
+            )
+            resent = [p for p in part_indexes[7:] if p < 6]
+            self.assertEqual(resent, [], "part sebelum checkpoint tidak di-upload ulang")
+            self.assertFalse(sidecar.exists(), "sidecar dihapus setelah sukses")
+            # Pengiriman akhir memakai handle InputFileBig hasil upload.
+            sent_file = client.send_file.await_args.kwargs["file"]
+            from telethon.tl.types import InputFileBig
+            self.assertIsInstance(sent_file, InputFileBig)
+
+    def test_resume_skips_upload_when_sidecar_is_complete(self):
+        """parts_sent == total_parts → langsung kirim tanpa request part baru."""
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "big.mp4"
+            size = 10 * 4096
+            video.write_bytes(b"0" * size)
+            sidecar = Path(str(video) + ".tgup.json")
+            sidecar.write_text(
+                json.dumps(
+                    {
+                        "path": str(video),
+                        "size": size,
+                        "mtime": video.stat().st_mtime,
+                        "file_id": 987654321,
+                        "part_size": 4096,
+                        "total_parts": 10,
+                        "parts_sent": 10,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = _FakeUploadClient()
+            sender = self._make_sender(client)
+
+            async def run():
+                with (
+                    patch("bot.telegram_sender._RESUME_MIN_SIZE_BYTES", 1024),
+                    patch(
+                        "bot.telegram_sender.utils.get_appropriated_part_size",
+                        return_value=4,
+                    ),
+                ):
+                    return await sender.send_video_file(video)
+
+            self.assertEqual(asyncio.run(run()), 123)
+            self.assertEqual(client.requests, [], "tidak boleh ada upload ulang")
+            self.assertFalse(sidecar.exists())
+
+    def test_resume_sidecar_deleted_on_media_empty(self):
+        """MediaEmptyError = penolakan permanen → sidecar ikut dihapus."""
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "big.mp4"
+            video.write_bytes(b"0" * (10 * 4096))
+            client = _FakeUploadClient()
+            client.send_file = AsyncMock(side_effect=MediaEmptyError(request=None))
+            sender = self._make_sender(client)
+            sidecar = Path(str(video) + ".tgup.json")
+
+            async def run():
+                with (
+                    patch("bot.telegram_sender._RESUME_MIN_SIZE_BYTES", 1024),
+                    patch(
+                        "bot.telegram_sender.utils.get_appropriated_part_size",
+                        return_value=4,
+                    ),
+                ):
+                    return await sender.send_video_file(video)
+
+            self.assertIsNone(asyncio.run(run()))
+            self.assertFalse(sidecar.exists())
 
 
 if __name__ == "__main__":

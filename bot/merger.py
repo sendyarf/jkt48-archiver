@@ -51,7 +51,7 @@ from bot.database import (
     update_merge_group_slug,
     mark_session_failed,
 )
-from bot.downloader import delete_file
+from bot.downloader import delete_file, has_enough_disk_space
 from bot.idn_lookup import live_key_from
 
 logger = logging.getLogger(__name__)
@@ -530,6 +530,27 @@ class MergeManager:
             merged_live_id = first["live_id"]
             logger.info("%s: single segment, no concat needed", member_username)
         else:
+            # Precheck disk: concat butuh ~ukuran total segmen (hasil merge)
+            # di samping segmen aslinya, jadi tanpa cek dini ffmpeg bisa
+            # mati di tengah jalan karena disk penuh. Gagal di sini = tunda
+            # finalize (retry siklus berikutnya); segmen TIDAK dihapus.
+            margin_mb = 256  # margin kecil untuk header/box container
+            required_mb = sum(Path(fp).stat().st_size for fp in file_paths) // (1024 * 1024) + margin_mb
+            if not has_enough_disk_space(min_mb=required_mb):
+                logger.error(
+                    "%s: disk tidak cukup untuk concat grup %d (butuh ~%d MB) — "
+                    "finalize ditunda %ds, segmen tetap disimpan",
+                    member_username, group_id, required_mb, DEFER_SECONDS,
+                )
+                self._timers[self._scope(member_username, group_platform)] = (
+                    asyncio.create_task(
+                        self._finalize_group(
+                            member_username, group_id, DEFER_SECONDS,
+                            platform=group_platform,
+                        )
+                    )
+                )
+                return
             logger.info("%s: concatenating %d segments for group %d...",
                         member_username, len(file_paths), group_id)
             merged_path = await self._concat_files(file_paths, member_username, group_id)

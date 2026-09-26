@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import logging
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -26,7 +27,7 @@ import colorlog
 from bot.config import Config
 from bot import database
 from bot import timeutil
-from bot.main import JKT48LiveBot
+from bot.main import JKT48LiveBot, load_flood_cooldown
 from bot.video_splitter import get_default_max_bytes, get_video_metadata
 
 logger = logging.getLogger("upload_pending")
@@ -204,6 +205,26 @@ async def process_uploads(items: list[dict], dry_run: bool = False, keep_files: 
     once but have no durable row to update.
     """
     max_bytes = get_default_max_bytes()
+
+    # Hormati cooldown flood yang persisten (sidecar JSON yang sama dengan
+    # retry worker di bot utama) — tanpa ini, CLI menggiling file 1 GB
+    # dari byte 0 padahal rate-limit Telegram masih aktif.
+    cooldown = load_flood_cooldown()
+    skipped_cooldown = [
+        item for item in items if str(item.get("live_id") or "") in cooldown
+    ]
+    for item in skipped_cooldown:
+        remaining = int(cooldown[str(item.get("live_id"))] - time.time())
+        print(
+            f"  ⏳ Dilewati (cooldown flood, {max(1, remaining // 60)} menit lagi): "
+            f"{item['member_name']} — {item['file_path'].name}"
+        )
+    if skipped_cooldown:
+        items = [item for item in items if item not in skipped_cooldown]
+    if not items:
+        print("\n✅ Semua video pending sedang dalam cooldown flood.\n")
+        return
+
     total_size = sum(item["size_bytes"] for item in items)
 
     print("\n" + "=" * 70)

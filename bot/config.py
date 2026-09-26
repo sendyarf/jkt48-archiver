@@ -87,13 +87,18 @@ class Config:
     TELEGRAM_MAX_FILE_SIZE_MB: int = int(os.getenv("TELEGRAM_MAX_FILE_SIZE_MB", "1950"))
 
     # Retry khusus flood (FLOOD_PREMIUM_WAIT_* / FloodWaitError) saat upload
-    # file besar. Rate limit naik seiring request menumpuk, sehingga jeda
-    # diperpanjang eksponensial: 15 → 30 → 60 → 120 … (cap 900 detik).
+    # file besar. Durasi tunggu = persis yang diminta Telegram (e.seconds)
+    # ditambah jitter kecil; upload dilanjutkan dari part terakhir (resume
+    # intra-file), jadi menunggu lebih lama dari penalti aslinya tidak
+    # menambah peluang berhasil dan hanya memperlambat antrean.
     TELEGRAM_FLOOD_MAX_RETRIES: int = int(
-        os.getenv("TELEGRAM_FLOOD_MAX_RETRIES", "6")
+        os.getenv("TELEGRAM_FLOOD_MAX_RETRIES", "10")
     )
-    TELEGRAM_FLOOD_BACKOFF_BASE_SECONDS: int = int(
-        os.getenv("TELEGRAM_FLOOD_BACKOFF_BASE_SECONDS", "15")
+
+    # FLOOD_PREMIUM_WAIT_* = sinyal kuota harian/premium lelah: durasi di
+    # pesannya (mis. 3 detik) bukan penalti sebenarnya. Tunggu lebih lama.
+    TELEGRAM_FLOOD_PREMIUM_WAIT_SECONDS: int = int(
+        os.getenv("TELEGRAM_FLOOD_PREMIUM_WAIT_SECONDS", "900")
     )
 
     # Berapa lama file yang sudah kehabisan jatah flood DIDIAMKAN sebelum
@@ -323,9 +328,37 @@ class Config:
         os.getenv("TIKTOK_REQUEST_INTERVAL_SECONDS", "1.1")
     )
 
-    # Penyedia data: "auto" (tikwm lalu yt-dlp), "tikwm", "ytdlp", atau
-    # "fixture" (baca JSON lokal — dipakai uji tanpa jaringan).
+    # Penyedia data: "auto" (tikwm → embed → scrape → yt-dlp), "tikwm",
+    # "embed", "scrape", "ytdlp", atau "fixture" (baca JSON lokal — dipakai uji
+    # tanpa jaringan). "scrape" = halaman profil tiktok.com/@user (JSON
+    # __UNIVERSAL_DATA_FOR_REHYDRATION__ + regex /video/<id>).
     TIKTOK_PROVIDER: str = os.getenv("TIKTOK_PROVIDER", "auto").lower().strip()
+
+    # Opsi yt-dlp untuk melewati blokir IP/geo TikTok
+    # ("Your IP address is blocked from accessing this post"):
+    #   TIKTOK_YTDLP_COOKIES_FILE        — path file cookies Netscape
+    #   TIKTOK_YTDLP_COOKIES_FROM_BROWSER — mis. "chrome" / "firefox"
+    #   TIKTOK_YTDLP_PROXY               — mis. "http://user:pass@host:port"
+    #   TIKTOK_YTDLP_EXTRA_ARGS          — argumen tambahan, dipisah spasi
+    # Keempatnya opsional dan diteruskan ke listing maupun download.
+    TIKTOK_YTDLP_COOKIES_FILE: str = os.getenv("TIKTOK_YTDLP_COOKIES_FILE", "").strip()
+    TIKTOK_YTDLP_COOKIES_FROM_BROWSER: str = os.getenv(
+        "TIKTOK_YTDLP_COOKIES_FROM_BROWSER", ""
+    ).strip()
+    TIKTOK_YTDLP_PROXY: str = os.getenv("TIKTOK_YTDLP_PROXY", "").strip()
+    TIKTOK_YTDLP_EXTRA_ARGS: str = os.getenv("TIKTOK_YTDLP_EXTRA_ARGS", "").strip()
+
+    # Batas percobaan unduh sebuah postingan TikTok sebelum ditandai
+    # gagal-permanen (status 'failed'). Mencegah backlog mencoba ulang video
+    # yang memang tidak bisa diunduh (mis. IP blocked) selamanya.
+    TIKTOK_MAX_DOWNLOAD_ATTEMPTS: int = int(
+        os.getenv("TIKTOK_MAX_DOWNLOAD_ATTEMPTS", "6")
+    )
+
+    # Error yang tergolong PERMANEN untuk "sedang diunduh": sesudah ini row
+    # langsung 'failed' tanpa menunggu TIKTOK_MAX_DOWNLOAD_ATTEMPTS tercapai.
+    # Contoh: story yang sudah berumur > TIKTOK_STORY_MAX_AGE_HOURS.
+    # (Diterapkan di tiktok_monitor; cukup konstanta umur story di atas.)
 
     # Profil impersonasi TLS untuk curl_cffi. Cloudflare di tikwm.com & halaman
     # TikTok menjawab 403 pada request biasa, tetapi lolos dengan fingerprint
@@ -334,7 +367,13 @@ class Config:
 
     # Jeda tikwm saat rate-limit per detik (detik) dan saat kuota harian habis.
     # Kuota gratis tikwm ±10.000 request/hari; pesannya memuat "day"/"10000".
+    # Rate-limit per detik diberi backoff ESKALATIF (5 → 10 → 20 …) karena
+    # jeda 5 detik tetap terbukti tidak cukup (limiter tikwm menghitung per
+    # menit, bukan per detik). Berhasil sekali = backoff direset ke awal.
     TIKWM_RATE_COOLDOWN_SECONDS: int = int(os.getenv("TIKWM_RATE_COOLDOWN_SECONDS", "5"))
+    TIKWM_RATE_COOLDOWN_MAX_SECONDS: int = int(
+        os.getenv("TIKWM_RATE_COOLDOWN_MAX_SECONDS", "300")
+    )
     TIKWM_QUOTA_COOLDOWN_SECONDS: int = int(
         os.getenv("TIKWM_QUOTA_COOLDOWN_SECONDS", "1800")
     )

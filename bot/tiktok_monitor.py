@@ -31,6 +31,7 @@ import argparse
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -45,10 +46,79 @@ from bot.tiktok_client import (
     TikTokItem,
     build_providers,
 )
-from bot.tiktok_media import MediaError, cleanup_media, media_from_disk, prepare_post_media
+from bot.tiktok_media import (
+    MediaError,
+    MediaPermanentError,
+    cleanup_media,
+    is_permanent_media_error,
+    media_from_disk,
+    prepare_post_media,
+)
 from bot.youtube_uploader import YouTubeChannelPool
 
 logger = logging.getLogger(__name__)
+
+# Jeda minimum sebelum baris 'failed' (percobaan belum habis) dicoba ulang:
+# blokir IP TikTok sesaat butuh waktu pulih, jadi jangan langsung dipukul lagi
+# pada siklus yang sama.
+RETRY_FAILED_MIN_AGE_SECONDS = 900
+
+
+def _story_kedaluwarsa(item: TikTokItem) -> bool:
+    """True bila item adalah story yang lebih tua dari TIKTOK_STORY_MAX_AGE_HOURS.
+
+    Story kedaluwarsa tidak akan pernah bisa diunduh ulang dari TikTok, jadi
+    kegagalannya dihitung PERMANEN seketika (tidak menunggu batas percobaan).
+    """
+    if not item.is_story:
+        return False
+    try:
+        stamp = datetime.fromisoformat(str(item.created_at).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - stamp).total_seconds()
+    return age > max(0, Config.TIKTOK_STORY_MAX_AGE_HOURS) * 3600
+
+
+def _catat_kegagalan_unduh(item: TikTokItem, exc: BaseException) -> bool:
+    """
+    Naikkan penghitung percobaan unduh dan tentukan apakah kegagalan ini
+    PERMANEN (penyebab memang permanen / story kedaluwarsa / percobaan habis).
+    Baris tetap 'failed' di DB: yang non-permanen diambil kembali lewat
+    `get_tiktok_retryable_failed` — memakai satu status membuat backlog tidak
+    mengulang video IP-blocked selamanya.
+
+    Returns:
+        True bila gagal permanen (jangan di-retry lagi).
+    """
+    attempts = database.increment_tiktok_download_attempt(item.id)
+    max_attempts = max(1, Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS)
+    permanen = (
+        is_permanent_media_error(exc)
+        or _story_kedaluwarsa(item)
+        or attempts >= max_attempts
+    )
+    update: dict = {"status": "failed", "error_message": str(exc)[:400]}
+    if permanen and attempts < max_attempts:
+        # Penyebab permanen (IP diblokir / story kedaluwarsa) langsung TERMINAL:
+        # samakan penghitung dengan batas supaya get_tiktok_retryable_failed
+        # tidak lagi mengambilnya.
+        attempts = max_attempts
+        update["download_attempts"] = attempts
+    database.update_tiktok_post(item.id, **update)
+    if permanen:
+        logger.warning(
+            "Media TikTok %s gagal PERMANEN (%s, percobaan %d/%d).",
+            item.id, exc, attempts, Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS,
+        )
+    else:
+        logger.warning(
+            "Media TikTok %s gagal sementara (%s, percobaan %d/%d) — di-retry nanti.",
+            item.id, exc, attempts, Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS,
+        )
+    return permanen
 
 
 def item_from_db_row(row: dict) -> TikTokItem:
@@ -297,11 +367,16 @@ class TikTokMonitor:
                     continue
                 try:
                     detail = await fetch_detail(item.page_url, item.unique_id)
+                except ProviderBlocked as exc:
+                    # Urutan WAJIB sebelum ProviderError (ProviderBlocked adalah
+                    # subclassnya — kalau tidak, cabang ini tidak pernah jalan).
+                    # Hanya kapabilitas 'posts' yang ditandai: satu blokir
+                    # detail-fetch tidak berarti story/listing penyedia ikut
+                    # mati (Cloudflare memblokir per-path, bukan per-domain).
+                    provider.mark_unhealthy(str(exc), capability="posts")
+                    continue
                 except ProviderError as exc:
                     logger.debug("Detail %s via %s gagal: %s", item.id, provider.name, exc)
-                    continue
-                except ProviderBlocked as exc:
-                    provider.mark_unhealthy(str(exc))
                     continue
                 if detail is None:
                     continue
@@ -367,15 +442,20 @@ class TikTokMonitor:
                 )
             except MediaError as exc:
                 logger.error("Media TikTok %s gagal disiapkan: %s", post_id, exc)
-                database.update_tiktok_post(
-                    post_id, status="failed", error_message=str(exc)[:400]
-                )
+                _catat_kegagalan_unduh(item, exc)
                 return
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Error tak terduga saat menyiapkan media %s: %s", post_id, exc)
+                # Penghitung tetap dinaikkan supaya error tak terduga yang
+                # berulang akhirnya juga dead-letter. Status 'failed' (bukan
+                # pending_upload — media belum ada di disk) supaya ikut diambil
+                # get_tiktok_retryable_failed sampai percobaan habis.
+                attempts = database.increment_tiktok_download_attempt(post_id)
                 database.update_tiktok_post(
-                    post_id, status="pending_upload", error_message=str(exc)[:400]
+                    post_id, status="failed", error_message=str(exc)[:400]
                 )
+                if attempts >= max(1, Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS):
+                    logger.warning("Media TikTok %s gagal PERMANEN (percobaan habis).", post_id)
                 return
 
         media_path = str(media.video_path or (media.images[0] if media.images else ""))
@@ -535,6 +615,14 @@ class TikTokMonitor:
             Jumlah postingan yang berhasil diselesaikan (`status='done'`).
         """
         pending = database.get_tiktok_pending_posts()
+        # Baris 'failed' dengan percobaan di bawah batas ikut di-retry: blokir
+        # IP TikTok sering hanya sesaat.
+        retryable = database.get_tiktok_retryable_failed(
+            limit=max(1, limit),
+            max_attempts=max(1, Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS),
+            min_age_seconds=RETRY_FAILED_MIN_AGE_SECONDS,
+        )
+        pending = pending + retryable
         if not pending:
             return 0
         logger.info("Retry arsip TikTok: %d postingan menunggu.", len(pending))
@@ -557,9 +645,12 @@ class TikTokMonitor:
         YouTube (upload pertama gagal/dilewati, mis. kuota harian habis).
 
         Media dipakai ulang dari disk bila masih ada, kalau tidak diunduh
-        ulang; Telegram TIDAK dikirim ulang. Berhenti lebih awal begitu satu
-        upload gagal (hampir pasti kuota habis) supaya tidak membakar unduhan
-        untuk sisa antrian — dilanjutkan pada siklus berikutnya.
+        ulang; Telegram TIDAK dikirim ulang. Baris yang percobaan unduhnya sudah
+        habis (TIKTOK_MAX_DOWNLOAD_ATTEMPTS) atau errornya permanen (mis. IP
+        diblokir TikTok) dilewati permanen supaya backlog tidak mengulang video
+        yang memang tidak bisa diunduh selamanya. Berhenti lebih awal hanya
+        begitu satu UPLOAD gagal (hampir pasti kuota habis) supaya tidak
+        membakar unduhan untuk sisa antrian — dilanjutkan di siklus berikutnya.
 
         Returns:
             Jumlah arsip yang kini punya video YouTube.
@@ -580,18 +671,33 @@ class TikTokMonitor:
                 "unique_id": row.get("unique_id") or "",
                 "display_name": "",
             }
-            try:
-                media = media_from_disk(row) or await prepare_post_media(
-                    item_from_db_row(row), build_slideshow_video=True
-                )
-            except MediaError as exc:
-                # Postingan dihapus / story kedaluwarsa → memang tidak bisa
-                # dikejar; lewati tanpa menghentikan antrian.
-                logger.info("Backlog YouTube %s dilewati: %s", post_id, exc)
-                continue
-            except Exception as exc:  # noqa: BLE001 - penyedia diblokir dsb.
-                logger.warning("Backlog YouTube dihentikan sementara: %s", exc)
-                break
+            item = item_from_db_row(row)
+            media = media_from_disk(row)
+            if media is None:
+                max_attempts = max(1, Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS)
+                if int(row.get("download_attempts") or 0) >= max_attempts:
+                    logger.info(
+                        "Backlog YouTube %s dilewati permanen: percobaan unduh habis (%d/%d).",
+                        post_id, int(row.get("download_attempts") or 0), max_attempts,
+                    )
+                    continue
+                if _story_kedaluwarsa(item):
+                    logger.info(
+                        "Backlog YouTube %s dilewati permanen: story kedaluwarsa.", post_id
+                    )
+                    continue
+                try:
+                    media = await prepare_post_media(item, build_slideshow_video=True)
+                except MediaError as exc:
+                    permanen = _catat_kegagalan_unduh(item, exc)
+                    if permanen:
+                        logger.info("Backlog YouTube %s dilewati permanen: %s", post_id, exc)
+                    else:
+                        logger.info("Backlog YouTube %s dilewati: %s", post_id, exc)
+                    continue
+                except Exception as exc:  # noqa: BLE001 - penyedia diblokir dsb.
+                    logger.warning("Backlog YouTube dihentikan sementara: %s", exc)
+                    break
             youtube_id = await self._upload_to_youtube(
                 item_from_db_row(row), row, account, media
             )

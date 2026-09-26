@@ -10,9 +10,12 @@ Tiga penyedia data (`Config.TIKTOK_PROVIDER`):
   - ``ytdlp``    : ekstraktor TikTok bawaan yt-dlp (tanpa login, sudah dipakai
                    bot untuk IDN/Showroom). Butuh ``sec_uid`` akun supaya
                    listing profil stabil — lihat `YtDlpProvider.fetch_user_posts`.
+  - ``embed``    : halaman embed TikTok (listing paling andal, ≤10 post).
+  - ``scrape``   : halaman profil tiktok.com/@user langsung (regex + JSON
+                   rehidrasi); fallback saat tikwm/embed dijawab Cloudflare.
   - ``fixture``  : membaca JSON lokal (folder `Config.TIKTOK_FIXTURE_DIR`),
                    dipakai unit test & verifikasi tanpa jaringan.
-  - ``auto``     : coba ``tikwm`` lalu jatuh ke ``ytdlp`` bila diblokir.
+  - ``auto``     : coba ``tikwm`` → ``embed`` → ``scrape`` → ``ytdlp``.
 
 Catatan lapangan (21 Sep 2026): tikwm.com & halaman profil TikTok sering
 dijawab tantangan Cloudflare (HTTP 403 / halaman stub ±1,4 KB) bila diminta
@@ -37,6 +40,7 @@ import json
 import logging
 import random
 import re
+import shlex
 import shutil
 import sys
 import time
@@ -292,7 +296,8 @@ async def http_get_text_retry(
             return status, body
         if status not in _TRANSIENT_STATUS or attempt == attempts:
             return status, body
-        wait = 1.5 * attempt
+        # Jitter acak supaya 51 akun tidak retry serentak pada detik yang sama.
+        wait = 1.5 * attempt * random.uniform(0.8, 1.4)
         logger.info("HTML %s: HTTP %s (sementara), coba lagi dalam %.1fs...", url, status, wait)
         await asyncio.sleep(wait)
     return status, body
@@ -318,6 +323,9 @@ class RateLimiter:
             now = time.monotonic()
             delay = self._min_interval - (now - self._last_at)
             if delay > 0:
+                # Jitter ±25%: 51 akun dengan jeda identik terlihat seperti
+                # pola metronom (1.1s, 1.1s, …) dan mudah ditandai anti-bot.
+                delay *= random.uniform(0.75, 1.25)
                 await asyncio.sleep(delay)
             self._last_at = time.monotonic()
 
@@ -517,13 +525,20 @@ class TikwmProvider(BaseProvider):
         self._blocked_until = 0.0
         self._quota_cooldown = Config.TIKWM_QUOTA_COOLDOWN_SECONDS
         self._rate_cooldown = Config.TIKWM_RATE_COOLDOWN_SECONDS
+        self._rate_cooldown_max = max(
+            self._rate_cooldown, Config.TIKWM_RATE_COOLDOWN_MAX_SECONDS
+        )
+        # Hitung hit rate-limit BERUNTUN: cooldown digandakan 2× per hit
+        # (5s → 10s → 20s … maks TIKWM_RATE_COOLDOWN_MAX_SECONDS) karena jeda
+        # datar 5s terbukti tetap ditolak tikwm ("Free Api Limit" berulang).
+        self._rate_escalations = 0
 
     def is_blocked(self) -> bool:
         """True selama tikwm sedang dijeda (rate-limit / kuota harian)."""
         return time.monotonic() < self._blocked_until
 
     def _note_limit(self, message: str) -> None:
-        """Catat batas tikwm: kuota harian → jeda panjang, rate/detik → pendek."""
+        """Catat batas tikwm: kuota harian → jeda panjang, rate/detik → eskalasi."""
         lowered = (message or "").lower()
         now = time.monotonic()
         if "day" in lowered or "10000" in lowered:
@@ -536,10 +551,15 @@ class TikwmProvider(BaseProvider):
             )
             return
         if now >= self._blocked_until:
-            self._blocked_until = now + self._rate_cooldown
+            cooldown = min(
+                self._rate_cooldown * (2 ** self._rate_escalations),
+                self._rate_cooldown_max,
+            )
+            self._rate_escalations += 1
+            self._blocked_until = now + cooldown
             logger.info(
-                "tikwm rate limit (%s) — jeda %ds.",
-                (message or "").strip()[:80], self._rate_cooldown,
+                "tikwm rate limit (%s) — jeda %ds (eskalasi #%d).",
+                (message or "").strip()[:80], cooldown, self._rate_escalations,
             )
 
     async def _call(
@@ -585,7 +605,14 @@ class TikwmProvider(BaseProvider):
                 self._note_limit(message)
                 raise ProviderError(f"tikwm {path}: limit ({message[:80]})")
             raise ProviderError(f"tikwm {path}: code={code} msg={message}")
+        self._note_success()
         return payload.get("data")
+
+    def _note_success(self) -> None:
+        """Panggilan berhasil → eskalasi rate-limit kembali ke cooldown awal."""
+        if self._rate_escalations:
+            logger.info("tikwm pulih — eskalasi rate-limit direset.")
+        self._rate_escalations = 0
 
     async def fetch_user_posts(self, account: dict, limit: int) -> list[TikTokItem]:
         """Ambil `limit` postingan terbaru (mengikuti cursor bila perlu)."""
@@ -800,6 +827,40 @@ class YtDlpProvider(BaseProvider):
             return f"tiktokuser:{sec_uid}"
         return f"{TIKTOK_WEB_BASE}/@{(account.get('unique_id') or '').strip()}"
 
+    @staticmethod
+    def _config_args() -> list[str]:
+        """
+        Argumen yt-dlp dari konfigurasi (cookies dari file/browser, proxy, dan
+        argumen bebas tambahan). Kosong bila tidak diatur — perilaku lama utuh.
+        Dipakai listing maupun detail karena blokir IP TikTok berlaku per alamat.
+        """
+        args: list[str] = []
+        if Config.TIKTOK_YTDLP_COOKIES_FILE:
+            args += ["--cookies", Config.TIKTOK_YTDLP_COOKIES_FILE]
+        if Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER:
+            args += ["--cookies-from-browser", Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER]
+        if Config.TIKTOK_YTDLP_PROXY:
+            args += ["--proxy", Config.TIKTOK_YTDLP_PROXY]
+        extra = Config.TIKTOK_YTDLP_EXTRA_ARGS
+        if extra:
+            args += shlex.split(extra)
+        return args
+
+    @staticmethod
+    def _classify_error(message: str) -> ProviderError:
+        """
+        Klasifikasikan keluaran gagal yt-dlp. "IP address is blocked" berarti
+        alamat IP diblokir TikTok untuk postingan ini — penyedia harus ditandai
+        tidak sehat (ProviderBlocked) supaya monitor pindah penyedia, bukan
+        memperingatkan berisik tiap siklus (ProviderError biasa).
+        """
+        lowered = message.lower()
+        if "ip address is blocked" in lowered or "blocked from accessing" in lowered:
+            return ProviderBlocked(f"IP diblokir TikTok: {message}")
+        if "secondary user ID" in message or "Unable to extract" in message:
+            return ProviderBlocked(f"listing profil butuh secUid: {message}")
+        return ProviderError(f"yt-dlp listing gagal: {message}")
+
     async def fetch_user_posts(self, account: dict, limit: int) -> list[TikTokItem]:
         unique_id = (account.get("unique_id") or "").strip()
         if not unique_id:
@@ -813,15 +874,14 @@ class YtDlpProvider(BaseProvider):
                 "--dump-single-json",
                 "--skip-download",
                 "--no-warnings",
+                *self._config_args(),
                 self._target_url(account),
             ],
             self.LIST_TIMEOUT_SECONDS,
         )
         if code != 0:
             message = (stderr or stdout or "").strip().replace("\n", " ")[:200]
-            if "secondary user ID" in message or "Unable to extract" in message:
-                raise ProviderBlocked(f"listing profil butuh secUid: {message}")
-            raise ProviderError(f"yt-dlp listing gagal: {message}")
+            raise self._classify_error(message)
         try:
             payload = json.loads(stdout or "{}")
         except ValueError as exc:
@@ -840,7 +900,8 @@ class YtDlpProvider(BaseProvider):
         """Detail satu postingan (dipakai saat unduhan butuh metadata lengkap)."""
         await self._limiter.wait()
         code, stdout, stderr = await self._run(
-            ["--dump-single-json", "--skip-download", "--no-warnings", page_url],
+            ["--dump-single-json", "--skip-download", "--no-warnings",
+             *self._config_args(), page_url],
             self.DETAIL_TIMEOUT_SECONDS,
         )
         if code != 0:
@@ -956,6 +1017,156 @@ class EmbedProvider(BaseProvider):
     async def fetch_user_info(self, unique_id: str) -> dict:
         """Embed tidak memuat profil lengkap (tanpa secUid/nickname)."""
         return {}
+
+
+class ScrapeProvider(BaseProvider):
+    """
+    Penyedia scraping halaman profil TikTok `https://www.tiktok.com/@<user>`
+    (metode `_fetch_posts_scrape` dari proyek JKT48_TIKTOK).
+
+    Daftar ID postingan diambil dari dua penanda di HTML profil:
+      1. Regex ``/video/(\\d{18,20})`` pada tautan video, dan
+      2. JSON ``__UNIVERSAL_DATA_FOR_REHYDRATION__`` →
+         ``__DEFAULT_SCOPE__["webapp.user-detail"].itemList``.
+    Judul/waktu diambil dari JSON itu bila tersedia; bila tidak, `created_at`
+    di-aproksimasi dari ID snowflake TikTok (``int(id) >> 32`` = epoch detik).
+
+    Halaman profil menjawab tantangan Cloudflare/halaman stub untuk banyak IP
+    datacenter — tanpa kedua penanda dianggap DIBLOKIR (ProviderBlocked) supaya
+    penyedia ditandai tidak sehat dan bot pindah penyedia. Story tidak tersedia
+    di halaman profil (sama seperti embed/yt-dlp).
+    """
+
+    name = "scrape"
+
+    # Daftar profil per akun hanya memuat ±30 postingan terbaru di HTML.
+    SCRAPE_LIST_LIMIT = 30
+
+    async def fetch_user_posts(self, account: dict, limit: int) -> list[TikTokItem]:
+        unique_id = (account.get("unique_id") or "").strip()
+        if not unique_id:
+            return []
+        status, body = await http_get_text_retry(
+            f"{TIKTOK_WEB_BASE}/@{unique_id}", timeout=30.0
+        )
+        if status in (403, 429):
+            raise ProviderBlocked(f"scrape profil @{unique_id}: HTTP {status}")
+        if status != 200 or not body:
+            raise ProviderError(f"scrape profil @{unique_id}: HTTP {status}")
+        items = parse_scrape_profile(body, unique_id)
+        if not items:
+            # HTTP 200 tanpa penanda video = halaman stub/pembatas Cloudflare.
+            raise ProviderBlocked(f"scrape profil @{unique_id}: tanpa penanda video")
+        wanted = max(1, min(int(limit), self.SCRAPE_LIST_LIMIT))
+        return items[:wanted]
+
+    # fetch_user_stories: tidak dioverride — halaman profil tidak memuat story
+    # (monitor menandai kapabilitas 'stories' hilang, sama seperti embed/ytdlp).
+
+
+_SCRAPE_VIDEO_RE = re.compile(r"/video/(\d{18,20})")
+_SCRAPE_REHYDRATION_RE = re.compile(
+    r'<script\s+id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>',
+    re.DOTALL,
+)
+
+
+def _scrape_rehydration_items(html: str) -> dict:
+    """
+    Peta ``id → item`` dari JSON ``__UNIVERSAL_DATA_FOR_REHYDRATION__`` halaman
+    profil. Struktur: ``__DEFAULT_SCOPE__["webapp.user-detail"]["itemList"]``
+    (daftar ID) dengan metadata item pada ``itemInfoList``/``itemStruct``.
+    """
+    match = _SCRAPE_REHYDRATION_RE.search(html or "")
+    if not match:
+        return {}
+    try:
+        udata = json.loads(match.group(1))
+    except ValueError:
+        return {}
+    user_detail = (udata.get("__DEFAULT_SCOPE__") or {}).get("webapp.user-detail") or {}
+    candidates = user_detail.get("itemInfoList") or user_detail.get("itemStruct") or {}
+    items: dict[str, dict] = {}
+    if isinstance(candidates, dict):
+        for key in ("itemList", "items"):
+            for raw in (candidates.get(key) or {}).values() if isinstance(
+                candidates.get(key), dict
+            ) else []:
+                if isinstance(raw, dict) and raw.get("id"):
+                    items[str(raw["id"])] = raw
+    if isinstance(user_detail.get("itemInfo"), dict):
+        for key, raw in user_detail["itemInfo"].items():
+            if isinstance(raw, dict):
+                items[str(raw.get("id") or key)] = raw
+    # Bentuk paling umum: itemInfoList.itemStruct {id1: {...}, id2: {...}}
+    for key, raw in (user_detail.get("itemStruct") or {}).items():
+        if isinstance(raw, dict):
+            items.setdefault(str(raw.get("id") or key), raw)
+    return items
+
+
+def _scrape_item_list_ids(html: str) -> list[str]:
+    """Urutan ID dari `webapp.user-detail.itemList` (bila JSON tersedia)."""
+    match = _SCRAPE_REHYDRATION_RE.search(html or "")
+    if not match:
+        return []
+    try:
+        udata = json.loads(match.group(1))
+    except ValueError:
+        return []
+    user_detail = (udata.get("__DEFAULT_SCOPE__") or {}).get("webapp.user-detail") or {}
+    result: list[str] = []
+    for raw in user_detail.get("itemList") or []:
+        item_id = str(raw).strip()
+        if item_id.isdigit() and len(item_id) >= 15 and item_id not in result:
+            result.append(item_id)
+    return result
+
+
+def parse_scrape_profile(html: str, unique_id: str) -> list[TikTokItem]:
+    """
+    Parse halaman profil `/@<user>` menjadi daftar TikTokItem (terbaru dulu).
+
+    ID video dari tautan `/video/<id>` dan `itemList` JSON rehidrasi; judul dan
+    waktu diambil dari metadata JSON bila ada, kalau tidak `created_at` diisi
+    dari timestamp snowflake ID (``int(id) >> 32``).
+    """
+    html = html or ""
+    ids: list[str] = []
+    for vid in _SCRAPE_VIDEO_RE.findall(html):
+        if vid not in ids:
+            ids.append(vid)
+    for vid in _scrape_item_list_ids(html):
+        if vid not in ids:
+            ids.append(vid)
+    if not ids:
+        return []
+    metadata = _scrape_rehydration_items(html)
+    items: list[TikTokItem] = []
+    for vid in ids:
+        raw = metadata.get(vid) or {}
+        created = epoch_to_utc(raw.get("createTime"))
+        if not created:
+            try:
+                created = epoch_to_utc(int(vid) >> 32)  # epoch dari snowflake ID
+            except ValueError:
+                created = ""
+        title = str(raw.get("desc") or raw.get("title") or "").strip()
+        cover = raw.get("video") or {}
+        items.append(
+            TikTokItem(
+                id=vid,
+                unique_id=unique_id,
+                kind="photo" if raw.get("imagePost") else "video",
+                title=title,
+                created_at=created,
+                duration_seconds=int((cover.get("duration") or 0) if isinstance(cover, dict) else 0),
+                cover_url=str((cover.get("cover") or "") if isinstance(cover, dict) else ""),
+                source_url=f"{TIKTOK_WEB_BASE}/@{unique_id}/video/{vid}",
+                raw=raw,
+            )
+        )
+    return items
 
 
 class FixtureProvider(BaseProvider):
@@ -1178,7 +1389,9 @@ def build_providers(mode: Optional[str] = None) -> list[BaseProvider]:
          Cloudflare bisa memblokir sebagian path/IP.
       2. `embed`  — halaman embed TikTok, paling andal untuk listing (≤10 post
          terbaru) walau tanpa story.
-      3. `ytdlp`  — tanpa pihak ketiga; butuh secUid untuk listing profil.
+      3. `scrape` — halaman profil `/@user` langsung (regex `/video/<id>` +
+         JSON rehidrasi); sering masih lolos saat embed/tikwm dijawab stub.
+      4. `ytdlp`  — tanpa pihak ketiga; butuh secUid untuk listing profil.
     """
     choice = (mode or Config.TIKTOK_PROVIDER or "auto").lower().strip()
     limiter = RateLimiter(Config.TIKTOK_REQUEST_INTERVAL_SECONDS)
@@ -1188,8 +1401,15 @@ def build_providers(mode: Optional[str] = None) -> list[BaseProvider]:
         return [TikwmProvider(limiter)]
     if choice == "embed":
         return [EmbedProvider(limiter)]
+    if choice == "scrape":
+        return [ScrapeProvider(limiter)]
     if choice == "ytdlp":
         return [YtDlpProvider(limiter)]
     if choice != "auto":
         logger.warning("TIKTOK_PROVIDER=%r tidak dikenal; memakai 'auto'.", choice)
-    return [TikwmProvider(limiter), EmbedProvider(limiter), YtDlpProvider(limiter)]
+    return [
+        TikwmProvider(limiter),
+        EmbedProvider(limiter),
+        ScrapeProvider(limiter),
+        YtDlpProvider(limiter),
+    ]

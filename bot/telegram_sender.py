@@ -4,18 +4,21 @@ telegram_sender.py - Telegram notifier and video uploader using Telethon (userbo
 Supports sending:
 1. Direct video uploads to Telegram channels with streaming support,
    automatic splitting for files > 2GB (safe limit default: 1950 MB),
-   and video thumbnail preview.
+   video thumbnail preview, dan RESUME intra-file untuk file >= 64 MB
+   (progres part disimpan di sidecar ``<path>.tgup.json`` sehingga flood
+   atau restart proses tidak mengulang upload dari byte 0).
 2. Text notifications with YouTube links (when UPLOAD_TARGET=youtube).
 """
 import asyncio
+import json
 import logging
-import os
+import random
 import re
 import time
 from pathlib import Path
 from typing import Callable, Optional, Union
 
-from telethon import TelegramClient
+from telethon import TelegramClient, functions, helpers, types, utils
 from telethon.errors import (
     FloodError,
     FloodWaitError,
@@ -46,9 +49,17 @@ class TelegramFloodExhausted(RuntimeError):
 
     Turunan dari RuntimeError agar jalur penanganan yang sudah ada tetap aman.
     Caller (retry worker) memakai exception ini untuk memberi COOLDOWN pada
-    file tersebut: mencoba lagi terlalusoon hanya membuang bandwidth
-    (1.638 request × 819 MB per percobaan) tanpa peluang berhasil.
+    file tersebut. Progres upload file besar (>= 64 MB) TERSIMPAN di sidecar
+    ``<path>.tgup.json``, jadi percobaan berikutnya melanjutkan dari part
+    terakhir dan tidak lagi membuang seluruh bandwidth file dari nol.
     """
+
+
+_PREMIUM_WAIT_RE = re.compile(r"FLOOD_PREMIUM_WAIT_(\d+)")
+
+# File di atas ambang ini di-upload lewat SaveBigFilePartRequest yang bisa
+# di-resume (sidecar JSON), bukan satu panggilan client.send_file() monolitik.
+_RESUME_MIN_SIZE_BYTES = 64 * 1024 * 1024
 
 
 def _flood_wait_seconds(exc: BaseException, default: int = 30) -> int:
@@ -56,31 +67,37 @@ def _flood_wait_seconds(exc: BaseException, default: int = 30) -> int:
 
     `FloodWaitError` (RPC 429) menyediakan `.seconds`. Varian RPC 420 lain —
     misalnya `FLOOD_PREMIUM_WAIT_3` pada upload file besar — hanya menyertakan
-    angka di pesan, jadi angka itu yang diambil. Tanpa parsing ini, bot akan
-    menunggu 5 detik lalu mengulang upload 1 GB dari nol.
+    angka di pesan, jadi angka itu yang diambil. Untuk varian PREMIUM, durasi
+    di pesan (mis. 3 detik) bukan penalti sebenarnya melainkan sinyal kuota
+    lelah, sehingga digenjot ke minimal TELEGRAM_FLOOD_PREMIUM_WAIT_SECONDS.
     """
+    text = str(exc)
+    premium = _PREMIUM_WAIT_RE.search(text)
+    if premium is None and "premium" in text.lower():
+        if getattr(exc, "code", None) == 420 or _is_code_420(exc):
+            premium = re.search(r"(\d+)", text)
     seconds = getattr(exc, "seconds", None)
+    if premium is not None:
+        return max(int(premium.group(1)), Config.TELEGRAM_FLOOD_PREMIUM_WAIT_SECONDS)
     if isinstance(seconds, (int, float)) and seconds > 0:
         return int(seconds) + 5
-    match = re.search(r"FLOOD_\w*WAIT_(\d+)", str(exc))
+    match = re.search(r"FLOOD_\w*WAIT_(\d+)", text)
     if match:
         return int(match.group(1)) + 5
-    match = re.search(r"wait of (\d+) seconds", str(exc), re.IGNORECASE)
+    match = re.search(r"wait of (\d+) seconds", text, re.IGNORECASE)
     if match:
         return int(match.group(1)) + 5
     return max(5, int(default))
 
 
-def _flood_backoff_seconds(base: int, attempt: int, cap: int = 900) -> int:
-    """Backoff eksponensial untuk retry flood.
+def _is_code_420(exc: BaseException) -> bool:
+    """RPC 420 dikenali juga dari prefix pesan ('A wait of ...' milik 420)."""
+    return int(getattr(exc, "code", 0) or 0) == 420
 
-    `FLOOD_PREMIUM_WAIT_3` memberi durasi sangat pendek (detik) karena
-    Telegram menghitung *jumlah request*, bukan ukuran file. File 1.1 GB
-    berarti ~2.267 part pada 512 KB; mengulang 2.267 request itu setelah
-    menunggu 8 detik hanya menghasilkan flood yang sama. Karena itu tiap
-    percobaan flood diberi jeda yang makin panjang (doubling) sampai cap.
-    """
-    return min(cap, max(1, base) * (2 ** max(0, attempt - 1)))
+
+def _flood_wait_with_jitter(seconds: int) -> int:
+    """Jeda flood + jitter acak 0–30% agar retry tidak serempak (thundering herd)."""
+    return int(seconds * (1 + random.uniform(0.0, 0.3)))
 
 
 def _format_size(size_bytes: int) -> str:
@@ -155,31 +172,125 @@ class TelegramSender:
         """Send an HTML-formatted message to the Telegram channel."""
         await self.connect()
         target = channel_id or Config.TELEGRAM_CHANNEL_ID
-        try:
-            msg = await self._client.send_message(
-                target,
-                text,
-                parse_mode="html",
-                link_preview=link_preview,
+        # Flood dibatasi 3 jeda berturut; sesudah itu menyerah (return None)
+        # agar satu pesan notifikasi tidak menahan antrean upload video.
+        flood_waits = 0
+        while True:
+            try:
+                async with self._upload_guard():
+                    msg = await self._client.send_message(
+                        target,
+                        text,
+                        parse_mode="html",
+                        link_preview=link_preview,
+                    )
+                logger.info("Telegram notification sent to %d. Message ID: %d", target, msg.id)
+                return msg.id
+            except FloodError as exc:
+                # RPC 420 (mis. FLOOD_PREMIUM_WAIT_*) bukan FloodWaitError; bila
+                # tidak tertangani ia jatuh ke except Exception dari percobaan kedua.
+                flood_waits += 1
+                if flood_waits > 3:
+                    logger.error(
+                        "Gagal mengirim pesan Telegram: flood tidak berhenti "
+                        "setelah %d jeda (%s)", flood_waits - 1, exc,
+                    )
+                    return None
+                wait = _flood_wait_with_jitter(_flood_wait_seconds(exc))
+                logger.warning("Telegram flood %ds saat kirim pesan. Menunggu...", wait)
+                await asyncio.sleep(wait)
+            except Exception as exc:
+                logger.error("Failed to send Telegram message: %s", exc)
+                return None
+
+    async def _upload_with_resume(
+        self,
+        path: Path,
+        size: int,
+        mtime: float,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> "types.TypeInputFile":
+        """Upload file besar per-part via Save(Big)FilePartRequest, bisa di-resume.
+
+        Progres disimpan di sidecar JSON ``<path>.tgup.json`` agar flood atau
+        proses yang mati tidak mengulangi upload dari byte 0 (insiden 26 Sep:
+        6 restart × ~1 GB). FloodError sengaja TIDAK ditangkap di sini agar
+        loop retry di pemanggil melanjutkan dari ``parts_sent`` terakhir.
+        """
+        sidecar = Path(str(path) + ".tgup.json")
+        part_size = utils.get_appropriated_part_size(size) * 1024
+        total_parts = (size + part_size - 1) // part_size
+        is_big = size > 10 * 1024 * 1024
+
+        state: dict = {}
+        if sidecar.exists():
+            try:
+                state = json.loads(sidecar.read_text(encoding="utf-8"))
+            except Exception:
+                state = {}
+        if not (
+            state.get("path") == str(path)
+            and state.get("size") == size
+            and state.get("mtime") == mtime
+            and state.get("part_size") == part_size
+            and isinstance(state.get("file_id"), int)
+            and isinstance(state.get("parts_sent"), int)
+            and 0 <= state["parts_sent"] <= total_parts
+        ):
+            state = {
+                "path": str(path),
+                "size": size,
+                "mtime": mtime,
+                "file_id": helpers.generate_random_long(),
+                "part_size": part_size,
+                "total_parts": total_parts,
+                "parts_sent": 0,
+            }
+
+        file_id = state["file_id"]
+        parts_sent = state["parts_sent"]
+
+        def _persist() -> None:
+            sidecar.write_text(
+                json.dumps(state), encoding="utf-8"
             )
-            logger.info("Telegram notification sent to %d. Message ID: %d", target, msg.id)
-            return msg.id
-        except FloodError as exc:
-            # RPC 420 (mis. FLOOD_PREMIUM_WAIT_*) bukan FloodWaitError; bila
-            # tidak tertangani ia jatuh ke except Exception dan retry langsung.
-            wait = _flood_wait_seconds(exc)
-            logger.warning("Telegram flood %ds. Retrying...", wait)
-            await asyncio.sleep(wait)
-            msg = await self._client.send_message(
-                target,
-                text,
-                parse_mode="html",
-                link_preview=link_preview,
-            )
-            return msg.id
-        except Exception as exc:
-            logger.error("Failed to send Telegram message: %s", exc)
-            return None
+
+        if parts_sent >= total_parts:
+            logger.info("Upload %s sudah lengkap di sidecar; langsung kirim.", path.name)
+        else:
+            if parts_sent:
+                logger.info(
+                    "Resume upload %s dari part %d/%d (%.1f%%).",
+                    path.name, parts_sent, total_parts,
+                    parts_sent / total_parts * 100,
+                )
+            with open(path, "rb") as handle:
+                handle.seek(parts_sent * part_size)
+                for part_index in range(parts_sent, total_parts):
+                    part = handle.read(part_size)
+                    if is_big:
+                        request = functions.upload.SaveBigFilePartRequest(
+                            file_id, part_index, total_parts, part
+                        )
+                    else:
+                        request = functions.upload.SaveFilePartRequest(
+                            file_id, part_index, part
+                        )
+                    result = await self._client(request)
+                    if not result:
+                        raise RuntimeError(
+                            f"Failed to upload file part {part_index}."
+                        )
+                    parts_sent = part_index + 1
+                    state["parts_sent"] = parts_sent
+                    _persist()
+                    if progress_callback:
+                        sent = min(parts_sent * part_size, size)
+                        await helpers._maybe_await(progress_callback(sent, size))
+
+        # Pemanggil hanya memakai jalur ini untuk file >= 64 MB, jadi hasilnya
+        # selalu InputFileBig (>10 MB).
+        return types.InputFileBig(file_id, total_parts, path.name)
 
     async def send_video_file(
         self,
@@ -203,6 +314,7 @@ class TelegramSender:
             logger.error("send_video_file: file does not exist: %s", path)
             return None
 
+        # Build video streaming attributes so Telegram client renders it as a playable video
         # Build video streaming attributes so Telegram client renders it as a playable video
         attributes = [
             DocumentAttributeVideo(
@@ -233,8 +345,15 @@ class TelegramSender:
                 )
                 last_log_time = now
 
-        # Flood adalah kondisi sementara dengan jeda memanjang, jadi diberi jatah
-        # retry sendiri; error biasa tetap memakai 3 percobaan seperti sebelumnya.
+        # File besar di-upload lewat jalur resume (SaveBigFilePartRequest per
+        # part + sidecar JSON); file kecil tetap memakai send_file() biasa.
+        size = path.stat().st_size
+        mtime = path.stat().st_mtime
+        resumable = size >= _RESUME_MIN_SIZE_BYTES
+        sidecar = Path(str(path) + ".tgup.json")
+
+        # Flood adalah kondisi sementara, jadi diberi jatah retry sendiri
+        # (TELEGRAM_FLOOD_MAX_RETRIES); error biasa tetap 3 percobaan.
         max_attempts = max(3, Config.TELEGRAM_FLOOD_MAX_RETRIES + 1)
         flood_attempts = 0
         for attempt in range(max_attempts):
@@ -242,45 +361,52 @@ class TelegramSender:
                 # Lock menahan upload lain (mis. arsip TikTok) sampai file ini
                 # selesai, supaya file besar mendapat kuota request penuh.
                 async with self._upload_guard():
-                    msg = await self._client.send_file(
-                        target,
-                        file=str(path),
-                        caption=caption,
-                        parse_mode="html",
-                        attributes=attributes,
-                        thumb=thumb,
-                        supports_streaming=True,
-                        progress_callback=_default_progress,
-                    )
+                    if resumable:
+                        input_file = await self._upload_with_resume(
+                            path, size, mtime, _default_progress
+                        )
+                        msg = await self._client.send_file(
+                            target,
+                            file=input_file,
+                            caption=caption,
+                            parse_mode="html",
+                            attributes=attributes,
+                            thumb=thumb,
+                            supports_streaming=True,
+                        )
+                    else:
+                        msg = await self._client.send_file(
+                            target,
+                            file=str(path),
+                            caption=caption,
+                            parse_mode="html",
+                            attributes=attributes,
+                            thumb=thumb,
+                            supports_streaming=True,
+                            progress_callback=_default_progress,
+                        )
+                sidecar.unlink(missing_ok=True)
                 logger.info("Successfully uploaded video %s to %d (Message ID: %d)", path.name, target, msg.id)
                 return msg.id
 
             except FloodError as exc:
                 # Menangkap FloodWaitError (RPC 429) sekaligus varian RPC 420
-                # seperti FLOOD_PREMIUM_WAIT_*. Tanpa cabang ini, error 420
-                # jatuh ke `except Exception`: bot menunggu 5 detik lalu
-                # meng-upload ulang seluruh file dari 0%, sehingga upload besar
-                # (1 GB) flood berulang dan tidak pernah selesai.
+                # seperti FLOOD_PREMIUM_WAIT_*. Progres upload part-file besar
+                # sudah tersimpan di sidecar sehingga retry melanjutkan dari
+                # part terakhir, bukan mengulang upload dari 0%.
                 flood_attempts += 1
-                # Jatah habis → berhenti sebelum mencoba upload lagi. File tetap
-                # di disk dan kembali ke antrean pada siklus retry berikutnya.
+                # Jatah habis → berhenti sebelum mencoba upload lagi. File &
+                # sidecar tetap di disk; siklus retry berikutnya me-resume.
                 if flood_attempts >= Config.TELEGRAM_FLOOD_MAX_RETRIES:
                     size_mb = path.stat().st_size / (1024 * 1024)
                     raise TelegramFloodExhausted(
                         f"Telegram tetap flood setelah {flood_attempts} percobaan "
                         f"untuk {path.name} ({size_mb:.0f} MB)"
                     )
-                # Durasi dari Telegram adalah batas minimum. Rate limit naik
-                # saat request menumpuk, jadi jeda diperpanjang bertahap.
-                wait = max(
-                    _flood_wait_seconds(exc),
-                    _flood_backoff_seconds(
-                        Config.TELEGRAM_FLOOD_BACKOFF_BASE_SECONDS, flood_attempts
-                    ),
-                )
+                wait = _flood_wait_with_jitter(_flood_wait_seconds(exc))
                 logger.warning(
                     "Telegram flood %ds saat upload %s (flood %d/%d). "
-                    "Menunggu sesuai durasi Telegram + backoff…",
+                    "Menunggu sesuai durasi Telegram + jitter…",
                     wait, path.name, flood_attempts,
                     Config.TELEGRAM_FLOOD_MAX_RETRIES,
                 )
@@ -288,6 +414,7 @@ class TelegramSender:
             except MediaEmptyError:
                 # Media ditolak permanen (mis. story TikTok yang formatnya
                 # tidak didukung sebagai album) — mengulang tidak menolong.
+                sidecar.unlink(missing_ok=True)
                 logger.exception(
                     "Upload ditolak Telegram untuk %s (media tidak valid); "
                     "tidak diulang.", path.name,
@@ -477,30 +604,43 @@ class TelegramSender:
 
         video_parts = await split_video_if_needed(Path(video_path))
         total = len(video_parts)
-        for part in video_parts:
-            caption = build_tiktok_caption(
-                member_name=member_name,
-                unique_id=unique_id,
-                created_at=created_at,
-                title=title,
-                kind=kind,
-                is_story=is_story,
-                part_number=part.part_number,
-                total_parts=total,
-                file_size_bytes=part.size_bytes,
-                source_url=source_url,
-            )
-            message_id = await self.send_video_file(
-                file_path=part.file_path,
-                caption=caption,
-                duration=part.duration_seconds,
-                width=part.width,
-                height=part.height,
-                channel_id=target,
-            )
-            if message_id:
-                sent_ids.append(message_id)
-        cleanup_video_parts(video_parts)
+        try:
+            for part in video_parts:
+                caption = build_tiktok_caption(
+                    member_name=member_name,
+                    unique_id=unique_id,
+                    created_at=created_at,
+                    title=title,
+                    kind=kind,
+                    is_story=is_story,
+                    part_number=part.part_number,
+                    total_parts=total,
+                    file_size_bytes=part.size_bytes,
+                    source_url=source_url,
+                )
+                # TelegramFloodExhausted sengaja dibiarkan naik: kegagalan
+                # flood adalah TRANSien — melanjutkan part berikutnya hanya
+                # membuang bandwidth, dan mengembalikan id parsial akan
+                # menandai arsip sukses sebagian.
+                message_id = await self.send_video_file(
+                    file_path=part.file_path,
+                    caption=caption,
+                    duration=part.duration_seconds,
+                    width=part.width,
+                    height=part.height,
+                    channel_id=target,
+                )
+                if message_id:
+                    sent_ids.append(message_id)
+                else:
+                    logger.error(
+                        "Part %d/%d (%s) gagal terkirim ke Telegram; part ini "
+                        "di-skip, lanjut part berikutnya.",
+                        part.part_number, total, part.file_path.name,
+                    )
+        finally:
+            # Bersih-bersih part WAJIB jalan juga saat flood exhaustion.
+            cleanup_video_parts(video_parts)
         return sent_ids
 
     async def _send_media_album(
@@ -527,29 +667,49 @@ class TelegramSender:
         # story TikTok berupa 1 foto, 26 Sep 2026). Album 1 berkas = kirim
         # sebagai media biasa agar tidak pernah ditolak.
         if len(paths) == 1:
-            try:
-                async with self._upload_guard():
-                    msg = await self._client.send_file(
-                        target,
-                        paths[0],
-                        caption=caption,
-                        parse_mode="html",
+            flood_attempts = 0
+            for attempt in range(3):
+                try:
+                    async with self._upload_guard():
+                        msg = await self._client.send_file(
+                            target,
+                            paths[0],
+                            caption=caption,
+                            parse_mode="html",
+                        )
+                    logger.info(
+                        "Media tunggal TikTok terkirim ke %d (Message ID: %d): %s",
+                        target, msg.id, Path(paths[0]).name,
                     )
-                logger.info(
-                    "Media tunggal TikTok terkirim ke %d (Message ID: %d): %s",
-                    target, msg.id, Path(paths[0]).name,
-                )
-                return [msg.id]
-            except MediaEmptyError:
-                logger.exception(
-                    "Media tunggal ditolak Telegram (%s); tidak diulang.",
-                    Path(paths[0]).name,
-                )
-                return []
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("Gagal mengirim media TikTok: %s", exc)
-                return []
+                    return [msg.id]
+                except FloodError as exc:
+                    # Flood pada media tunggal juga harus dihormati; habis
+                    # jatah → raise agar pemanggil memberi cooldown, bukan
+                    # diam-diam kehilangan arsip (return []).
+                    flood_attempts += 1
+                    if flood_attempts >= Config.TELEGRAM_FLOOD_MAX_RETRIES:
+                        raise TelegramFloodExhausted(
+                            f"Telegram tetap flood setelah {flood_attempts} "
+                            f"percobaan media tunggal {Path(paths[0]).name}"
+                        )
+                    wait = _flood_wait_with_jitter(_flood_wait_seconds(exc))
+                    logger.warning(
+                        "Telegram flood %ds saat mengirim media tunggal. "
+                        "Menunggu...", wait,
+                    )
+                    await asyncio.sleep(wait)
+                except MediaEmptyError:
+                    logger.exception(
+                        "Media tunggal ditolak Telegram (%s); tidak diulang.",
+                        Path(paths[0]).name,
+                    )
+                    return []
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Gagal mengirim media TikTok: %s", exc)
+                    return []
+            return []
 
+        flood_attempts = 0
         for attempt in range(3):
             try:
                 async with self._upload_guard():
@@ -568,9 +728,16 @@ class TelegramSender:
                 return ids
             except FloodError as exc:
                 # Sama seperti send_video_file: variant RPC 420 (mis.
-                # FLOOD_PREMIUM_WAIT_*) harus dihormati durasinya, bukan
-                # langsung diulang 5 detik kemudian.
-                wait = _flood_wait_seconds(exc)
+                # FLOOD_PREMIUM_WAIT_*) harus dihormati durasinya. Kehabisan
+                # jatah flood melempar TelegramFloodExhausted (transien),
+                # bukan [] yang akan dianggap arsip permanen gagal.
+                flood_attempts += 1
+                if flood_attempts >= Config.TELEGRAM_FLOOD_MAX_RETRIES:
+                    raise TelegramFloodExhausted(
+                        f"Telegram tetap flood setelah {flood_attempts} "
+                        f"percobaan album ({len(paths)} berkas)"
+                    )
+                wait = _flood_wait_with_jitter(_flood_wait_seconds(exc))
                 logger.warning(
                     "Telegram flood %ds saat mengirim album. Menunggu...", wait
                 )

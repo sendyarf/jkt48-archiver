@@ -118,6 +118,8 @@ CREATE TABLE IF NOT EXISTS tiktok_posts (
     visible             INTEGER NOT NULL DEFAULT 1,
     status              TEXT NOT NULL DEFAULT 'detected',
     error_message       TEXT,
+    download_attempts   INTEGER DEFAULT 0,
+    last_attempt_at     TEXT DEFAULT '',
     added_at            TEXT DEFAULT (datetime('now'))
 );
 """
@@ -129,7 +131,10 @@ CREATE TABLE IF NOT EXISTS tiktok_posts (
 # 'uploading_youtube'  → slide show/video diunggah ke YouTube
 # 'done'               → arsip selesai (Telegram + YouTube)
 # 'pending_upload'     → media ada di disk, menunggu di-retry
-# 'failed'             → gagal permanen (mis. media TikTok sudah dihapus)
+# 'failed'             → gagal unduh. Bila download_attempts masih di bawah
+#                        TIKTOK_MAX_DOWNLOAD_ATTEMPTS baris ini masih di-retry
+#                        (lihat get_tiktok_retryable_failed); selebihnya
+#                        dianggap gagal permanen (mis. media sudah dihapus).
 
 # Possible values for `status` column:
 # 'detected'           → live stream detected, not yet downloading
@@ -305,6 +310,23 @@ def init_db() -> None:
         if "avatar_url" not in ta_cols:
             conn.execute("ALTER TABLE tiktok_accounts ADD COLUMN avatar_url TEXT")
             logger.info("Schema migration: added avatar_url column to tiktok_accounts")
+
+        # Kolom pelacak percobaan unduh tiktok_posts: membedakan kegagalan
+        # SEMENTARA (blokir IP sesaat → bisa di-retry) dari PERMANEN (percobaan
+        # sudah mencapai TIKTOK_MAX_DOWNLOAD_ATTEMPTS). Tanpa ini, satu blokir
+        # sesaat menandai baris 'failed' selamanya dan backlog mengulang video
+        # yang memang tidak bisa diunduh tanpa henti.
+        tp_cols = [r[1] for r in conn.execute("PRAGMA table_info(tiktok_posts)")]
+        if "download_attempts" not in tp_cols:
+            conn.execute(
+                "ALTER TABLE tiktok_posts ADD COLUMN download_attempts INTEGER DEFAULT 0"
+            )
+            logger.info("Schema migration: added download_attempts column to tiktok_posts")
+        if "last_attempt_at" not in tp_cols:
+            conn.execute(
+                "ALTER TABLE tiktok_posts ADD COLUMN last_attempt_at TEXT DEFAULT ''"
+            )
+            logger.info("Schema migration: added last_attempt_at column to tiktok_posts")
 
     logger.info("Database initialised at %s", Config.DB_PATH)
 
@@ -1048,13 +1070,25 @@ def get_merge_segments(group_id: int) -> list[dict]:
 
 
 def update_sessions_by_merge_group(group_id: int, status: str, **kwargs) -> None:
-    """Update status and extra columns for all sessions belonging to a merge group."""
+    """Update status and extra columns for all sessions belonging to a merge group.
+
+    Semua pembaruan dilakukan dalam SATU koneksi/transaksi: implementasi lama
+    memanggil `update_status` per baris (masing-masing koneksi+commit sendiri),
+    sehingga crash di tengah loop meninggalkan segmen satu grup dengan status
+    yang saling bertentangan.
+    """
+    extra = {k: v for k, v in kwargs.items() if k in _SESSION_FIELD_COLS}
+    set_clause = ", ".join(f"{col} = ?" for col in extra)
+    sql = (
+        f"UPDATE live_sessions SET {set_clause + ', ' if set_clause else ''}"
+        "status = ? WHERE live_id = ?"
+    )
     with _get_conn() as conn:
         rows = conn.execute(
             "SELECT live_id FROM live_sessions WHERE merge_group_id = ?", (group_id,)
         ).fetchall()
-    for r in rows:
-        update_status(r["live_id"], status, **kwargs)
+        for r in rows:
+            conn.execute(sql, list(extra.values()) + [status, r["live_id"]])
 
 
 def close_merge_group(group_id: int, merged_file_path: str, merged_live_id: str) -> None:
@@ -1591,6 +1625,7 @@ _TIKTOK_POST_WRITABLE = (
     "image_count", "cover_url", "source_url", "media_path", "media_size_bytes",
     "images_json", "local_images_json", "telegram_message_ids",
     "youtube_video_id", "visible", "status", "error_message",
+    "download_attempts", "last_attempt_at",
 )
 
 
@@ -1813,6 +1848,70 @@ def get_tiktok_pending_posts() -> list[dict]:
                WHERE status IN ('pending_upload', 'detected', 'downloading')
                  AND media_path IS NOT NULL AND media_path != ''
                ORDER BY added_at ASC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def increment_tiktok_download_attempt(post_id: str) -> int:
+    """
+    Catat SATU percobaan unduh untuk sebuah postingan dan kembalikan totalnya.
+
+    `download_attempts` dinaikkan dan `last_attempt_at` diisi waktu UTC kini
+    (format SQLite `datetime('now')`, konsisten dengan kolom waktu lain).
+    Dipakai untuk menerapkan batas TIKTOK_MAX_DOWNLOAD_ATTEMPTS: baris 'failed'
+    dengan nilai percobaan di bawah batas masih layak di-retry (blokir IP
+    sesaat), baris yang melampauinya dianggap gagal permanen.
+
+    Returns:
+        Total percobaan SETELAH kenaikan ini (0 bila baris tidak ditemukan).
+    """
+    with _get_conn() as conn:
+        conn.execute(
+            """UPDATE tiktok_posts
+               SET download_attempts = COALESCE(download_attempts, 0) + 1,
+                   last_attempt_at = datetime('now')
+               WHERE id = ?""",
+            (str(post_id),),
+        )
+        row = conn.execute(
+            "SELECT download_attempts FROM tiktok_posts WHERE id = ?",
+            (str(post_id),),
+        ).fetchone()
+    return int(row["download_attempts"]) if row else 0
+
+
+def get_tiktok_retryable_failed(
+    limit: int = 10,
+    max_attempts: int = 6,
+    min_age_seconds: int = 0,
+) -> list[dict]:
+    """
+    Postingan 'failed' yang MASIH layak dicoba ulang: jumlah percobaan di bawah
+    `max_attempts` dan percobaan terakhirnya sudah lebih tua dari
+    `min_age_seconds` (jeda sopan supaya blokir IP sesaat tidak langsung dipukul
+    lagi). Perbandingan waktu dilakukan DI DALAM SQL (UTC vs UTC) — konsisten
+    dengan catatan di `get_merge_group_timing`.
+
+    `max_attempts`/`min_age_seconds` dikirim pemanggil (dari Config) supaya
+    modul ini tetap bebas membaca konfigurasi langsung.
+    """
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM tiktok_posts
+               WHERE status = 'failed'
+                 AND COALESCE(download_attempts, 0) < ?
+                 AND (
+                       last_attempt_at IS NULL
+                    OR last_attempt_at = ''
+                    OR julianday(datetime(last_attempt_at, ?)) <= julianday('now')
+                 )
+               ORDER BY added_at ASC
+               LIMIT ?""",
+            (
+                max(0, int(max_attempts)),
+                f"+{max(0, int(min_age_seconds))} seconds",
+                max(1, int(limit)),
+            ),
         ).fetchall()
     return [dict(r) for r in rows]
 

@@ -11,10 +11,12 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 
-from bot import database
+from bot import database, tiktok_monitor
 from bot.config import Config
 from bot.tiktok_client import BaseProvider, ProviderBlocked, RateLimiter, TikTokItem
+from bot.tiktok_media import MediaError, MediaPermanentError
 from bot.tiktok_monitor import TikTokMonitor, item_from_db_row
 
 
@@ -115,6 +117,8 @@ class TikTokMonitorTestCase(unittest.TestCase):
             "TIKTOK_SLIDESHOW_SECONDS_PER_PHOTO": Config.TIKTOK_SLIDESHOW_SECONDS_PER_PHOTO,
             "TIKTOK_ACCOUNTS_PER_CHECK": Config.TIKTOK_ACCOUNTS_PER_CHECK,
             "TIKTOK_YT_BACKLOG_PER_CHECK": Config.TIKTOK_YT_BACKLOG_PER_CHECK,
+            "TIKTOK_MAX_DOWNLOAD_ATTEMPTS": Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS,
+            "TIKTOK_STORY_MAX_AGE_HOURS": Config.TIKTOK_STORY_MAX_AGE_HOURS,
         }
         Config.DB_PATH = str(base / "monitor.db")
         Config.DOWNLOAD_DIR = str(base / "downloads")
@@ -129,6 +133,8 @@ class TikTokMonitorTestCase(unittest.TestCase):
         # agar perilaku lama tidak berubah; tes batch menyetelnya sendiri.
         Config.TIKTOK_ACCOUNTS_PER_CHECK = 1
         Config.TIKTOK_YT_BACKLOG_PER_CHECK = 2
+        Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS = 6
+        Config.TIKTOK_STORY_MAX_AGE_HOURS = 24
         (base / "fixtures").mkdir(parents=True, exist_ok=True)
         database.init_db()
 
@@ -578,6 +584,200 @@ class TestAccountsWithoutMember(TikTokMonitorTestCase):
         done = asyncio.run(TikTokMonitor(telegram=FakeTelegram()).retry_pending())
         self.assertEqual(done, 1)
         self.assertEqual(database.get_tiktok_post("u2")["status"], "done")
+
+
+class _FakePreparedMedia:
+    """PreparedMedia minimal dari file lokal (tanpa unduh jaringan)."""
+
+    def __init__(self, path: Path) -> None:
+        self.video_path = path
+        self.images: list[Path] = []
+        self.image_parts: list[list[Path]] = []
+        self.duration_seconds = 1.0
+        self.size_bytes = path.stat().st_size
+        self.archive_video_path = path
+
+
+class TestDownloadAttemptsFlow(TikTokMonitorTestCase):
+    """Penghitung percobaan unduh: retry sementara vs gagal permanen."""
+
+    def _insert_failed_ready_post(self, post_id: str, **extra) -> None:
+        database.insert_tiktok_post({
+            "id": post_id, "unique_id": "indahjkt48", "kind": "video",
+            "is_story": extra.pop("is_story", False),
+            "title": f"video {post_id}",
+            "created_at": extra.pop("created_at", "2026-09-20T00:00:00+00:00"),
+            "source_url": f"https://tiktok.invalid/{post_id}",
+        })
+        if extra:
+            database.update_tiktok_post(post_id, **extra)
+
+    def _run_process(self, post_id: str, exc: Optional[BaseException]) -> None:
+        """Jalankan _process_item dengan prepare_post_media yang di-stub."""
+        original = tiktok_monitor.prepare_post_media
+
+        async def fake_prepare(item, build_slideshow_video=True):
+            if exc is not None:
+                raise exc
+            return _FakePreparedMedia(self.base / f"{post_id}.mp4")
+
+        tiktok_monitor.prepare_post_media = fake_prepare  # type: ignore[assignment]
+        try:
+            _make_video(self.base / f"{post_id}.mp4", seconds=1)
+            item = item_from_db_row(database.get_tiktok_post(post_id))
+            asyncio.run(
+                TikTokMonitor(telegram=FakeTelegram())._process_item(
+                    item, {"unique_id": "indahjkt48", "display_name": ""}
+                )
+            )
+        finally:
+            tiktok_monitor.prepare_post_media = original  # type: ignore[assignment]
+
+    def test_transient_media_error_counts_and_stays_retryable(self):
+        self._insert_failed_ready_post("t1")
+        self._run_process("t1", MediaError("sementara"))
+        row = database.get_tiktok_post("t1")
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["download_attempts"], 1)
+        self.assertTrue(row["last_attempt_at"])
+        # Masih di bawah batas → diambil kembali oleh retry (umur dipalsukan tua).
+        database.update_tiktok_post("t1", last_attempt_at="2000-01-01 00:00:00")
+        rows = database.get_tiktok_retryable_failed(
+            limit=5, max_attempts=Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS, min_age_seconds=900
+        )
+        self.assertEqual([r["id"] for r in rows], ["t1"])
+
+    def test_permanent_media_error_is_terminal_immediately(self):
+        self._insert_failed_ready_post("p1")
+        self._run_process("p1", MediaPermanentError("IP address is blocked"))
+        row = database.get_tiktok_post("p1")
+        self.assertEqual(row["status"], "failed")
+        # Kegagalan permanen langsung menghabiskan kuota percobaan.
+        self.assertEqual(row["download_attempts"], Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS)
+        database.update_tiktok_post("p1", last_attempt_at="2000-01-01 00:00:00")
+        self.assertEqual(
+            database.get_tiktok_retryable_failed(limit=5, max_attempts=6, min_age_seconds=0),
+            [],
+        )
+
+    def test_expired_story_failure_is_permanent_immediately(self):
+        self._insert_failed_ready_post(
+            "s1", is_story=True, created_at="2020-01-01T00:00:00+00:00"
+        )
+        self._run_process("s1", MediaError("sementara"))
+        row = database.get_tiktok_post("s1")
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["download_attempts"], Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS)
+
+    def test_unexpected_error_counts_eventually_dead_letters(self):
+        self._insert_failed_ready_post("u1")
+        Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS = 2
+        for _ in range(2):
+            self._run_process("u1", RuntimeError("boom"))
+        row = database.get_tiktok_post("u1")
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["download_attempts"], 2)
+        database.update_tiktok_post("u1", last_attempt_at="2000-01-01 00:00:00")
+        self.assertEqual(
+            database.get_tiktok_retryable_failed(limit=5, max_attempts=2, min_age_seconds=0),
+            [],
+        )
+
+    def test_retry_pending_picks_up_retryable_failed(self):
+        self._insert_failed_ready_post("f1", status="failed", download_attempts=1)
+        database.update_tiktok_post("f1", last_attempt_at="2000-01-01 00:00:00")
+        original = tiktok_monitor.prepare_post_media
+
+        async def ok_prepare(item, build_slideshow_video=True):
+            return _FakePreparedMedia(self.base / "f1.mp4")
+
+        _make_video(self.base / "f1.mp4", seconds=1)
+        tiktok_monitor.prepare_post_media = ok_prepare  # type: ignore[assignment]
+        try:
+            done = asyncio.run(TikTokMonitor(telegram=FakeTelegram()).retry_pending())
+        finally:
+            tiktok_monitor.prepare_post_media = original  # type: ignore[assignment]
+        self.assertEqual(done, 1)
+        self.assertEqual(database.get_tiktok_post("f1")["status"], "done")
+
+
+class TestBacklogDownloadAttempts(TestYoutubeBacklog):
+    """Aturan baru backlog YouTube: percobaan habis/error permanen → dilewati."""
+
+    def test_backlog_skips_exhausted_attempts_permanently(self):
+        Config.TIKTOK_YT_UPLOAD_ENABLED = True
+        self._insert_telegram_only_post("x1")
+        database.update_tiktok_post("x1", media_path="")  # media hilang → unduh ulang
+        database.update_tiktok_post("x1", download_attempts=Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS)
+        pool = FakeYouTubePool()
+        monitor = TikTokMonitor(telegram=FakeTelegram(), youtube_pool=pool)
+
+        with self.assertLogs("bot.tiktok_monitor", level="INFO") as captured:
+            uploaded = asyncio.run(monitor.retry_youtube_backlog())
+        self.assertEqual(uploaded, 0)
+        self.assertEqual(pool.uploads, [])
+        self.assertTrue(any("dilewati permanen" in m for m in captured.output))
+        row = database.get_tiktok_post("x1")
+        self.assertEqual(row["status"], "done")  # status backlog tidak diubah
+        self.assertFalse(row["youtube_video_id"])
+
+    def test_backlog_media_error_counts_attempt_and_continues(self):
+        Config.TIKTOK_YT_UPLOAD_ENABLED = True
+        self._insert_telegram_only_post("x1")
+        database.update_tiktok_post("x1", media_path="")
+        self._insert_telegram_only_post("x2")
+        original = tiktok_monitor.prepare_post_media
+        calls: list[str] = []
+
+        async def flaky(item, build_slideshow_video=True):
+            calls.append(item.id)
+            if item.id == "x1":
+                raise MediaError("sementara")
+            return _FakePreparedMedia(self.base / "x2.mp4")
+
+        tiktok_monitor.prepare_post_media = flaky  # type: ignore[assignment]
+        try:
+            monitor = TikTokMonitor(telegram=FakeTelegram(), youtube_pool=FakeYouTubePool())
+            uploaded = asyncio.run(monitor.retry_youtube_backlog())
+        finally:
+            tiktok_monitor.prepare_post_media = original  # type: ignore[assignment]
+
+        # Kegagalan media TIDAK menghentikan antrean (beda dengan gagal upload).
+        self.assertEqual(calls, ["x1"])
+        self.assertEqual(uploaded, 1)
+        row = database.get_tiktok_post("x1")
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["download_attempts"], 1)
+
+
+class TestEnrichCapabilityScoping(TikTokMonitorTestCase):
+    """Blokir detail-fetch hanya menandai kapabilitas 'posts', bukan semua."""
+
+    class BlockedDetailProvider(BaseProvider):
+        name = "embed-uji"
+
+        def __init__(self):
+            super().__init__(RateLimiter(0))
+
+        async def fetch_user_posts(self, account, limit):
+            return [TikTokItem(id="d1", unique_id="indahjkt48", kind="photo")]
+
+        async def fetch_item_detail(self, page_url, unique_id):
+            raise ProviderBlocked("HTTP 403")
+
+    def test_blocked_detail_marks_only_posts_capability(self):
+        database.upsert_tiktok_account("indahjkt48")
+        provider = self.BlockedDetailProvider()
+        monitor = TikTokMonitor(telegram=FakeTelegram())
+        monitor._providers = [provider]  # type: ignore[assignment]
+        item = TikTokItem(id="d1", unique_id="indahjkt48", kind="photo")
+
+        asyncio.run(monitor._enrich_new_items([item], {"unique_id": "indahjkt48"}))
+
+        self.assertFalse(provider.is_healthy("posts"))
+        # Kapabilitas lain TIDAK ikut ditandai tidak sehat.
+        self.assertTrue(provider.is_healthy("stories"))
+        self.assertTrue(provider.is_healthy())
 
 
 if __name__ == "__main__":

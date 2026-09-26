@@ -10,15 +10,19 @@ import json
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from bot import tiktok_client
+from bot.config import Config
 from bot.tiktok_client import (
     BaseProvider,
     EmbedProvider,
     FixtureProvider,
+    ProviderBlocked,
     ProviderError,
     RateLimiter,
+    ScrapeProvider,
     TikTokItem,
     TikwmProvider,
     YtDlpProvider,
@@ -33,6 +37,7 @@ from bot.tiktok_client import (
     normalize_ytdlp_entry,
     parse_embed_post,
     parse_embed_profile,
+    parse_scrape_profile,
     ytdlp_command,
 )
 
@@ -179,7 +184,8 @@ class TestRateLimiter(unittest.TestCase):
 
         started = time.monotonic()
         asyncio.run(run_two())
-        self.assertGreaterEqual(time.monotonic() - started, 0.18)
+        # Jitter ±25%: jeda minimum = 0.75 × interval.
+        self.assertGreaterEqual(time.monotonic() - started, 0.14)
 
     def test_zero_interval_is_noop(self):
         limiter = RateLimiter(0)
@@ -194,21 +200,24 @@ class TestRateLimiter(unittest.TestCase):
 
 
 class TestProviderSelection(unittest.TestCase):
-    def test_auto_tries_tikwm_then_embed_then_ytdlp(self):
-        """Urutan auto: tikwm (lengkap+story) → embed (andal) → ytdlp (cadangan)."""
+    def test_auto_tries_tikwm_then_embed_then_scrape_then_ytdlp(self):
+        """Urutan auto: tikwm (lengkap+story) → embed → scrape → ytdlp."""
         self.assertEqual(
-            [p.name for p in build_providers("auto")], ["tikwm", "embed", "ytdlp"]
+            [p.name for p in build_providers("auto")],
+            ["tikwm", "embed", "scrape", "ytdlp"],
         )
 
     def test_explicit_modes(self):
         self.assertEqual([p.name for p in build_providers("tikwm")], ["tikwm"])
         self.assertEqual([p.name for p in build_providers("embed")], ["embed"])
+        self.assertEqual([p.name for p in build_providers("scrape")], ["scrape"])
         self.assertEqual([p.name for p in build_providers("ytdlp")], ["ytdlp"])
         self.assertEqual([p.name for p in build_providers("fixture")], ["fixture"])
 
     def test_unknown_mode_falls_back_to_auto(self):
         self.assertEqual(
-            [p.name for p in build_providers("ngawur")], ["tikwm", "embed", "ytdlp"]
+            [p.name for p in build_providers("ngawur")],
+            ["tikwm", "embed", "scrape", "ytdlp"],
         )
 
 
@@ -347,7 +356,7 @@ class TestProviderContract(unittest.TestCase):
     """
 
     def test_providers_override_base_methods(self):
-        for cls in (TikwmProvider, YtDlpProvider, FixtureProvider):
+        for cls in (TikwmProvider, YtDlpProvider, ScrapeProvider, FixtureProvider):
             self.assertIsNot(
                 cls.fetch_user_posts, BaseProvider.fetch_user_posts,
                 f"{cls.name}: fetch_user_posts masih stub base (implementasi ketimpa)",
@@ -714,6 +723,281 @@ class TestHttpRetry(unittest.TestCase):
             tiktok_client.http_get_text = original  # type: ignore[assignment]
         self.assertEqual(status, 403)
         self.assertEqual(len(calls), 1, "403 (blokir) tidak perlu di-retry")
+
+
+class TestJitter(unittest.TestCase):
+    """Jitter acak supaya 51 akun tidak membuat pola metronomik 1.1s."""
+
+    def test_limiter_wait_within_jitter_range(self):
+        limiter = RateLimiter(0.4)
+
+        async def run_two():
+            await limiter.wait()
+            await limiter.wait()
+
+        started = time.monotonic()
+        asyncio.run(run_two())
+        elapsed = time.monotonic() - started
+        # Jeda = 0.4 × uniform(0.75, 1.25) → [0.30, 0.50] (± toleransi timer).
+        self.assertGreaterEqual(elapsed, 0.28)
+        self.assertLess(elapsed, 0.60)
+
+    def test_embed_retry_backoff_is_jittered(self):
+        recorded: list[float] = []
+        real_sleep = asyncio.sleep
+        real_uniform = tiktok_client.random.uniform
+
+        async def fake_sleep(seconds):
+            recorded.append(seconds)
+            await real_sleep(0)
+
+        def fake_uniform(a, b):
+            self.assertEqual((a, b), (0.8, 1.4))
+            return 1.0   # deterministik: backoff = 1.5 × attempt
+
+        async def fake_get(url, *, headers=None, timeout=30.0):
+            return 503, ""
+
+        original_get = tiktok_client.http_get_text
+        tiktok_client.http_get_text = fake_get  # type: ignore[assignment]
+        try:
+            with unittest.mock.patch("asyncio.sleep", fake_sleep), \
+                 unittest.mock.patch.object(
+                     tiktok_client.random, "uniform", fake_uniform
+                 ):
+                asyncio.run(tiktok_client.http_get_text_retry("https://x", attempts=3))
+        finally:
+            tiktok_client.http_get_text = original_get  # type: ignore[assignment]
+        self.assertEqual(recorded, [1.5, 3.0])
+
+        real_uniform(0.8, 1.4)  # jitter asli tetap berfungsi
+
+
+class TestTikwmEscalation(unittest.TestCase):
+    """Rate-limit per detik tikwm: jeda mengganda (5→10→20→…) sampai batas maks."""
+
+    def _provider(self):
+        provider = TikwmProvider(RateLimiter(0))
+        provider._rate_cooldown = 5
+        provider._rate_cooldown_max = 30
+        return provider
+
+    def test_cooldown_doubles_on_consecutive_hits(self):
+        provider = self._provider()
+        now = time.monotonic()
+        durations = []
+        for _ in range(4):
+            provider._note_limit("Free Api Limit: 1 request/second.")
+            durations.append(round(provider._blocked_until - time.monotonic()))
+            provider._blocked_until = now - 1   # simulasi jeda sudah lewat
+        self.assertEqual(durations, [5, 10, 20, 30], "5→10→20, lalu mentok di maks")
+
+    def test_escalation_resets_after_success(self):
+        provider = self._provider()
+        provider._note_limit("Free Api Limit: 1 request/second.")
+        provider._note_limit("Free Api Limit: 1 request/second.")
+        self.assertGreater(provider._rate_escalations, 0)
+        provider._note_success()
+        self.assertEqual(provider._rate_escalations, 0)
+        provider._blocked_until = time.monotonic() - 1
+        provider._note_limit("Free Api Limit: 1 request/second.")
+        remaining = provider._blocked_until - time.monotonic()
+        self.assertLessEqual(remaining, 5.5, "setelah reset kembali ke 5s")
+
+    def test_daily_quota_keeps_long_cooldown(self):
+        provider = self._provider()
+        provider._note_limit("You have reached the rate limit 10000 request/ 1 day")
+        remaining = provider._blocked_until - time.monotonic()
+        self.assertGreaterEqual(remaining, provider._quota_cooldown - 1)
+
+    def test_success_called_after_call(self):
+        """`_call` sukses (code=0) harus mereset eskalasi."""
+        provider = self._provider()
+        provider._rate_escalations = 3
+
+        async def fake_request(method, url, **kwargs):
+            return 200, json.dumps({"code": 0, "data": {"videos": []}})
+
+        original = tiktok_client.http_request
+        tiktok_client.http_request = fake_request  # type: ignore[assignment]
+        try:
+            asyncio.run(provider._call("/user/posts", {"unique_id": "u"}))
+        finally:
+            tiktok_client.http_request = original  # type: ignore[assignment]
+        self.assertEqual(provider._rate_escalations, 0)
+
+
+SCRAPE_PROFILE_HTML = """
+<!DOCTYPE html><html><body>
+<a href="https://www.tiktok.com/@indahjkt48/video/7685965837307596052">v1</a>
+<a href="https://www.tiktok.com/@indahjkt48/video/7685965837307596052">duplikat</a>
+<div><p>foto /photo/7679000000000000001 slide</p></div>
+<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">
+{"__DEFAULT_SCOPE__": {"webapp.user-detail": {
+  "itemList": ["7685965837307596052", "7579000000000000099"],
+  "itemStruct": {
+    "7685965837307596052": {"id": "7685965837307596052",
+                             "desc": "twinnie",
+                             "createTime": 1789576980,
+                             "video": {"duration": 12,
+                                       "cover": "https://p16.invalid/c.jpg"}},
+    "7579000000000000099": {"id": "7579000000000000099", "desc": "lama",
+                             "imagePost": {"images": []}}
+  }
+}}}
+</script>
+</body></html>
+"""
+
+
+class TestScrapeProvider(unittest.TestCase):
+    def test_parses_ids_from_links_and_rehydration(self):
+        items = parse_scrape_profile(SCRAPE_PROFILE_HTML, "indahjkt48")
+        ids = [i.id for i in items]
+        # Duplikat tautan dibuang; ID dari itemList ikut; /photo/ tak cocok regex.
+        self.assertEqual(ids, ["7685965837307596052", "7579000000000000099"])
+        first = items[0]
+        self.assertEqual(first.title, "twinnie")
+        self.assertTrue(first.created_at.startswith("2026-09-16T"))
+        self.assertEqual(first.duration_seconds, 12)
+        self.assertEqual(first.kind, "video")
+
+    def test_snowflake_create_time_fallback(self):
+        html = '<a href="https://www.tiktok.com/@u/video/7685965837307596052">x</a>'
+        item = parse_scrape_profile(html, "u")[0]
+        expected = epoch_to_utc(7685965837307596052 >> 32)
+        self.assertEqual(item.created_at, expected)
+        self.assertEqual(item.kind, "video")
+
+    def test_photo_item_marked_when_imagepost(self):
+        items = parse_scrape_profile(SCRAPE_PROFILE_HTML, "indahjkt48")
+        photo = next(i for i in items if i.id == "7579000000000000099")
+        self.assertEqual(photo.kind, "photo")
+
+    def test_blocked_or_stub_page_returns_empty(self):
+        self.assertEqual(parse_scrape_profile("<html><body>Just a moment</body></html>", "u"), [])
+        self.assertEqual(parse_scrape_profile("", "u"), [])
+
+    def test_fetch_raises_blocked_on_stub_page(self):
+        provider = ScrapeProvider(RateLimiter(0))
+
+        async def fake_get(url, *, attempts=3, timeout=30.0):
+            return 200, "<html><body>Just a moment</body></html>"
+
+        original = tiktok_client.http_get_text_retry
+        tiktok_client.http_get_text_retry = fake_get  # type: ignore[assignment]
+        try:
+            with self.assertRaises(ProviderBlocked):
+                asyncio.run(provider.fetch_user_posts({"unique_id": "u"}, 5))
+        finally:
+            tiktok_client.http_get_text_retry = original  # type: ignore[assignment]
+
+    def test_stories_use_base_stub(self):
+        """Story tidak ada di halaman profil — stub base (['']) seperti embed/ytdlp."""
+        provider = ScrapeProvider(RateLimiter(0))
+        self.assertIs(provider.fetch_user_stories.__func__, BaseProvider.fetch_user_stories)
+        self.assertEqual(asyncio.run(provider.fetch_user_stories({"unique_id": "u"})), [])
+
+
+class TestYtDlpOptions(unittest.TestCase):
+    """Argumen yt-dlp dari konfigurasi (cookies/proxy/extra)."""
+
+    def _saved(self):
+        return (
+            Config.TIKTOK_YTDLP_COOKIES_FILE,
+            Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER,
+            Config.TIKTOK_YTDLP_PROXY,
+            Config.TIKTOK_YTDLP_EXTRA_ARGS,
+        )
+
+    def _restore(self, saved):
+        (Config.TIKTOK_YTDLP_COOKIES_FILE,
+         Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER,
+         Config.TIKTOK_YTDLP_PROXY,
+         Config.TIKTOK_YTDLP_EXTRA_ARGS) = saved
+
+    def test_empty_config_adds_nothing(self):
+        saved = self._saved()
+        try:
+            Config.TIKTOK_YTDLP_COOKIES_FILE = ""
+            Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER = ""
+            Config.TIKTOK_YTDLP_PROXY = ""
+            Config.TIKTOK_YTDLP_EXTRA_ARGS = ""
+            self.assertEqual(YtDlpProvider._config_args(), [])
+        finally:
+            self._restore(saved)
+
+    def test_assembles_all_options(self):
+        saved = self._saved()
+        try:
+            Config.TIKTOK_YTDLP_COOKIES_FILE = "/tmp/ck.txt"
+            Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER = "chrome"
+            Config.TIKTOK_YTDLP_PROXY = "http://user:pass@host:8080"
+            Config.TIKTOK_YTDLP_EXTRA_ARGS = '--impersonate chrome --sleep-requests 2'
+            args = YtDlpProvider._config_args()
+            self.assertEqual(
+                args,
+                ["--cookies", "/tmp/ck.txt",
+                 "--cookies-from-browser", "chrome",
+                 "--proxy", "http://user:pass@host:8080",
+                 "--impersonate", "chrome", "--sleep-requests", "2"],
+            )
+        finally:
+            self._restore(saved)
+
+    def test_listing_command_appends_config_before_url(self):
+        saved = self._saved()
+        captured: list[list[str]] = []
+        provider = YtDlpProvider(RateLimiter(0))
+
+        async def fake_run(args, timeout):
+            captured.append(args)
+            return 0, json.dumps({"entries": []}), ""
+
+        provider._run = fake_run  # type: ignore[assignment]
+        try:
+            Config.TIKTOK_YTDLP_COOKIES_FILE = ""
+            Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER = ""
+            Config.TIKTOK_YTDLP_PROXY = "http://p:1"
+            Config.TIKTOK_YTDLP_EXTRA_ARGS = "--verbose"
+            asyncio.run(provider.fetch_user_posts({"unique_id": "indahjkt48"}, 5))
+        finally:
+            self._restore(saved)
+        args = captured[0]
+        self.assertLess(args.index("--proxy"), args.index(args[-1]))
+        self.assertIn("https://www.tiktok.com/@indahjkt48", args[-1])
+        self.assertIn("--verbose", args)
+
+    def test_ip_block_classified_as_provider_blocked(self):
+        provider = YtDlpProvider(RateLimiter(0))
+
+        async def fake_run(args, timeout):
+            return 1, "", "ERROR: Your IP address is blocked from accessing this post"
+
+        provider._run = fake_run  # type: ignore[assignment]
+        with self.assertRaises(ProviderBlocked):
+            asyncio.run(provider.fetch_user_posts({"unique_id": "indahjkt48"}, 3))
+
+    def test_ip_block_in_stdout_also_blocked(self):
+        provider = YtDlpProvider(RateLimiter(0))
+
+        async def fake_run(args, timeout):
+            return 1, "blocked from accessing this post", ""
+
+        provider._run = fake_run  # type: ignore[assignment]
+        with self.assertRaises(ProviderBlocked):
+            asyncio.run(provider.fetch_user_posts({"unique_id": "indahjkt48"}, 3))
+
+    def test_generic_error_stays_provider_error(self):
+        provider = YtDlpProvider(RateLimiter(0))
+
+        async def fake_run(args, timeout):
+            return 1, "", "HTTP Error 404 Not Found"
+
+        provider._run = fake_run  # type: ignore[assignment]
+        with self.assertRaises(ProviderError) as ctx:
+            asyncio.run(provider.fetch_user_posts({"unique_id": "indahjkt48"}, 3))
+        self.assertNotIsInstance(ctx.exception, ProviderBlocked)
 
 
 if __name__ == "__main__":

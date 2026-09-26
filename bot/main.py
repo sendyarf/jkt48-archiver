@@ -12,9 +12,12 @@ A streamlined, robust bot that:
 """
 import asyncio
 import contextlib
+import json
 import logging
+import os
 import signal
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -94,6 +97,61 @@ def _setup_logging() -> None:
 logger = logging.getLogger("jkt48_bot")
 
 
+# ─── Flood cooldown persisten ────────────────────────────────────────────────
+# Cooldown flood Telegram (filename -> deadline) disimpan di sidecar JSON
+# di samping DB supaya selamat dari `pm2 restart`. Tanpa ini, restart langsung
+# mencoba ulang file 1 GB yang baru kehabisan jatah flood — dari byte 0.
+def _flood_cooldown_path() -> Path:
+    return Path(f"{Config.DB_PATH}.flood_cooldown.json")
+
+
+def _prune_flood_cooldown(cooldown: dict, now: Optional[float] = None) -> dict:
+    """Buang entri kedaluwarsa dari peta cooldown."""
+    now = time.time() if now is None else now
+    return {key: deadline for key, deadline in cooldown.items() if deadline > now}
+
+
+def load_flood_cooldown() -> dict:
+    """Baca cooldown flood dari sidecar JSON; entri kedaluwarsa diprun.
+
+    Fail-open: file rusak/hilang → cooldown kosong (perilaku lama).
+    """
+    path = _flood_cooldown_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    cooldown: dict[str, float] = {}
+    for key, deadline in raw.items():
+        try:
+            cooldown[str(key)] = float(deadline)
+        except (TypeError, ValueError):
+            continue
+    return _prune_flood_cooldown(cooldown)
+
+
+def save_flood_cooldown(cooldown: dict) -> None:
+    """Simpan cooldown secara atomik (tempfile + os.replace), diprun dulu."""
+    path = _flood_cooldown_path()
+    data = _prune_flood_cooldown(cooldown)
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            os.replace(tmp_name, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
+    except OSError as exc:
+        logger.warning("Gagal menyimpan flood cooldown ke %s: %s", path, exc)
+
+
 class JKT48LiveBot:
     """Main orchestrator for monitoring, recording, merging, and uploading JKT48 lives."""
 
@@ -127,10 +185,19 @@ class JKT48LiveBot:
         self._retry_task: Optional[asyncio.Task] = None
         self._tiktok_retry_task: Optional[asyncio.Task] = None
         self._hls_refresh_task: Optional[asyncio.Task] = None
-        # live_id -> monotonic deadline. File yang kehabisan jatah flood diberi
-        # cooldown agar tidak dicoba ulang di setiap siklus (setiap percobaan
-        # membuang ~819 MB bandwidth dan memperpanjang penalty akun).
-        self._flood_cooldown: dict[str, float] = {}
+        self._tiktok_task: Optional[asyncio.Task] = None
+        # Guard single-flight untuk shutdown(): handler sinyal dan blok finally
+        # sama-sama bisa memanggil shutdown() — hanya satu yang boleh berjalan.
+        self._shutdown_task: Optional[asyncio.Task] = None
+        self._tiktok_task: Optional[asyncio.Task] = None
+        # Shutdown single-flight: signal handler DAN blok finally sama-sama
+        # bisa memanggil shutdown(); panggilan kedua cukup menunggu yang pertama.
+        self._shutdown_task: Optional[asyncio.Task] = None
+        # live_id -> deadline (epoch detik). File yang kehabisan jatah flood
+        # diberi cooldown agar tidak dicoba ulang di setiap siklus (setiap
+        # percobaan membuang ~819 MB bandwidth dan memperpanjang penalty akun).
+        # Dimuat dari sidecar JSON agar selamat dari pm2 restart.
+        self._flood_cooldown: dict[str, float] = load_flood_cooldown()
         self.admin_bot: Optional[AdminBot] = None
         self.replay_bot: Optional[ReplayBot] = None
         # Arsip TikTok (OPSIONAL): hanya dibuat bila TIKTOK_ENABLED=true,
@@ -1149,6 +1216,37 @@ class JKT48LiveBot:
             _run(), name="hls-discovery-refresh"
         )
 
+    def _prune_and_save_flood_cooldown(self) -> None:
+        """Buang entri cooldown kedaluwarsa dan simpan ulang bila berubah."""
+        pruned = _prune_flood_cooldown(self._flood_cooldown)
+        if len(pruned) != len(self._flood_cooldown):
+            self._flood_cooldown = pruned
+            save_flood_cooldown(self._flood_cooldown)
+
+    def _schedule_tiktok_cycle(self) -> None:
+        """Jalankan satu siklus arsip TikTok di background.
+
+        run_once() bisa memakan waktu lama (listing + unduh + upload); bila
+        di-await inline di loop utama, deteksi HLS/Showroom ikut tertahan.
+        Pola sama dengan _schedule_hls_refresh: task disimpan di self,
+        distart hanya bila siklus sebelumnya sudah selesai.
+        """
+        if self.tiktok is None:
+            return
+        task = self._tiktok_task
+        if task is not None and not task.done():
+            return
+
+        async def _run() -> None:
+            try:
+                await self.tiktok.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Siklus arsip TikTok gagal (diabaikan): %s", exc)
+
+        self._tiktok_task = asyncio.create_task(_run(), name="tiktok-cycle")
+
     def _schedule_retry_workers(self) -> None:
         """Schedule all optional queue workers without blocking the poll loop."""
         self._schedule_pending_uploads()
@@ -1162,6 +1260,9 @@ class JKT48LiveBot:
 
         if not pending:
             return
+
+        # Prune entri cooldown kedaluwarsa (in-memory + sidecar) tiap siklus.
+        self._prune_and_save_flood_cooldown()
 
         logger.info("Found %d pending live upload(s) for Telegram + YouTube", len(pending))
         # Dedupe per file_path: baris merge group berbagi path yang sama;
@@ -1203,14 +1304,15 @@ class JKT48LiveBot:
             # memperpanjang penalty akun tanpa peluang berhasil.
             deadline = self._flood_cooldown.get(live_id)
             if deadline is not None:
-                if time.monotonic() < deadline:
-                    remaining = int(deadline - time.monotonic())
+                if time.time() < deadline:
+                    remaining = int(deadline - time.time())
                     logger.info(
                         "Cooldown flood untuk %s masih aktif (%d menit lagi)",
                         live_id, max(1, remaining // 60),
                     )
                     continue
                 del self._flood_cooldown[live_id]
+                save_flood_cooldown(self._flood_cooldown)
 
             username = sess["member_username"]
             name = sess["member_name"] or username
@@ -1228,7 +1330,10 @@ class JKT48LiveBot:
                 )
             except TelegramFloodExhausted as exc:
                 minutes = max(1, int(Config.TELEGRAM_FLOOD_COOLDOWN_MINUTES))
-                self._flood_cooldown[live_id] = time.monotonic() + minutes * 60
+                self._flood_cooldown[live_id] = time.time() + minutes * 60
+                # Persist SEGERA: restart pm2 tidak boleh mengulang file ini
+                # dari byte 0 (tiap percobaan membuang ~819 MB).
+                save_flood_cooldown(self._flood_cooldown)
                 logger.error(
                     "%s — file di-cooldown %d menit (tetap aman di disk). "
                     "Lanjut ke file berikutnya tanpa membuang bandwidth.",
@@ -1378,16 +1483,16 @@ class JKT48LiveBot:
                 if loop_counter % 120 == 0:
                     self._schedule_retry_workers()
 
-                # 6. Arsip TikTok (OPSIONAL): satu akun per siklus (round-robin),
-                #    dibungkus try/except sendiri supaya masalah TikTok tidak
-                #    pernah mengganggu perekaman IDN/Showroom.
+                # 6. Arsip TikTok (OPSIONAL): satu akun per siklus (round-robin)
+                #    sebagai BACKGROUND TASK. run_once() bisa memakan waktu lama
+                #    (listing + unduh + upload) sehingga tidak boleh di-await
+                #    inline — deteksi HLS/Showroom tidak boleh tertahan oleh
+                #    jadwal TikTok-nya sendiri. Error ditangani di dalam
+                #    _schedule_tiktok_cycle supaya tidak mengganggu loop ini.
                 if self.tiktok is not None and (
                     loop_counter == 1 or loop_counter % tiktok_every == 0
                 ):
-                    try:
-                        await self.tiktok.run_once()
-                    except Exception as exc:
-                        logger.warning("Siklus arsip TikTok gagal (diabaikan): %s", exc)
+                    self._schedule_tiktok_cycle()
 
             except asyncio.CancelledError:
                 break
@@ -1407,7 +1512,20 @@ class JKT48LiveBot:
         tengah live membuang potongan rekaman: sesinya masih berstatus
         'downloading' sehingga `clean_interrupted_downloads()` menghapusnya saat
         boot, dan file parsial yang sudah ditutup rapi tidak pernah diupload.
+
+        Idempoten: handler sinyal DAN blok `finally` di main() sama-sama dapat
+        memanggil shutdown(); hanya pemanggil pertama yang menjalankannya,
+        pemanggil lain menunggu task yang sama sampai selesai.
         """
+        current = asyncio.current_task()
+        existing = self._shutdown_task
+        if existing is not None:
+            if existing is not current and not existing.done():
+                logger.info("Shutdown sudah berjalan; menunggu hingga selesai.")
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await existing
+            return
+        self._shutdown_task = current
         logger.info("Shutting down bot...")
         self.running = False
 
@@ -1442,7 +1560,7 @@ class JKT48LiveBot:
         The database recovery on next startup returns any file still present to
         ``pending_upload``.
         """
-        for attr in ("_retry_task", "_tiktok_retry_task", "_hls_refresh_task"):
+        for attr in ("_retry_task", "_tiktok_retry_task", "_hls_refresh_task", "_tiktok_task"):
             task = getattr(self, attr, None)
             if task is not None and not task.done():
                 task.cancel()

@@ -5,12 +5,16 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
 ## Status Terakhir (berdasarkan kode saat ini)
 
 - [x] Deteksi live JKT48 via GraphQL publik IDN (tanpa login).
-- [x] Rekam HLS via yt-dlp + ffmpeg, dengan inactivity timeout (120s).
-- [x] Auto-merge segmen saat member reconnect (MergeManager, window 600s).
+- [x] Rekam HLS langsung via **ffmpeg** (fragmented MP4; yt-dlp hanya dipakai
+      untuk media TikTok).
+- [x] Auto-merge segmen saat member reconnect (MergeManager,
+      `MERGE_WINDOW_SECONDS` default **3600s** dihitung dari jeda liputan antar segmen).
 - [x] Merge ditunda selama masih ada rekaman berjalan (`download_started`).
 - [x] Reconnect dipicu selama stream masih live di IDN (bukan hanya status failed).
 - [x] Upload ke Telegram; file > ~1.9 GB dipecah jadi part.
-- [x] YouTube upload dinonaktifkan (tidak dipakai).
+- [x] **YouTube adalah tahap WAJIB pipeline**: setiap live diupload Telegram
+      (arsip/download) → YouTube Unlisted (playback website). Kuota habis → file
+      tetap di VPS, hanya tahap YouTube masuk antrean retry.
 - [x] File sumber disimpan & di-retry saat restart bila upload gagal.
 - [x] Pesan laporan akurat (split-to-Telegram, bukan "Uploading to YouTube").
 - [x] Retry download bila yt-dlp tidak menghasilkan file (mis. reconnect saat
@@ -420,6 +424,25 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
       fallback + video 2 dtk semuanya **1280x720**; **424 test Python** hijau
       (+4 pada `test_youtube_title.py`); pyflakes bersih untuk berkas yang
       disentuh.
+
+- [x] **Hardening batch (25 Sep 2026)** — perbaikan jalur produksi:
+      1. **Siklus TikTok jadi background task** di `main.py` (pola sama dengan
+         HLS refresh) — `tiktok.run_once()` tidak lagi memblokir polling
+         HLS/Showroom.
+      2. **Cooldown flood Telegram persisten**: `_flood_cooldown` disimpan ke
+         sidecar JSON `<DB_PATH>.flood_cooldown.json` (atomic write, diprun
+         otomatis) sehingga `pm2 restart` tidak menggiling file 1 GB dari
+         byte 0; `bot/upload_pending.py` menghormati cooldown yang sama.
+      3. **`shutdown()` idempoten** (`_shutdown_task` single-flight) — handler
+         sinyal dan blok `finally` tidak bisa menjalankannya dua kali.
+      4. **Precheck disk sebelum concat** di `merger.py`: butuh
+         ~SUM(segmen)+256 MB; tidak cukup → finalize ditunda (segmen tetap
+         disimpan), bukan gagal di tengah ffmpeg.
+      5. **Retry resumable upload YouTube**: 429/5xx dan ConnectionError/
+         TimeoutError di-backoff 5→10→20→40s (maks 5 percobaan); hanya reason
+         kuota sungguhan (`quotaExceeded`/`dailyLimitExceeded`/
+         `uploadLimitExceeded`/`userRateLimitExceeded`) yang merotasi channel —
+         403 polos (`insufficientPermissions`) tidak lagi membakar kuota rotasi.
 
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 

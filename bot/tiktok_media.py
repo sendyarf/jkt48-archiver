@@ -19,9 +19,11 @@ pernah melempar exception tak tertangani ke loop utama bot — pemanggil
 (`tiktok_monitor`) yang memutuskan status `pending_upload`/`failed`.
 """
 import asyncio
+import contextlib
 import json
 import logging
 import mimetypes
+import shlex
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,7 +56,65 @@ _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 
 
 class MediaError(RuntimeError):
-    """Kegagalan mengunduh/mengolah media TikTok."""
+    """Kegagalan mengunduh/mengolah media TikTok.
+
+    `permanent=True` menandai kegagalan yang TIDAK layak di-retry dari IP ini
+    (mis. blokir IP/geo TikTok) — pemanggil (`tiktok_monitor`) bisa langsung
+    menandai postingan 'failed' tanpa menunggu batas percobaan tercapai.
+    """
+
+    permanent: bool = False
+
+
+class MediaPermanentError(MediaError):
+    """Kegagalan PERMANEN: IP diblokir TikTok / postingan tidak tersedia."""
+
+    permanent: bool = True
+
+
+def is_permanent_media_error(exc: BaseException) -> bool:
+    """True bila exception adalah MediaError yang tergolong permanen."""
+    return isinstance(exc, MediaError) and bool(getattr(exc, "permanent", False))
+
+
+# Pola pesan yt-dlp untuk postingan yang diblokir IP / tidak tersedia.
+_IP_BLOCK_PATTERNS = (
+    "ip address is blocked",
+    "blocked from accessing",
+    "this post is not available",
+)
+
+
+def _is_ip_block_output(text: str) -> bool:
+    """Deteksi pesan blokir IP/geo di output yt-dlp (case-insensitive)."""
+    lower = (text or "").lower()
+    return any(pattern in lower for pattern in _IP_BLOCK_PATTERNS)
+
+
+def _ytdlp_config_args() -> list[str]:
+    """
+    Argumen yt-dlp dari konfigurasi (cookies/browser/proxy/extra).
+
+    Semuanya opsional — tanpa konfigurasi, hasilnya daftar kosong (no-op).
+    """
+    args: list[str] = []
+    if Config.TIKTOK_YTDLP_COOKIES_FILE:
+        args += ["--cookies", Config.TIKTOK_YTDLP_COOKIES_FILE]
+    if Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER:
+        args += ["--cookies-from-browser", Config.TIKTOK_YTDLP_COOKIES_FROM_BROWSER]
+    if Config.TIKTOK_YTDLP_PROXY:
+        args += ["--proxy", Config.TIKTOK_YTDLP_PROXY]
+    if Config.TIKTOK_YTDLP_EXTRA_ARGS:
+        args += shlex.split(Config.TIKTOK_YTDLP_EXTRA_ARGS)
+    return args
+
+
+async def _kill_process(process: "asyncio.subprocess.Process") -> None:
+    """Paksa kill proses yt-dlp (best-effort) dan tunggu sampai benar-benar mati."""
+    with contextlib.suppress(Exception):
+        process.kill()
+    with contextlib.suppress(Exception):
+        await process.wait()
 
 
 def tiktok_work_dir(subdir: str = "") -> Path:
@@ -177,8 +237,10 @@ async def download_video(
             "--retries", "5",
             "--retry-sleep", "5",
             "--output", str(target),
+            *_ytdlp_config_args(),
             item.page_url,
         ]
+        process: Optional[asyncio.subprocess.Process] = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -189,10 +251,30 @@ async def download_video(
             if process.returncode == 0 and target.exists() and target.stat().st_size > 0:
                 logger.info("Video TikTok terunduh via yt-dlp: %s", target.name)
                 return target
-            tail = (stdout or b"").decode("utf-8", errors="replace").strip()[-300:]
-            logger.warning("yt-dlp gagal untuk %s (kode %s): %s", item.id, process.returncode, tail)
+            output = (stdout or b"").decode("utf-8", errors="replace").strip()
+            if _is_ip_block_output(output):
+                # Blokir IP/geo: tidak layak di-retry dari IP ini — hentikan di
+                # sini sebagai kegagalan PERMANEN (fallback CDN/embed pun hampir
+                # pasti ikut terblokir pada post yang sama).
+                logger.warning(
+                    "yt-dlp: %s diblokir dari IP ini (permanen): %s",
+                    item.id, output[-300:],
+                )
+                raise MediaPermanentError(
+                    f"Video TikTok {item.id} diblokir dari IP ini: {output[-200:]}"
+                )
+            logger.warning("yt-dlp gagal untuk %s (kode %s): %s", item.id, process.returncode, output[-300:])
         except asyncio.TimeoutError:
+            # Timeout: hentikan proses yt-dlp agar tidak bocor (orphan) dan
+            # terus memakai bandwidth; jalur fallback di bawah tetap dicoba.
             logger.warning("yt-dlp timeout saat mengunduh %s", item.id)
+            if process is not None:
+                await _kill_process(process)
+        except asyncio.CancelledError:
+            # Task dibatalkan (hard shutdown): pastikan yt-dlp benar-benar mati.
+            if process is not None:
+                await _kill_process(process)
+            raise
         except FileNotFoundError as exc:
             logger.warning("yt-dlp tidak tersedia: %s", exc)
 
