@@ -11,6 +11,10 @@
  *   5. AUTO_PUBLISH_AFTER_HOURS=0                  -> IDN wajib manual
  *   6. Rekaman SHOWROOM                            -> langsung PUBLIK tanpa
  *      menunggu ambang (default 0), tetap tunduk keputusan admin
+ *   7. Marker telegram_message_ids BUKAN pemintas ambang (regresi 26 Sep 2026:
+ *      video IDN tayang begitu upload arsip TG selesai). Waktu acuan umur =
+ *      `download_ended_at` TERAKHIR dalam satu merge group, jadi live
+ *      multi-segmen baru terbit N jam setelah segmen terakhir selesai.
  *
  * Umur data dihitung relatif terhadap jam berjalan memakai datetime('now'),
  * jadi uji ini tidak bergantung pada tanggal saat dijalankan.
@@ -40,16 +44,28 @@ const watchLink = (id) => new RegExp(`/watch/${maskWatchId(id)}`);
 
 db.exec(`CREATE TABLE member_hls (username TEXT PRIMARY KEY, display_name TEXT, enabled INTEGER, hls_confirmed INTEGER, last_live_at TEXT);
 CREATE TABLE merge_groups (id INTEGER PRIMARY KEY, live_title TEXT, live_key TEXT);
-CREATE TABLE live_sessions (id INTEGER PRIMARY KEY, live_id TEXT, member_username TEXT, member_name TEXT, merge_group_id INTEGER, started_at TEXT, created_at TEXT, download_ended_at TEXT, youtube_video_id TEXT, status TEXT, file_size_bytes INTEGER, platform TEXT NOT NULL DEFAULT 'idn', download_started_at TEXT, telegram_message_ids TEXT);
+CREATE TABLE live_sessions (id INTEGER PRIMARY KEY, live_id TEXT, member_username TEXT, member_name TEXT, merge_group_id INTEGER, started_at TEXT, created_at TEXT, download_ended_at TEXT, youtube_video_id TEXT, status TEXT, file_size_bytes INTEGER, platform TEXT NOT NULL DEFAULT 'idn', download_started_at TEXT, telegram_message_ids TEXT, content_uid TEXT);
 CREATE TABLE web_publications (youtube_video_id TEXT PRIMARY KEY, published INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')));
 INSERT INTO member_hls VALUES ('jkt48_uji', 'Uji Member', 1, 1, NULL);
-INSERT INTO merge_groups VALUES (1, 'UNUSED_GROUP_TITLE_OLD', 'k1'), (2, 'UNUSED_GROUP_TITLE_RECENT', 'k2'), (3, 'UNUSED_GROUP_TITLE_WITHHELD', 'k3'), (4, 'UNUSED_GROUP_TITLE_FAST', 'k4');
+INSERT INTO merge_groups VALUES (1, 'UNUSED_GROUP_TITLE_OLD', 'k1'), (2, 'UNUSED_GROUP_TITLE_RECENT', 'k2'), (3, 'UNUSED_GROUP_TITLE_WITHHELD', 'k3'), (4, 'UNUSED_GROUP_TITLE_FAST', 'k4'), (5, 'UNUSED_GROUP_TITLE_TGBARU', 'k5'), (6, 'UNUSED_GROUP_TITLE_TGLAMA', 'k6'), (7, 'UNUSED_GROUP_TITLE_SEG', 'k7');
 INSERT INTO live_sessions (id, live_id, member_username, member_name, merge_group_id, started_at, created_at, download_ended_at, youtube_video_id, status, file_size_bytes, platform) VALUES (1, 'auto-old', 'jkt48_uji', 'Uji Member', 1, datetime('now','-100 hours'), datetime('now','-100 hours'), datetime('now','-99 hours'), 'AAAAAAAAAAA', 'done_youtube', 1, 'idn');
 INSERT INTO live_sessions (id, live_id, member_username, member_name, merge_group_id, started_at, created_at, download_ended_at, youtube_video_id, status, file_size_bytes, platform) VALUES (2, 'auto-recent', 'jkt48_uji', 'Uji Member', 2, datetime('now','-10 hours'), datetime('now','-10 hours'), datetime('now','-9 hours'), 'BBBBBBBBBBB', 'done_youtube', 1, 'idn');
 INSERT INTO live_sessions (id, live_id, member_username, member_name, merge_group_id, started_at, created_at, download_ended_at, youtube_video_id, status, file_size_bytes, platform) VALUES (3, 'auto-withheld', 'jkt48_uji', 'Uji Member', 3, datetime('now','-100 hours'), datetime('now','-100 hours'), datetime('now','-99 hours'), 'CCCCCCCCCCC', 'done_youtube', 1, 'idn');
 INSERT INTO live_sessions (id, live_id, member_username, member_name, merge_group_id, started_at, created_at, download_ended_at, youtube_video_id, status, file_size_bytes, platform) VALUES (4, 'auto-fast', 'jkt48_uji', 'Uji Member', 4, datetime('now','-10 hours'), datetime('now','-10 hours'), datetime('now','-9 hours'), 'DDDDDDDDDDD', 'done_youtube', 1, 'idn');
 INSERT INTO live_sessions (id, live_id, member_username, member_name, merge_group_id, started_at, created_at, download_ended_at, youtube_video_id, status, file_size_bytes, platform) VALUES (5, 'sr-showroom-now', 'jkt48_uji', 'Uji Member', 1, datetime('now','-4 hours'), datetime('now','-4 hours'), datetime('now','-3 hours'), 'SSSSSSSSSSS', 'done_youtube', 1, 'showroom');
 INSERT INTO web_publications (youtube_video_id, published) VALUES ('CCCCCCCCCCC', 0), ('DDDDDDDDDDD', 1);`);
+
+// Guard regresi 26 Sep 2026: marker telegram_message_ids ditulis bot begitu
+// upload arsip TG selesai (sering hanya menit setelah live bubar) dan TIDAK
+// boleh memangkas ambang 72 jam. Baris 6-7 arsip TG-only; baris 8-9 satu live
+// multi-segmen: segmen pertama selesai 73 jam lalu tetapi live baru dianggap
+// selesai saat segmen kedua (71 jam lalu) — ambang wajib dihitung dari segmen
+// TERAKHIR, sesuai konvensi getUpcomingVideos().
+db.exec(`INSERT INTO live_sessions (id, live_id, member_username, member_name, merge_group_id, started_at, created_at, download_ended_at, youtube_video_id, status, file_size_bytes, platform, telegram_message_ids, content_uid) VALUES
+  (6, 'tg-baru', 'jkt48_uji', 'Uji Member', 5, datetime('now','-11 hours'), datetime('now','-11 hours'), datetime('now','-10 hours'), '', 'done_youtube', 1, 'idn', '501', 'uid-tg-baru'),
+  (7, 'tg-lama', 'jkt48_uji', 'Uji Member', 6, datetime('now','-100 hours'), datetime('now','-100 hours'), datetime('now','-99 hours'), '', 'done_youtube', 1, 'idn', '502', 'uid-tg-lama'),
+  (8, 'seg-a', 'jkt48_uji', 'Uji Member', 7, datetime('now','-75 hours'), datetime('now','-75 hours'), datetime('now','-73 hours'), '', 'done_youtube', 1, 'idn', '503', 'uid-seg-live'),
+  (9, 'seg-b', 'jkt48_uji', 'Uji Member', 7, datetime('now','-73 hours'), datetime('now','-73 hours'), datetime('now','-71 hours'), 'GGGGGGGGGGG', 'done_youtube', 1, 'idn', '504', 'uid-seg-live');`);
 
 const secret = randomBytes(32).toString('hex');
 const servers = [];
@@ -139,9 +155,26 @@ try {
   assert.doesNotMatch(withheldPage, /video-player-container/, 'Rekaman yang ditahan tidak boleh punya pemutar');
   assert.doesNotMatch(withheldPage, /countdown-panel/, 'Rekaman yang ditahan tidak boleh punya panel countdown');
 
+  // ── Regresi 26 Sep 2026: marker Telegram BUKAN pemintas ambang 72 jam ──────
+  // 'uid-tg-baru': upload arsip TG baru selesai (umur 10 jam) — wajib tetap
+  // pra-rilis, BUKAN panel "Arsip Telegram siap" dengan tombol unduh.
+  const tgBaru = await (await fetch(s72.origin + '/watch/uid-tg-baru')).text();
+  assert.match(tgBaru, /Replay segera hadir/, 'Arsip TG yang baru naik (<72 jam) harus tetap pra-rilis');
+  assert.doesNotMatch(tgBaru, /data-download-payload/, 'Arsip TG muda tidak boleh membuka tombol download');
+  // 'uid-tg-lama': arsip TG-only yang sudah lewat ambang -> tayang dengan tombol unduh.
+  const tgLama = await (await fetch(s72.origin + '/watch/uid-tg-lama')).text();
+  assert.match(tgLama, /data-download-payload/, 'Arsip TG-only lewat ambang harus terbit dengan tombol unduh');
+  // Multi-segmen satu grup (baris 8+9): segmen akhir baru 71 jam lalu -> wajib
+  // countdown; dengan bug lama baris bermarker TG ini langsung bisa diunduh.
+  const segLive = await (await fetch(s72.origin + '/watch/uid-seg-live')).text();
+  assert.match(segLive, /Replay segera hadir/, 'Multi-segmen: waktu terbit = akhir segmen terakhir + ambang');
+  assert.doesNotMatch(segLive, /data-download-payload/, 'Pra-rilis tidak boleh punya tombol download');
+
   const members = (await (await fetch(s72.origin + '/api/members')).json()).members;
   assert.equal(members.length, 1);
-  assert.equal(members[0].video_count, 3, 'Jumlah arsip publik hanya menghitung rekaman yang tampil');
+  // AAAA ( YT lama ) + DDDD ( manual ) + SSSS ( Showroom ) + uid-tg-lama ( TG
+  // saja, > 72 jam ). Baris pra-rilis dan grup segmen (baru 71 jam) tidak ikut.
+  assert.equal(members[0].video_count, 4, 'Jumlah arsip publik hanya menghitung rekaman yang tampil');
 
   // Admin harus melihat keadaan yang membedakan otomatis vs manual.
   const login = await post(s72, '/api/auth', { secret });
@@ -162,6 +195,11 @@ try {
   assert.equal(Number(byId['SSSSSSSSSSS'].decided), 0, 'SHOWROOM_BARU belum diputuskan admin');
   assert.ok(Number(byId['AAAAAAAAAAA'].hours_since_end) >= 99, 'Umur rekaman lama harus terbaca');
   assert.ok(Number(byId['BBBBBBBBBBB'].hours_since_end) < 72, 'Umur rekaman baru harus di bawah ambang');
+  // Grup multi-segmen: marker TG + YouTube sudah ada, tetapi segmen TERAKHIR
+  // baru 71 jam lalu -> admin masih harus melihatnya sebagai belum tayang.
+  const segRow = byId['GGGGGGGGGGG'];
+  assert.ok(segRow, 'Grup multi-segmen harus muncul di daftar admin');
+  assert.equal(Number(segRow.visible), 0, 'Grup multi-segmen < 72 jam sejak segmen akhir tetap pra-rilis meski marker TG/YouTube ada');
 
   // Admin menahan rekaman yang tadinya otomatis → harus hilang dari publik.
   assert.equal((await post(s72, '/api/admin/publications', { youtube_video_id: 'AAAAAAAAAAA', published: false }, cookie)).status, 200);
@@ -178,6 +216,9 @@ try {
   assert.doesNotMatch(html0, /class="upcoming-badge"/, 'Dengan auto=0 tidak ada jadwal rilis, jadi tidak ada kartu Segera');
   assert.match(html0, watchLink(FAST_ID), 'Publikasi manual tetap berlaku saat auto=0');
   assert.match(html0, watchLink(SHOWROOM_ID), 'Rekaman Showroom tetap langsung tampil meski ambang IDN = 0');
+  // Pemintas Telegram juga tidak boleh membocorkan arsip saat auto=0: tanpa
+  // persetujuan admin, arsip TG-only maupun grup segmen wajib tetap tersembunyi.
+  assert.doesNotMatch(html0, /uid-tg-baru|uid-tg-lama|uid-seg-live/, 'Dengan auto=0, arsip TG tidak boleh tayang tanpa persetujuan admin');
   // Dengan auto=0 rekaman IDN menunggu keputusan admin: halamannya tetap bisa
   // dibuka dengan panel "segera hadir" tanpa angka (bukan pemutar). RECENT_ID
   // dipakai di sini karena OLD_ID sudah ditahan admin pada langkah sebelumnya.

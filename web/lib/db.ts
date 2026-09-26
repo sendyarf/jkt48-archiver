@@ -211,8 +211,9 @@ export const AUTO_PUBLISH_AFTER_HOURS_SHOWROOM: number = (() => {
  * Predikat SQL untuk rekaman yang boleh tampil di halaman publik.
  * `alias` adalah alias tabel live_sessions pada query pemanggil.
  *
- * Waktu acuan memakai `download_ended_at` (kapan rekaman selesai) dan jatuh
- * ke `created_at` bila kosong. Keduanya UTC, dibandingkan dengan julianday
+ * Waktu acuan = `download_ended_at` segmen TERAKHIR dalam satu merge group
+ * (lihat publishEndRefSql); baris tunggal jatuh ke waktunya sendiri dan ke
+ * `created_at` bila kosong. Semuanya UTC, dibandingkan dengan julianday
  * ('now') yang juga UTC — jadi tidak bergantung zona waktu server.
  *
  * Ambang per platform: showroom memakai AUTO_PUBLISH_AFTER_HOURS_SHOWROOM
@@ -257,6 +258,30 @@ function archiveReadySql(alias = 'ls'): string {
   return `(${youtubeReadySql(alias)} OR ${telegramReadySql(alias)})`;
 }
 
+/**
+ * Waktu acuan aturan rilis: kapan segmen TERAKHIR dari SATU live selesai
+ * diunduh — bukan sekadar waktu baris ini. "Satu live" = baris dengan kunci
+ * konten yang sama (content_uid → youtube_video_id → live_id), konvensi yang
+ * sama persis dengan GROUP BY getUpcomingVideos(): live panjang yang
+ * tersimpan sebagai banyak segmen (content_uid sama) dinilai SATU video dan
+ * baru terbit N jam setelah segmen terakhir benar-benar selesai. Baris tanpa
+ * sesama (termasuk baris tanpa ketiga identitas) jatuh ke `download_ended_at`
+ * baris itu sendiri, lalu `created_at`. Kunci konten (bukan merge_group_id)
+ * yang dipakai agar visibilitas katalog dan kartu "Segera" saling komplemen —
+ * video tidak pernah hilang dari keduanya sekaligus.
+ */
+function publishEndRefSql(alias = 'ls'): string {
+  const contentKey = `COALESCE(NULLIF(${alias}.content_uid, ''), NULLIF(${alias}.youtube_video_id, ''), NULLIF(${alias}.live_id, ''))`;
+  const peerKey = `COALESCE(NULLIF(end_peer.content_uid, ''), NULLIF(end_peer.youtube_video_id, ''), NULLIF(end_peer.live_id, ''))`;
+  return `COALESCE(
+    (SELECT MAX(COALESCE(end_peer.download_ended_at, end_peer.created_at))
+       FROM live_sessions end_peer
+      WHERE ${peerKey} = ${contentKey}),
+    ${alias}.download_ended_at,
+    ${alias}.created_at
+  )`;
+}
+
 function publicVisibilitySql(alias = 'ls'): string {
   // `content_uid` adalah identitas stabil yang dibuat bot.  Fallback ke
   // YouTube ID hanya berlaku untuk baris lama yang belum dimigrasikan; begitu
@@ -272,11 +297,9 @@ function publicVisibilitySql(alias = 'ls'): string {
       AND vo.content_key != '' AND vo.published = 1)`;
   const explicitOn = `EXISTS (SELECT 1 FROM web_publications p WHERE p.youtube_video_id = ${alias}.youtube_video_id AND p.youtube_video_id != '' AND p.published = 1)`;
   const withheld = `EXISTS (SELECT 1 FROM web_publications p0 WHERE p0.youtube_video_id = ${alias}.youtube_video_id AND p0.youtube_video_id != '' AND p0.published = 0)`;
-  // Arsip Telegram-first sudah merupakan konten yang dapat ditemukan dan diunduh,
-  //meskipun YouTube belum tersedia. Visibility tetap tunduk pada override admin
-  // (published=0) di atas; status YouTube hanya menentukan playback.
-  const telegramReady = `(${alias}.telegram_message_ids IS NOT NULL AND ${alias}.telegram_message_ids != '')`;
-  const elapsedHours = `(julianday('now') - julianday(COALESCE(${alias}.download_ended_at, ${alias}.created_at))) * 24`;
+  // Waktu acuan umur rekaman: akhir segmen TERAKHIR di grup (publishEndRefSql),
+  // bukan waktu baris ini saja. Status Telegram TIDAK ikut menentukan umur.
+  const elapsedHours = `(julianday('now') - julianday(${publishEndRefSql(alias)})) * 24`;
   // Showroom: 0 = langsung tampil (konstanta 1, tanpa jeda), negatif = nonaktif,
   // positif = terjadwal N jam. Nilai positif sebelumnya diperlakukan sama dengan 0
   // sehingga jadwal rilis Showroom tidak pernah berlaku (padahal getUpcomingVideos
@@ -289,10 +312,15 @@ function publicVisibilitySql(alias = 'ls'): string {
     ? `(${elapsedHours} >= ${AUTO_PUBLISH_AFTER_HOURS})`
     : '0';
   const autoVisibility = `(CASE WHEN COALESCE(${alias}.platform, 'idn') = 'showroom' THEN ${showroomAuto} ELSE ${idnAuto} END)`;
-  // Telegram-ready berarti arsip sudah dapat dibuka/diunduh.  YouTube hanya
-  // menambah playback; ia tidak boleh menjadi syarat agar katalog menemukan
-  // konten.  `withheld` tetap menang agar keputusan admin tidak ditimpa.
-  const fallback = `(${explicitOn} OR (NOT ${withheld} AND (${telegramReady} OR ${autoVisibility})))`;
+  // TIDAK ada pemintas "Telegram siap": bot menulis telegram_message_ids begitu
+  // upload arsip TG selesai — sering hanya beberapa menit setelah live bubar dan
+  // jauh sebelum ambang terbit lewat — sehingga kehadiran marker BUKAN bukti
+  // konten boleh tayang. Regresi 25-26 Sep 2026: `telegramReady OR ...` membuat
+  // video IDN muncul di situs begitu arsip Telegram terbentuk, memangkas jeda
+  // 72 jam. Penentu terbit: override admin (atas) > publikasi manual > ambang
+  // auto per platform. Marker TG/YouTube hanya menentukan APA YANG BISA DIPUTAR
+  // setelah konten terbit (archiveReadySql, getVideoById), bukan KAPAN terbit.
+  const fallback = `(${explicitOn} OR (NOT ${withheld} AND ${autoVisibility}))`;
   return `((NOT ${overrideHide}) AND (${overrideShow} OR ${fallback}))`;
 }
 
@@ -334,8 +362,12 @@ export interface VideoItem {
  */
 function canonicalWatchId(contentUid: string, youtubeId: string, fallback: string): string {
   const content = (contentUid || '').trim();
-  if (content) return content;
   const youtube = (youtubeId || '').trim();
+  // Catatan: query memakai COALESCE(content_uid → youtube_video_id → live_id)
+  // sebagai content_uid, jadi baris lama bernilai ID YouTube mentah di sini.
+  // Jangan pakai nilai itu apa adanya di URL publik — samarkan lewat
+  // encodeWatchId agar ID YouTube tidak bocor (lihat lib/codec.ts).
+  if (content && content !== youtube) return content;
   // Data lama belum punya content_uid: pertahankan URL YouTube tersamar agar
   // deep-link yang sudah dibagikan tidak berubah/404.
   if (youtube) return encodeWatchId(youtube);
@@ -733,7 +765,7 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   // terbit) atau negatif (wajib persetujuan admin) tidak ada tanggal rilis.
   const idnHours = AUTO_PUBLISH_AFTER_HOURS > 0 ? AUTO_PUBLISH_AFTER_HOURS : 0;
   const showroomHours = AUTO_PUBLISH_AFTER_HOURS_SHOWROOM > 0 ? AUTO_PUBLISH_AFTER_HOURS_SHOWROOM : 0;
-  const publishAtSql = (hours: number) => `datetime(COALESCE(ls.download_ended_at, ls.created_at), '+${hours} hours')`;
+  const publishAtSql = (hours: number) => `datetime(${publishEndRefSql('ls')}, '+${hours} hours')`;
   const sql = `
     SELECT
       ls.id AS id,
