@@ -6,6 +6,7 @@ test_telegram_upload.py - Unit tests for video splitter, telegram captions, and 
 import asyncio
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -19,15 +20,24 @@ from bot.telegram_sender import (
     TelegramSender,
     build_telegram_video_caption,
     build_youtube_notification,
+    MAX_FILE_PARTS_FREE,
+    MAX_FILE_PARTS_PREMIUM,
+    TelegramFileTooLarge,
     TelegramFloodExhausted,
     _format_size,
     _flood_wait_seconds,
     _flood_wait_with_jitter,
 )
+from bot.telegram_limits import (
+    MAX_PART_SIZE_BYTES,
+    max_file_bytes,
+    safe_split_bytes,
+)
 from bot.video_splitter import (
     VideoPart,
     cleanup_video_parts,
     generate_thumbnail,
+    get_default_max_bytes,
     get_video_metadata,
     split_video_if_needed,
 )
@@ -220,7 +230,7 @@ class TestTelegramMultipartResume(unittest.TestCase):
             saved_prefixes = []
             calls = []
 
-            async def fake_split(path):
+            async def fake_split(path, max_bytes=None):
                 calls.append(("split", str(path)))
                 return parts
 
@@ -795,6 +805,203 @@ class TestTelegramIntraFileResume(unittest.TestCase):
 
             self.assertIsNone(asyncio.run(run()))
             self.assertFalse(sidecar.exists())
+
+    def test_over_account_part_limit_aborts_before_first_part(self):
+        """File yang butuh part lebih banyak dari batas akun: berhenti total
+        sebelum part pertama dikirim (server menolak FILE_PARTS_INVALID)."""
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "huge.mp4"
+            # 10 part × 4 KB, batas akun di-empot jadi 5 part.
+            video.write_bytes(b"0" * (10 * 4096))
+            client = _FakeUploadClient()
+            sender = self._make_sender(client)
+            sidecar = Path(str(video) + ".tgup.json")
+
+            async def run():
+                with (
+                    patch("bot.telegram_sender.MAX_FILE_PARTS_FREE", 5),
+                    patch(
+                        "bot.telegram_sender.utils.get_appropriated_part_size",
+                        return_value=4,
+                    ),
+                ):
+                    return await sender._upload_with_resume(
+                        video, video.stat().st_size, video.stat().st_mtime
+                    )
+
+            with self.assertRaises(TelegramFileTooLarge) as caught:
+                asyncio.run(run())
+            self.assertIn("Telegram Premium", str(caught.exception))
+            self.assertEqual(
+                client.requests, [],
+                "part tidak boleh dikirim kalau batas akun sejak awal tidak cukup",
+            )
+            self.assertFalse(sidecar.exists(), "sidecar tidak dibuat untuk file mustahil")
+
+    def test_over_part_limit_is_not_retried(self):
+        """Penolakan permanen ini tidak memakan jatah retry maupun bandwidth."""
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "huge.mp4"
+            video.write_bytes(b"0" * (10 * 4096))
+            client = _FakeUploadClient()
+            sender = self._make_sender(client)
+            sleeps: list[int] = []
+
+            async def fake_sleep(seconds):
+                sleeps.append(seconds)
+
+            async def run():
+                with (
+                    patch("bot.telegram_sender.asyncio.sleep", side_effect=fake_sleep),
+                    patch("bot.telegram_sender._RESUME_MIN_SIZE_BYTES", 1024),
+                    patch("bot.telegram_sender.MAX_FILE_PARTS_FREE", 5),
+                    patch(
+                        "bot.telegram_sender.utils.get_appropriated_part_size",
+                        return_value=4,
+                    ),
+                ):
+                    return await sender.send_video_file(video)
+
+            self.assertIsNone(asyncio.run(run()))
+            self.assertEqual(client.requests, [], "tidak ada part yang terbuang")
+            self.assertEqual(client.send_file.await_count, 0)
+            self.assertEqual(sleeps, [], "error permanen tidak dicoba ulang")
+
+    def test_max_file_parts_follows_account_premium_flag(self):
+        """Batas part diambil dari jenis akun: Premium 8000, selain itu 4000."""
+        self.assertEqual(
+            (MAX_FILE_PARTS_FREE, MAX_FILE_PARTS_PREMIUM), (4000, 8000),
+            "batas jumlah part dikonfirmasi live 26 Sep 2026 (4000 ok, 4001 ditolak)",
+        )
+
+        free_client = _FakeUploadClient()  # tanpa get_me → dianggap akun biasa
+        free_sender = self._make_sender(free_client)
+        self.assertEqual(asyncio.run(free_sender._max_file_parts()), MAX_FILE_PARTS_FREE)
+
+        class _PremiumUser:
+            premium = True
+
+        premium_client = _FakeUploadClient()
+        premium_client.get_me = AsyncMock(return_value=_PremiumUser())
+        premium_sender = self._make_sender(premium_client)
+        self.assertEqual(
+            asyncio.run(premium_sender._max_file_parts()), MAX_FILE_PARTS_PREMIUM
+        )
+
+
+class TestSplitThresholdGuard(unittest.TestCase):
+    """Ambang split tidak boleh menghasilkan part yang ditolak server."""
+
+    def _bare_sender(self, client):
+        sender = TelegramSender.__new__(TelegramSender)
+        sender._connected = True
+        sender._client = client
+        return sender
+
+    def test_part_cap_matches_live_server_limit(self):
+        """Angka batas = konfigurasi server yang diverifikasi 26 Sep 2026."""
+        self.assertEqual(MAX_FILE_PARTS_FREE, 4000)
+        self.assertEqual(MAX_FILE_PARTS_PREMIUM, 8000)
+        # 4000 part × 512 KiB = 2.097.152.000 B ≈ 2 GB (telegram.org/faq).
+        self.assertEqual(max_file_bytes(MAX_FILE_PARTS_FREE), 2_097_152_000)
+        self.assertEqual(max_file_bytes(MAX_FILE_PARTS_PREMIUM), 4_194_304_000)
+
+    def test_default_limit_never_exceeds_free_account_capacity(self):
+        """Config liar (mis. 5 GB) dijepit: part hasil split pasti bisa dikirim."""
+        with patch.object(Config, "TELEGRAM_MAX_FILE_SIZE_MB", 5000):
+            limit = get_default_max_bytes()
+        self.assertEqual(limit, safe_split_bytes(MAX_FILE_PARTS_FREE))
+        needed_parts = -(-limit // MAX_PART_SIZE_BYTES)
+        self.assertLessEqual(
+            needed_parts, MAX_FILE_PARTS_FREE,
+            "file sebesar ambang split harus masih muat batas part akun biasa",
+        )
+
+    def test_default_limit_respects_smaller_config(self):
+        """Ambang yang lebih kecil dari kapasitas akun dipakai apa adanya."""
+        with patch.object(Config, "TELEGRAM_MAX_FILE_SIZE_MB", 1000):
+            self.assertEqual(get_default_max_bytes(), 1000 * 1024 * 1024)
+
+    def test_shipped_default_keeps_a_quarter_of_the_part_budget(self):
+        """Ambang bawaan 1500 MB = 3.000 part: 25% jatah akun biasa tersisa
+        untuk pembengkakan part (ffmpeg memotong per durasi pada stream VBR)."""
+        with patch.object(Config, "TELEGRAM_MAX_FILE_SIZE_MB", 1500):
+            limit = get_default_max_bytes()
+        self.assertLessEqual(
+            -(-limit // MAX_PART_SIZE_BYTES), MAX_FILE_PARTS_FREE * 3 // 4
+        )
+
+    def test_ambang_bawaan_konsisten_di_config_dan_env_example(self):
+        """config.py dan .env.example menyebut angka yang sama, dan angka itu
+        tidak boleh melewati 75% jatah part akun biasa."""
+        root = Path(__file__).resolve().parents[1]
+        patterns = {
+            "bot/config.py": r'TELEGRAM_MAX_FILE_SIZE_MB", "(\d+)"',
+            ".env.example": r"^TELEGRAM_MAX_FILE_SIZE_MB=(\d+)",
+        }
+        values = []
+        for name, pattern in patterns.items():
+            text = (root / name).read_text(encoding="utf-8")
+            match = re.search(pattern, text, re.MULTILINE)
+            self.assertIsNotNone(match, f"{name} tidak mengatur ambang split")
+            values.append(int(match.group(1)))
+        self.assertEqual(values[0], values[1])
+        parts = values[1] * 1024 * 1024 // MAX_PART_SIZE_BYTES
+        self.assertLessEqual(parts, MAX_FILE_PARTS_FREE * 3 // 4)
+
+    def test_split_limit_follows_account_type(self):
+        """Premium memperlonggar ambang sampai angka config (maks ~3.6 GB)."""
+        class _PremiumUser:
+            premium = True
+
+        free_sender = self._bare_sender(_FakeUploadClient())
+        premium_client = _FakeUploadClient()
+        premium_client.get_me = AsyncMock(return_value=_PremiumUser())
+        premium_sender = self._bare_sender(premium_client)
+
+        async def run():
+            with patch.object(Config, "TELEGRAM_MAX_FILE_SIZE_MB", 1950):
+                return (
+                    await free_sender._split_limit_bytes(),
+                    await premium_sender._split_limit_bytes(),
+                )
+
+        free_limit, premium_limit = asyncio.run(run())
+        self.assertEqual(free_limit, safe_split_bytes(MAX_FILE_PARTS_FREE))
+        self.assertEqual(premium_limit, 1950 * 1024 * 1024)
+        self.assertGreater(premium_limit, free_limit)
+
+    def test_upload_passes_account_aware_limit_to_splitter(self):
+        """Alur upload tidak lagi memakai ambang config mentah."""
+        captured = {}
+
+        async def fake_split(path, max_bytes=None):
+            captured["max_bytes"] = max_bytes
+            return [VideoPart(1, 1, Path(path), 10, 1.0, 16, 9, False)]
+
+        sender = self._bare_sender(_FakeUploadClient())
+        sender.send_video_file = AsyncMock(return_value=555)
+
+        async def run():
+            with (
+                patch("bot.telegram_sender.split_video_if_needed", side_effect=fake_split),
+                patch("bot.telegram_sender.generate_thumbnail",
+                      new=AsyncMock(return_value=None)),
+                patch("bot.telegram_sender.cleanup_video_parts"),
+                patch.object(Config, "TELEGRAM_MAX_FILE_SIZE_MB", 1950),
+            ):
+                with tempfile.TemporaryDirectory() as directory:
+                    source = Path(directory) / "source.mp4"
+                    source.write_bytes(b"video")
+                    return await sender.upload_video_with_splitting(
+                        source, "Test", "jkt48_test", "2026-09-24T00:00:00+00:00",
+                    )
+
+        self.assertEqual(asyncio.run(run()), [555])
+        self.assertEqual(
+            captured["max_bytes"], safe_split_bytes(MAX_FILE_PARTS_FREE),
+            "akun biasa: ambang dijepit ke kapasitas part server",
+        )
 
 
 if __name__ == "__main__":

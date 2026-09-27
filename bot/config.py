@@ -86,13 +86,24 @@ class Config:
     # Telegram-then-YouTube pipeline; these values no longer disable a stage.
     UPLOAD_TARGET: str = os.getenv("UPLOAD_TARGET", "telegram").lower().strip()
 
-    # Telegram max file size threshold before splitting (MB).
-    # Batas riil per file mengikuti jenis akun: 2 GB untuk akun free, 4 GB
-    # untuk akun premium. Ambang ini BUKAN penyebab FLOOD_PREMIUM_WAIT_* —
-    # Telethon memecah file jadi ~512 KB per request, jadi 1.1 GB ≈ 2.267
-    # request, dan yang dibatasi Telegram adalah JUMLAH request-nya. Jawabannya
-    # backoff flood (lihat TELEGRAM_FLOOD_* di bawah), bukan perkecil ambang.
-    TELEGRAM_MAX_FILE_SIZE_MB: int = int(os.getenv("TELEGRAM_MAX_FILE_SIZE_MB", "1950"))
+    # Telegram max file size threshold before splitting (MB = MiB di sini).
+    # Server membatasi JUMLAH part per file: 4000 part × 512 KiB = 2.000 MiB
+    # (≈1,95 GiB) untuk akun biasa, 8000 part ≈ 4 GiB untuk Premium
+    # (bot/telegram_limits.py). 1500 dipilih sebagai jalan tengah:
+    #   1) 1500 MiB = 3.000 part = 75% jatah akun biasa, jadi 25% sisanya marge.
+    #      Part hasil split bisa lebih besar dari target karena ffmpeg memotong
+    #      dengan segment_time (berbasis DURASI) pada stream VBR, tapi target
+    #      chunk = 0.92 × ambang (1.380 MiB = 2.760 part) sehingga part harus
+    #      overshoot >44% dulu sebelum server menolaknya.
+    #   2) 1 live = 1 pesan untuk ~99% rekaman: dari 334 rekaman terarsip hanya
+    #      3 (0,9%) yang melewati 1500 MiB.
+    # Nilai yang melebihi kapasitas akun biasa (1800 MiB) otomatis dijepit oleh
+    # video_splitter.get_default_max_bytes(); akun Premium boleh memakainya
+    # lewat TelegramSender._split_limit_bytes(). Ambang ini BUKAN penyebab
+    # FLOOD_PREMIUM_WAIT_* — Telethon memecah file jadi ~512 KiB per request,
+    # jadi yang dibatasi Telegram adalah JUMLAH request dan solusinya backoff
+    # flood (lihat TELEGRAM_FLOOD_* di bawah), bukan perkecil ambang.
+    TELEGRAM_MAX_FILE_SIZE_MB: int = int(os.getenv("TELEGRAM_MAX_FILE_SIZE_MB", "1500"))
 
     # Retry khusus flood (FLOOD_PREMIUM_WAIT_* / FloodWaitError) saat upload
     # file besar. Durasi tunggu = persis yang diminta Telegram (e.seconds)

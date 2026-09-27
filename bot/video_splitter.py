@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from bot.config import Config
+from bot.telegram_limits import MAX_FILE_PARTS_FREE, safe_split_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +42,28 @@ class VideoPart:
 
 
 def get_default_max_bytes() -> int:
-    """Return max file size in bytes from config (default ~1950 MB)."""
-    return Config.TELEGRAM_MAX_FILE_SIZE_MB * 1024 * 1024
+    """Batas ukuran file sebelum di-split, dijepit di kapasitas akun biasa.
+
+    ``TELEGRAM_MAX_FILE_SIZE_MB`` boleh menyebut angka berapa pun, tapi hasil
+    split tidak akan pernah boleh melebihi jumlah part yang diizinkan server
+    (4000 part ≈ 2 GB untuk akun biasa). File di atas batas itu ditolak mentah
+    dengan ``FILE_PARTS_INVALID`` — bukan di-trim, bukan di-resume — sehingga
+    potongan arsip tersebut hilang permanen. Ambang yang lebih besar hanya
+    aman untuk akun Premium dan disupply oleh
+    ``TelegramSender._split_limit_bytes()`` saat memanggil split.
+    """
+    configured = Config.TELEGRAM_MAX_FILE_SIZE_MB * 1024 * 1024
+    ceiling = safe_split_bytes(MAX_FILE_PARTS_FREE)
+    if configured > ceiling:
+        logger.warning(
+            "TELEGRAM_MAX_FILE_SIZE_MB=%s dijepit ke %.0f MB: akun biasa hanya "
+            "mengizinkan %d part × 512 KiB per file. Ambang lebih besar "
+            "membutuhkan Telegram Premium.",
+            Config.TELEGRAM_MAX_FILE_SIZE_MB, ceiling / (1024 * 1024),
+            MAX_FILE_PARTS_FREE,
+        )
+        return ceiling
+    return configured
 
 
 async def get_video_metadata(file_path: Union[str, Path]) -> VideoMetadata:

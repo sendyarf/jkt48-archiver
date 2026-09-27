@@ -231,7 +231,7 @@ async def process_uploads(items: list[dict], dry_run: bool = False, keep_files: 
     print("  📋 JKT48 Live - Pending Videos Queue")
     print("  Target Upload    : Telegram archive → YouTube playback")
     print(f"  Telegram Channel : {Config.TELEGRAM_ARCHIVE_CHANNEL_ID or Config.TELEGRAM_CHANNEL_ID}")
-    print(f"  Split Threshold  : {Config.TELEGRAM_MAX_FILE_SIZE_MB} MB")
+    print(f"  Split Threshold  : {max_bytes // (1024 * 1024)} MB")
     print(f"  Total Videos     : {len(items)}")
     print(f"  Total File Size  : {fmt_size(total_size)}")
     if dry_run:

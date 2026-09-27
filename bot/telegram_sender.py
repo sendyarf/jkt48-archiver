@@ -29,6 +29,11 @@ from telethon.tl.types import DocumentAttributeVideo
 
 from bot.config import Config
 from bot import timeutil
+from bot.telegram_limits import (
+    MAX_FILE_PARTS_FREE,
+    MAX_FILE_PARTS_PREMIUM,
+    safe_split_bytes,
+)
 from bot.video_splitter import (
     VideoPart,
     cleanup_video_parts,
@@ -55,11 +60,29 @@ class TelegramFloodExhausted(RuntimeError):
     """
 
 
+class TelegramFileTooLarge(RuntimeError):
+    """File butuh lebih banyak part daripada batas jumlah part akun ini.
+
+    Batas ini datang dari server Telegram (bukan dari Telethon): akun biasa
+    dibatasi ``MAX_FILE_PARTS_FREE`` part, akun Premium dua kali lipatnya.
+    Kondisi ini PERMANEN selama jenis akun dan ukuran file tidak berubah,
+    jadi tidak ada gunanya diulang — solusinya naik ke Telegram Premium atau
+    memotong file lebih kecil lewat ``TELEGRAM_MAX_FILE_SIZE_MB``.
+    """
+
+
 _PREMIUM_WAIT_RE = re.compile(r"FLOOD_PREMIUM_WAIT_(\d+)")
 
 # File di atas ambang ini di-upload lewat SaveBigFilePartRequest yang bisa
 # di-resume (sidecar JSON), bukan satu panggilan client.send_file() monolitik.
 _RESUME_MIN_SIZE_BYTES = 64 * 1024 * 1024
+
+# Batas JUMLAH part upload per jenis akun (MAX_FILE_PARTS_FREE = 4000 part
+# ≈ 2 GB, MAX_FILE_PARTS_PREMIUM = 8000 part ≈ 4 GB) diimpor dari
+# bot.telegram_limits supaya dipakai bersama dengan ambang split di
+# bot.video_splitter. Nilainya diverifikasi live pada akun bot ini, 26 Sep
+# 2026: SaveBigFilePartRequest dengan file_total_parts=4000 diterima,
+# sedangkan 4001 dan 8000 ditolak server dengan FILE_PARTS_INVALID.
 
 
 def _flood_wait_seconds(exc: BaseException, default: int = 30) -> int:
@@ -151,6 +174,42 @@ class TelegramSender:
             self._upload_lock = lock
         return lock
 
+    async def _max_file_parts(self) -> int:
+        """Batas jumlah part upload yang diizinkan server untuk akun ini.
+
+        Akun biasa 4000 part (~2 GB/file), Premium 8000 part (~4 GB/file).
+        Status Premium dibaca sekali lalu di-cache; bila akun tidak bisa
+        dibaca (mis. client tiruan pada unit test), dipakai batas akun biasa
+        karena itu asumsi paling aman.
+        """
+        cached = getattr(self, "_max_file_parts_cached", None)
+        if cached is not None:
+            return cached
+        try:
+            me = await self._client.get_me()
+            premium = bool(getattr(me, "premium", False))
+        except Exception:  # noqa: BLE001 - client tiruan / sesi belum siap
+            premium = False
+        limit = MAX_FILE_PARTS_PREMIUM if premium else MAX_FILE_PARTS_FREE
+        self._max_file_parts_cached = limit
+        logger.info(
+            "Batas upload akun Telegram: %d part (~%.1f GB/file), akun %sPremium.",
+            limit, limit * 512 * 1024 / 1024 ** 3, "" if premium else "bukan ",
+        )
+        return limit
+
+    async def _split_limit_bytes(self) -> int:
+        """Ambang split yang aman untuk kapasitas part akun ini.
+
+        Menggabungkan kehendak config dengan batas nyata akun: akun biasa
+        maksimal 1800 MB (4000 part × 512 KiB dikurangi margin 10%), akun
+        Premium boleh memakai angka config sampai ~3.6 GB. Angka inilah yang
+        dipakai ``split_video_if_needed`` sehingga file besar selalu dipotong
+        di bawah jumlah part yang diterima server.
+        """
+        capacity = safe_split_bytes(await self._max_file_parts())
+        return min(Config.TELEGRAM_MAX_FILE_SIZE_MB * 1024 * 1024, capacity)
+
     async def connect(self) -> None:
         """Connect and authenticate with Telegram."""
         if self._connected:
@@ -221,6 +280,21 @@ class TelegramSender:
         part_size = utils.get_appropriated_part_size(size) * 1024
         total_parts = (size + part_size - 1) // part_size
         is_big = size > 10 * 1024 * 1024
+
+        # Cek batas server SEBELUM byte pertama dikirim. Telethon sendiri boleh
+        # memecah file jadi 6000 part, tapi server menolak request part pertama
+        # dengan FILE_PARTS_INVALID begitu total part melewati batas akun —
+        # errornya kriptik dan baru muncul setelah file siap dibaca dari disk.
+        max_parts = await self._max_file_parts()
+        if total_parts > max_parts:
+            raise TelegramFileTooLarge(
+                f"{path.name} ({size / 1024 ** 3:.2f} GB) butuh {total_parts} part "
+                f"({part_size // 1024} KB/part) padahal server hanya mengizinkan "
+                f"{max_parts} part (~{max_parts * part_size / 1024 ** 3:.2f} GB) "
+                f"untuk akun ini. Naikkan akun ke Telegram Premium (~4 GB/file) "
+                f"atau turunkan TELEGRAM_MAX_FILE_SIZE_MB agar video di-split "
+                f"di bawah batas."
+            )
 
         state: dict = {}
         if sidecar.exists():
@@ -420,6 +494,14 @@ class TelegramSender:
                     "tidak diulang.", path.name,
                 )
                 return None
+            except TelegramFileTooLarge as exc:
+                # Batas jumlah part adalah sifat akun, bukan kondisi sementara:
+                # diulang 10 kali pun hasilnya sama, jadi langsung menyerah
+                # (file tetap di disk, bisa di-split ulang manual atau dikirim
+                # setelah akun naik Premium).
+                sidecar.unlink(missing_ok=True)
+                logger.error("Upload %s dibatalkan sebelum mulai: %s", path.name, exc)
+                return None
             except Exception as exc:
                 logger.exception(
                     "Upload error for %s (percobaan %d): %s", path.name, attempt + 1, exc
@@ -464,8 +546,11 @@ class TelegramSender:
         parts: list[VideoPart] = []
         thumb_path: Optional[Path] = None
         try:
-            # 1. Split video into parts if needed
-            parts = await split_video_if_needed(path)
+            # 1. Split video into parts if needed — ambangnya mengikuti jumlah
+            #    part yang benar-benar diterima server untuk akun ini.
+            parts = await split_video_if_needed(
+                path, max_bytes=await self._split_limit_bytes()
+            )
             total_parts = len(parts)
 
             # 2. Generate a thumbnail frame for the video
@@ -602,7 +687,9 @@ class TelegramSender:
             logger.warning("Tidak ada media untuk dikirim ke Telegram (post %s)", post.get("id"))
             return []
 
-        video_parts = await split_video_if_needed(Path(video_path))
+        video_parts = await split_video_if_needed(
+            Path(video_path), max_bytes=await self._split_limit_bytes()
+        )
         total = len(video_parts)
         try:
             for part in video_parts:
