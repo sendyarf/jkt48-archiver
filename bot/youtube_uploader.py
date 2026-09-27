@@ -6,6 +6,7 @@ If all channels hit quota limits, marks the upload as pending so it can be retri
 """
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Optional, Tuple
@@ -105,6 +106,26 @@ def _next_chunk_with_retry(request, label: str):
             raise
 
 
+YOUTUBE_TITLE_MAX = 100
+YOUTUBE_DESCRIPTION_MAX = 5000
+
+# YouTube menolak title/description yang memuat '<', '>', atau karakter kontrol
+# C0 (HttpError 400 invalidTitle/invalidDescription). Caption TikTok sering
+# memuatnya (mis. "<3"), jadi SEMUA input disanitasi sebelum dikirim ke API;
+# tanpa ini satu caption macam itu menggagalkan upload di SEMUA channel
+# (insiden Muthe 28 Sep 2026: 5 channel dicoba, lima-limanya ditolak 400).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def sanitize_video_text(text: str, *, max_len: int) -> str:
+    """Bersihkan teks title/description untuk API YouTube (hapus <, >, kontrol)."""
+    if not text:
+        return ""
+    cleaned = _CONTROL_CHARS_RE.sub("", str(text))
+    cleaned = cleaned.replace("<", "").replace(">", "")
+    return cleaned[:max_len]
+
+
 class YouTubeChannelPool:
     """Manages YouTube client authentication and round-robin upload across channels."""
 
@@ -163,10 +184,16 @@ class YouTubeChannelPool:
         Upload a video file to YouTube as unlisted using the best available channel.
         Tries channels with fewest uploads first, falling back to next if quota exceeded.
 
+        Title & description disanitasi (hapus <, >, kontrol) supaya caption
+        TikTok bergaya "<3" tidak membuat SEMUA channel menolak upload
+        (HttpError 400 invalidDescription/invalidTitle).
+
         Returns:
             (video_id, channel_label) if successful.
             (None, None) if failed permanently or all quotas exhausted.
         """
+        title = sanitize_video_text(title, max_len=YOUTUBE_TITLE_MAX) or "JKT48"
+        description = sanitize_video_text(description, max_len=YOUTUBE_DESCRIPTION_MAX)
         path = Path(file_path)
         if not path.exists():
             logger.error("YouTube upload: file not found: %s", path)
