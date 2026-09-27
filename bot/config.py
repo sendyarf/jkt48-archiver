@@ -129,6 +129,26 @@ class Config:
         os.getenv("TELEGRAM_FLOOD_COOLDOWN_MINUTES", "90")
     )
 
+    # Kegagalan upload Telegram NON-flood (network, RPC error, dsb) juga
+    # diberi cooldown yang ESKALATIF per file: 15 → 30 → 60 → … menit sampai
+    # TELEGRAM_RETRY_MAX_MINUTES. Tanpa ini, file yang memang tidak bisa
+    # ter-upload di-retry tiap 15 menit selamanya dan membanjiri channel
+    # admin dengan notifikasi gagal yang sama.
+    TELEGRAM_RETRY_BASE_MINUTES: int = int(
+        os.getenv("TELEGRAM_RETRY_BASE_MINUTES", "15")
+    )
+    TELEGRAM_RETRY_MAX_MINUTES: int = int(
+        os.getenv("TELEGRAM_RETRY_MAX_MINUTES", "240")
+    )
+
+    # Setelah N kegagalan upload Telegram berturut-turut untuk file yang
+    # sama, sesi ditandai 'failed' (dead-letter) dan tidak di-retry otomatis
+    # lagi — admin diberi tahu SEKALI untuk upload manual via
+    # `python -m bot.upload_pending`.
+    TELEGRAM_UPLOAD_MAX_FAILURES: int = int(
+        os.getenv("TELEGRAM_UPLOAD_MAX_FAILURES", "8")
+    )
+
     # ─── YouTube Data API v3 ────────────────────────────────────────────
     # Fallback single channel config (backward compatibility)
     YOUTUBE_CLIENT_SECRET_FILE: str = os.getenv(

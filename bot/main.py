@@ -36,6 +36,7 @@ from bot.showroom_monitor import (
 from bot.timeutil import utc_now_iso, utc_now
 from bot.admin_bot import AdminBot
 from bot.downloader import (
+    available_disk_mb,
     download_stream,
     delete_file,
     get_file_size_bytes,
@@ -52,6 +53,7 @@ from bot.telegram_sender import (
     TelegramFloodExhausted,
     TelegramSender,
     _dot_at,
+    _format_live_time,
     _format_size,
     _platform_label,
     build_youtube_notification,
@@ -107,6 +109,8 @@ def _admin_live_message(
     member_name: str = "",
     member_username: str = "",
     live_id: str = "",
+    started_at: str = "",
+    live_title: str = "",
     detail: str = "",
 ) -> str:
     """Susun notifikasi admin (HTML) untuk satu tahap pipeline live.
@@ -114,12 +118,24 @@ def _admin_live_message(
     Header memakai label platform yang sama dengan caption/notifikasi publik
     (`_platform_label`) supaya rekaman Showroom tidak pernah dilaporkan sebagai
     IDN. Semua bagian opsional — hanya yang terisi yang ikut dikirim.
+
+    `started_at` (waktu mulai sesi, apa yang tersimpan di DB) selalu ditampilkan
+    sebagai tanggal + jam zona tampilan lewat `_format_live_time` — sama seperti
+    caption Telegram/YouTube. Admin dengan puluhan baris antrean (mis. sesi
+    'uploading_telegram' berumur 90 jam) bisa langsung tahu SESI MANA yang
+    dimaksud tanpa membuka database. `live_title` (judul IDN / nama room
+    Showroom) ikut ditampilkan bila sudah diketahui.
     """
     lines = [headline + (f" · <b>{_platform_label(platform)}</b>" if platform else "")]
     if member_name and member_username:
         lines.append(f"👤 <b>{member_name}</b> ({_dot_at(member_username)})")
     elif member_name or member_username:
         lines.append(f"👤 <b>{member_name or member_username}</b>")
+    live_time = _format_live_time(started_at) if started_at else ""
+    if live_time:
+        lines.append(f"🗓 <b>{live_time}</b>")
+    if live_title:
+        lines.append(f"📌 {live_title[:120]}")
     if live_id:
         lines.append(f"🆔 <code>{live_id}</code>")
     if detail:
@@ -210,6 +226,15 @@ class JKT48LiveBot:
         # sekaligus tetap bisa direkam keduanya tanpa saling memblokir.
         self.active_showroom: set[str] = set()  # username Showroom yang sedang direkam
         self.active_live_ids: dict[str, str] = {}  # kunci -> live_id sedang direkam
+        # Kapan tiap slot rekaman diisi (time.monotonic). Dipakai watchdog untuk
+        # mendeteksi kebocoran: slot yang terisi jauh di atas batas keras merge
+        # membuat member yang sedang live dilewati selamanya oleh loop deteksi.
+        self._recording_since: dict[str, float] = {}
+        self._showroom_since: dict[str, float] = {}
+        # Throttle pesan peringatan berulang (loop deteksi berputar tiap 5 detik,
+        # tanpa throttle log-nya banjir dan malah tidak terbaca).
+        self._last_disk_block_warn: float = 0.0
+        self._last_state_warn: float = 0.0
         self.recording_tasks: set[asyncio.Task] = set()
         # Retry workers are deliberately separate from the HLS polling loop.
         # A large Telegram/YouTube upload must never stop live detection.
@@ -229,6 +254,12 @@ class JKT48LiveBot:
         # percobaan membuang ~819 MB bandwidth dan memperpanjang penalty akun).
         # Dimuat dari sidecar JSON agar selamat dari pm2 restart.
         self._flood_cooldown: dict[str, float] = load_flood_cooldown()
+        # live_id -> jumlah kegagalan upload Telegram BERUNTUN (flood maupun
+        # non-flood). Dipakai untuk cooldown eskalatif + dedup notifikasi:
+        # hanya kegagalan PERTAMA yang dikirim ke admin; retry berikutnya
+        # diam (log saja) sampai berhasil atau dead-letter. In-memory cukup —
+        # restart pm2 paling-paling mengulang satu notifikasi pertama.
+        self._tg_fail_count: dict[str, int] = {}
         self.admin_bot: Optional[AdminBot] = None
         self.replay_bot: Optional[ReplayBot] = None
         # Arsip TikTok (OPSIONAL): hanya dibuat bila TIKTOK_ENABLED=true,
@@ -337,6 +368,40 @@ class JKT48LiveBot:
                 "Segmen yang sudah terekam tetap akan diupload setelah merge window."
             )
         return "⚠️ Proses rekaman tidak ditemukan (mungkin sudah selesai)."
+
+    def _note_telegram_failure(self, live_id: str, *, flood: bool = False) -> tuple[int, int]:
+        """Catat satu kegagalan upload Telegram; pasang cooldown eskalatif.
+
+        Flood memakai TELEGRAM_FLOOD_COOLDOWN_MINUTES (penalti akun nyata).
+        Kegagalan lain (network/RPC/error umum) dieskalasi 15 → 30 → 60 menit
+        (cap TELEGRAM_RETRY_MAX_MINUTES) supaya file yang memang tidak bisa
+        ter-upload TIDAK di-retry tiap siklus 15 menit selamanya — cukup
+        ditunda makin lama, lalu dead-letter setelah TELEGRAM_UPLOAD_MAX_FAILURES.
+
+        Cooldown dipersist ke sidecar (selamat dari pm2 restart). Return
+        (jumlah_gagal, menit_cooldown).
+        """
+        count = self._tg_fail_count.get(live_id, 0) + 1
+        self._tg_fail_count[live_id] = count
+        if flood:
+            minutes = max(1, int(Config.TELEGRAM_FLOOD_COOLDOWN_MINUTES))
+        else:
+            minutes = min(
+                int(Config.TELEGRAM_RETRY_MAX_MINUTES),
+                max(1, int(Config.TELEGRAM_RETRY_BASE_MINUTES)) * (2 ** (count - 1)),
+            )
+        self._flood_cooldown[live_id] = time.time() + minutes * 60
+        save_flood_cooldown(self._flood_cooldown)
+        return count, minutes
+
+    def _clear_telegram_failure(self, live_id: str) -> bool:
+        """Upload berhasil → bersihkan catatan gagal. Return True bila sebelumnya gagal."""
+        had = live_id in self._tg_fail_count
+        self._tg_fail_count.pop(live_id, None)
+        if live_id in self._flood_cooldown:
+            del self._flood_cooldown[live_id]
+            save_flood_cooldown(self._flood_cooldown)
+        return had
 
     async def _notify_admin(self, text: str) -> None:
         """Kirim notifikasi progres live ke admin (best-effort, tak pernah raise).
@@ -519,6 +584,8 @@ class JKT48LiveBot:
                         member_name=member_name or member_username,
                         member_username=member_username,
                         live_id=live_id,
+                        started_at=started_at,
+                        live_title=live_title,
                         detail=f"⚠️ File tidak ditemukan: <code>{path}</code>",
                     )
                 )
@@ -534,16 +601,21 @@ class JKT48LiveBot:
                 file_path=str(path),
                 file_size_bytes=file_size,
             )
-            await self._notify_admin(
-                _admin_live_message(
-                    "📤 <b>UPLOAD TELEGRAM</b>",
-                    platform=plat,
-                    member_name=member_name or member_username,
-                    member_username=member_username,
-                    live_id=live_id,
-                    detail=f"💾 {_format_size(file_size)} → channel arsip",
+            # Retry (pernah gagal sebelumnya) tidak perlu mengumumkan ulang
+            # "sedang upload" — hanya percobaan pertama yang diberitahukan.
+            if not self._tg_fail_count.get(live_id):
+                await self._notify_admin(
+                    _admin_live_message(
+                        "📤 <b>UPLOAD TELEGRAM</b>",
+                        platform=plat,
+                        member_name=member_name or member_username,
+                        member_username=member_username,
+                        live_id=live_id,
+                        started_at=started_at,
+                        live_title=live_title,
+                        detail=f"💾 {_format_size(file_size)} → channel arsip",
+                    )
                 )
-            )
             # Both live destinations are mandatory.  Prefer the private archive
             # channel, but retain the regular channel as a migration fallback.
             archive_channel = Config.TELEGRAM_ARCHIVE_CHANNEL_ID or Config.TELEGRAM_CHANNEL_ID
@@ -562,6 +634,7 @@ class JKT48LiveBot:
             if archive_error:
                 errors.append(archive_error)
             if archive_ok:
+                was_failing = self._clear_telegram_failure(live_id)
                 logger.info("Telegram archive selesai untuk %s; lanjut ke YouTube", live_id)
                 await self._notify_admin(
                     _admin_live_message(
@@ -570,29 +643,76 @@ class JKT48LiveBot:
                         member_name=member_name or member_username,
                         member_username=member_username,
                         live_id=live_id,
-                        detail="📦 Arsip aman di channel → lanjut YouTube",
+                        started_at=started_at,
+                        live_title=live_title,
+                        detail=(
+                            "🎉 Berhasil setelah retry otomatis\n"
+                            "📦 Arsip aman di channel → lanjut YouTube"
+                        ) if was_failing else "📦 Arsip aman di channel → lanjut YouTube",
                     )
                 )
             else:
                 # Telegram is the download archive.  Do not send the same local
                 # file to YouTube until this mandatory first stage is safe.
+                count, minutes = self._note_telegram_failure(live_id)
                 logger.warning(
-                    "Telegram archive belum selesai untuk %s; YouTube ditunda",
-                    live_id,
+                    "Telegram archive belum selesai untuk %s (gagal %d×; "
+                    "cooldown %d menit); YouTube ditunda",
+                    live_id, count, minutes,
                 )
-                await self._notify_admin(
-                    _admin_live_message(
-                        "⚠️ <b>TELEGRAM GAGAL</b>",
-                        platform=plat,
-                        member_name=member_name or member_username,
-                        member_username=member_username,
-                        live_id=live_id,
-                        detail=(
-                            f"⚠️ {str(archive_error or '')[:300]}\n"
-                            "⏳ Masuk antrean retry otomatis (YouTube ditunda)"
+                max_failures = max(1, int(Config.TELEGRAM_UPLOAD_MAX_FAILURES))
+                if count >= max_failures:
+                    # Dead-letter: berhenti meng-hammer akun; admin diberi tahu
+                    # SEKALI untuk upload manual. Status 'failed' dikeluarkan
+                    # dari antrean retry otomatis (hanya pending_upload/
+                    # download_complete yang diproses worker).
+                    set_status(
+                        "failed",
+                        error_message=(
+                            f"telegram archive gagal {count}× berturut-turut: "
+                            f"{archive_error or 'unknown'}"
                         ),
                     )
-                )
+                    self._tg_fail_count.pop(live_id, None)
+                    await self._notify_admin(
+                        _admin_live_message(
+                            "🛑 <b>TELEGRAM DITUNDA PERMANEN</b>",
+                            platform=plat,
+                            member_name=member_name or member_username,
+                            member_username=member_username,
+                            live_id=live_id,
+                            started_at=started_at,
+                            live_title=live_title,
+                            detail=(
+                                f"⚠️ {str(archive_error or '')[:200]}\n"
+                                f"Gagal {count}× berturut-turut — retry otomatis "
+                                "dihentikan; file TETAP aman di disk.\n"
+                                "🔧 Upload manual: <code>python -m bot.upload_pending</code>"
+                            ),
+                        )
+                    )
+                    return False
+                if count == 1:
+                    # Hanya kegagalan PERTAMA yang dinotifikasi — spam N kali
+                    # per file (insiden Nala 28 Sep 2026: 5 pasang notif
+                    # gagal/ulang dalam 45 menit) tidak menambah informasi.
+                    await self._notify_admin(
+                        _admin_live_message(
+                            "⚠️ <b>TELEGRAM GAGAL</b>",
+                            platform=plat,
+                            member_name=member_name or member_username,
+                            member_username=member_username,
+                            live_id=live_id,
+                            started_at=started_at,
+                            live_title=live_title,
+                            detail=(
+                                f"⚠️ {str(archive_error or '')[:300]}\n"
+                                f"⏳ Retry otomatis ±{minutes} menit (percobaan "
+                                f"1/{max_failures}) — notifikasi gagal berikutnya "
+                                "untuk file ini disembunyikan sampai berhasil."
+                            ),
+                        )
+                    )
                 set_status(
                     "pending_upload",
                     error_message=" | ".join(errors) or archive_error or "Telegram archive pending",
@@ -620,7 +740,9 @@ class JKT48LiveBot:
                     member_name=member_name or member_username,
                     member_username=member_username,
                     live_id=live_id,
-                    detail=f"💾 {_format_size(file_size)}\n📌 {title[:120]}",
+                    started_at=started_at,
+                    live_title=live_title,
+                    detail=f"💾 {_format_size(file_size)}",
                 )
             )
             logger.info("Uploading video to YouTube for %s (%s): %s", member_name, live_id, title)
@@ -641,6 +763,8 @@ class JKT48LiveBot:
                             member_name=member_name or member_username,
                             member_username=member_username,
                             live_id=live_id,
+                            started_at=started_at,
+                            live_title=live_title,
                             detail="⚠️ Upload tidak mengembalikan video ID\n⏳ Menunggu retry otomatis",
                         )
                     )
@@ -660,6 +784,8 @@ class JKT48LiveBot:
                             member_name=member_name or member_username,
                             member_username=member_username,
                             live_id=live_id,
+                            started_at=started_at,
+                            live_title=live_title,
                             detail=(
                                 f"📺 {channel_label} · <code>{youtube_video_id}</code>\n"
                                 f"▶️ https://youtu.be/{youtube_video_id}"
@@ -699,6 +825,8 @@ class JKT48LiveBot:
                         member_name=member_name or member_username,
                         member_username=member_username,
                         live_id=live_id,
+                        started_at=started_at,
+                        live_title=live_title,
                         detail=(
                             "📦 Video sudah aman di Telegram\n"
                             f"⚠️ {str(exc)[:300]}\n"
@@ -717,6 +845,8 @@ class JKT48LiveBot:
                         member_name=member_name or member_username,
                         member_username=member_username,
                         live_id=live_id,
+                        started_at=started_at,
+                        live_title=live_title,
                         detail=f"⚠️ {str(exc)[:300]}\n⏳ Menunggu retry otomatis",
                     )
                 )
@@ -861,22 +991,59 @@ class JKT48LiveBot:
         display_name = member.get("display_name") or username
         hls_url = member["hls_url"]
         started_at = utc_now_iso()
+        # Judul live baru diketahui setelah lookup IDN selesai (lihat slug_task di
+        # bawah). Diinisialisasi di awal supaya SEMUA notifikasi admin — termasuk
+        # REC MULAI dan blok `except` — boleh membacanya tanpa NameError.
+        live_title = ""
 
         logger.info("🔴 Starting recording task for %s (%s) [live_id=%s]",
                     display_name, username, live_id)
 
-        # Daftarkan live_id aktif agar Telegram /stop bisa membatalkan rekaman ini
-        self.active_live_ids[username] = live_id
+        # Slot waktu sudah dicatat loop deteksi; ini jaring pengaman bila task
+        # dipanggil dari jalur lain (mis. tes) supaya watchdog tidak buta.
+        self._recording_since.setdefault(username, time.monotonic())
 
-        database.insert_live(
-            live_id=live_id,
-            member_username=username,
-            member_name=display_name,
-            started_at=started_at,
-            hls_url=hls_url,
-        )
-        database.update_status(live_id, "downloading", download_started_at=started_at)
-        self.merge_mgr.download_started(username, "idn")
+        # Registrasi sesi HARUS dibungkus proteksi. `username` sudah masuk ke
+        # self.active_recordings di loop deteksi dan hanya dibersihkan di blok
+        # `finally` paling bawah — bila salah satu langkah di bawah ini gagal
+        # (mis. SQLite "database is locked" saat worker upload sedang menulis),
+        # task mati SEBELUM try/finally itu berjalan dan slotnya bocor permanen.
+        # Efeknya persis keluhan "bot gagal merekam member yang sedang live":
+        # member itu tidak pernah di-probe lagi sampai bot di-restart, sementara
+        # database sama sekali tidak menunjukkan sesi.
+        try:
+            # Daftarkan live_id aktif agar Telegram /stop bisa membatalkan rekaman ini
+            self.active_live_ids[username] = live_id
+
+            database.insert_live(
+                live_id=live_id,
+                member_username=username,
+                member_name=display_name,
+                started_at=started_at,
+                hls_url=hls_url,
+            )
+            database.update_status(live_id, "downloading", download_started_at=started_at)
+            self.merge_mgr.download_started(username, "idn")
+        except Exception as exc:
+            logger.exception("Gagal menyiapkan sesi rekaman IDN untuk %s: %s", username, exc)
+            self.active_recordings.discard(username)
+            self.active_live_ids.pop(username, None)
+            self._recording_since.pop(username, None)
+            self.merge_mgr.download_ended(username, "idn")
+            await self._notify_admin(
+                _admin_live_message(
+                    "❌ <b>REC GAGAL</b>",
+                    platform="idn",
+                    member_name=display_name,
+                    member_username=username,
+                    live_id=live_id,
+                    started_at=started_at,
+                    live_title=live_title,
+                    detail=f"⚠️ Sesi gagal disiapkan: {str(exc)[:200]}",
+                )
+            )
+            return
+
         await self._notify_admin(
             _admin_live_message(
                 "🔴 <b>REC MULAI</b>",
@@ -884,6 +1051,8 @@ class JKT48LiveBot:
                 member_name=display_name,
                 member_username=username,
                 live_id=live_id,
+                started_at=started_at,
+                live_title=live_title,
             )
         )
 
@@ -963,6 +1132,8 @@ class JKT48LiveBot:
                     member_name=display_name,
                     member_username=username,
                     live_id=live_id,
+                    started_at=started_at,
+                    live_title=live_title,
                     detail=(
                         f"💾 {_format_size(file_size)} → menunggu merge window\n"
                         "⏳ Upload otomatis setelah live selesai"
@@ -980,6 +1151,8 @@ class JKT48LiveBot:
                     member_name=display_name,
                     member_username=username,
                     live_id=live_id,
+                    started_at=started_at,
+                    live_title=live_title,
                     detail=f"⚠️ {str(exc)[:300]}",
                 )
             )
@@ -993,6 +1166,8 @@ class JKT48LiveBot:
                     member_name=display_name,
                     member_username=username,
                     live_id=live_id,
+                    started_at=started_at,
+                    live_title=live_title,
                     detail=f"⚠️ {str(exc)[:300]}",
                 )
             )
@@ -1002,6 +1177,7 @@ class JKT48LiveBot:
             self.merge_mgr.download_ended(username, "idn")
             self.active_recordings.discard(username)
             self.active_live_ids.pop(username, None)
+            self._recording_since.pop(username, None)
 
     async def _record_showroom_task(self, room: dict, live_id: str) -> None:
         """
@@ -1085,6 +1261,8 @@ class JKT48LiveBot:
                 member_name=display_name,
                 member_username=username,
                 live_id=live_id,
+                started_at=started_at,
+                live_title=room_name,
                 detail=rec_detail,
             )
         )
@@ -1169,6 +1347,8 @@ class JKT48LiveBot:
                             member_name=display_name,
                             member_username=username,
                             live_id=part_id,
+                            started_at=started_at,
+                            live_title=room_name,
                             detail=(
                                 f"Bagian resume #{resumes_done} — ffmpeg berhenti "
                                 "padahal live masih jalan"
@@ -1211,6 +1391,8 @@ class JKT48LiveBot:
                         member_name=display_name,
                         member_username=username,
                         live_id=part_id,
+                        started_at=started_at,
+                        live_title=room_name,
                         detail=(
                             f"💾 {_format_size(file_size)} "
                             f"(bagian {resumes_done + 1}) → menunggu merge window"
@@ -1260,6 +1442,8 @@ class JKT48LiveBot:
                         member_name=display_name,
                         member_username=username,
                         live_id=part_id,
+                        started_at=started_at,
+                        live_title=room_name,
                         detail=(
                             f"Bagian resume #{resumes_done} — masih live setelah "
                             "bagian sebelumnya selesai"
@@ -1276,6 +1460,8 @@ class JKT48LiveBot:
                     member_name=display_name,
                     member_username=username,
                     live_id=part_id,
+                    started_at=started_at,
+                    live_title=room_name,
                     detail=f"⚠️ {str(exc)[:300]}",
                 )
             )
@@ -1289,6 +1475,8 @@ class JKT48LiveBot:
                     member_name=display_name,
                     member_username=username,
                     live_id=part_id,
+                    started_at=started_at,
+                    live_title=room_name,
                     detail=f"⚠️ {str(exc)[:300]}",
                 )
             )
@@ -1296,6 +1484,7 @@ class JKT48LiveBot:
             self.merge_mgr.download_ended(username, "showroom")
             self.active_showroom.discard(username)
             self.active_live_ids.pop(f"sr:{username}", None)
+            self._showroom_since.pop(username, None)
 
     async def _showroom_room_live(self, room_id: str) -> Optional[bool]:
         """
@@ -1420,9 +1609,47 @@ class JKT48LiveBot:
             self.showroom.forget(state.room_id)
 
             self.active_showroom.add(username)
+            self._showroom_since[username] = time.monotonic()
             task = asyncio.create_task(self._record_showroom_task(room, live_id))
             self.recording_tasks.add(task)
             task.add_done_callback(self.recording_tasks.discard)
+
+    def _watchdog_recording_state(self) -> None:
+        """Peringatkan slot rekaman yang tidak wajar tuanya.
+
+        `active_recordings` / `active_showroom` adalah kunci loop deteksi:
+        member di dalamnya TIDAK di-probe lagi. Selama ini isinya hanya dilepas
+        di `finally` task rekaman, sehingga satu task yang mati di luar jalur
+        normal membuat member tersebut "hilang" dari deteksi tanpa pesan error
+        apa pun. Batas wajar = batas keras merge + 2 jam (di atas itu task
+        seharusnya sudah selesai/finalize sendiri).
+        """
+        limit_seconds = (Config.MERGE_MAX_GROUP_HOURS + 2) * 3600
+        now = time.monotonic()
+
+        def _stale(since: dict[str, float]) -> list[str]:
+            return [
+                f"{username} ({int((now - started) / 3600)} jam)"
+                for username, started in since.items()
+                if now - started > limit_seconds
+            ]
+
+        stale = [f"[IDN] {x}" for x in _stale(self._recording_since)]
+        stale += [f"[Showroom] {x}" for x in _stale(self._showroom_since)]
+        if not stale:
+            return
+        if now - self._last_state_warn < 900:
+            return
+        self._last_state_warn = now
+        logger.warning(
+            "⚠️ Watchdog: %d slot rekaman berumur > %.1f jam: %s. Selama slot ini "
+            "terisi, member-nya TIDAK akan di-probe lagi walau sedang live — "
+            "kalau tidak ada proses ffmpeg-nya (cek `pm2 logs`/`pgrep -af ffmpeg`), "
+            "paksa lepas dengan /stop atau restart bot.",
+            len(stale),
+            Config.MERGE_MAX_GROUP_HOURS + 2,
+            ", ".join(stale),
+        )
 
     def _schedule_pending_uploads(self) -> None:
         """Start one pending-upload worker, if one is not already running."""
@@ -1589,19 +1816,44 @@ class JKT48LiveBot:
                     member_username=username,
                     member_name=name,
                     started_at=started_at,
+                    # Judul tersimpan di DB ikut dikirim supaya notifikasi admin
+                    # retry menyebut SESI MANA (kolom bisa NULL utk sesi lama).
+                    live_title=sess.get("live_title") or "",
                     file_path=str(path),
                 )
             except TelegramFloodExhausted as exc:
-                minutes = max(1, int(Config.TELEGRAM_FLOOD_COOLDOWN_MINUTES))
-                self._flood_cooldown[live_id] = time.time() + minutes * 60
-                # Persist SEGERA: restart pm2 tidak boleh mengulang file ini
-                # dari byte 0 (tiap percobaan membuang ~819 MB).
-                save_flood_cooldown(self._flood_cooldown)
+                count, minutes = self._note_telegram_failure(live_id, flood=True)
                 logger.error(
-                    "%s — file di-cooldown %d menit (tetap aman di disk). "
-                    "Lanjut ke file berikutnya tanpa membuang bandwidth.",
-                    exc, minutes,
+                    "%s — file di-cooldown %d menit (gagal %d×; tetap aman di "
+                    "disk). Lanjut ke file berikutnya tanpa membuang bandwidth.",
+                    exc, minutes, count,
                 )
+                # Flood exhaust saat RETRY: percobaan pertama sudah diumumkan
+                # dari jalur pipa langsung; di sini hanya dead-letter yang
+                # layak memberi tahu admin lagi.
+                max_failures = max(1, int(Config.TELEGRAM_UPLOAD_MAX_FAILURES))
+                if count >= max_failures:
+                    database.update_status(
+                        live_id, "failed",
+                        error_message=f"telegram archive flood {count}× berturut-turut",
+                    )
+                    self._tg_fail_count.pop(live_id, None)
+                    await self._notify_admin(
+                        _admin_live_message(
+                            "🛑 <b>TELEGRAM DITUNDA PERMANEN</b>",
+                            member_name=sess.get("member_name") or username,
+                            member_username=username,
+                            live_id=live_id,
+                            started_at=started_at,
+                            live_title=sess.get("live_title") or "",
+                            detail=(
+                                f"⚠️ {str(exc)[:200]}\n"
+                                f"Gagal {count}× berturut-turut (flood) — retry "
+                                "otomatis dihentikan; file TETAP aman di disk.\n"
+                                "🔧 Upload manual: <code>python -m bot.upload_pending</code>"
+                            ),
+                        )
+                    )
             except Exception as exc:
                 logger.exception(
                     "Retry upload gagal untuk %s (%s): %s", live_id, file_path, exc,
@@ -1711,7 +1963,25 @@ class JKT48LiveBot:
                     # habis (ffmpeg bisa gagal di tengah jalan). Rekaman
                     # yang sudah berjalan tetap dibiarkan; deteksi diulang siklus
                     # berikutnya begitu space cukup.
+                    #
+                    # Keputusan guard ini dulu SENYAP bagi admin: yang terlihat
+                    # hanya "member live tapi tidak terekam", tanpa jejak siapa
+                    # yang dilewati. Sekarang nama member + angka ruang dicatat
+                    # (dithrottle 5 menit: loop ini berputar tiap beberapa detik).
                     if active_now and not has_enough_disk_space():
+                        if time.monotonic() - self._last_disk_block_warn >= 300:
+                            self._last_disk_block_warn = time.monotonic()
+                            free_mb = available_disk_mb()
+                            logger.warning(
+                                "💾 Disk guard menolak %d member yang sedang LIVE: "
+                                "sisa ruang %s < ambang MIN_FREE_DISK_MB %d MB — "
+                                "rekaman baru ditahan sampai file lama terhapus "
+                                "(antrean upload menumpuk? cek: python -m bot.diagnose): %s",
+                                len(active_now),
+                                f"{free_mb} MB" if free_mb is not None else "tidak terbaca",
+                                Config.MIN_FREE_DISK_MB,
+                                ", ".join(m["username"] for m in active_now),
+                            )
                         active_now = []
 
                     for member in active_now:
@@ -1720,6 +1990,9 @@ class JKT48LiveBot:
                             continue
 
                         self.active_recordings.add(u)
+                        # Dicatat untuk watchdog: slot yang terisi terlalu lama =
+                        # member tidak akan di-probe lagi (lihat _watchdog_recording_state).
+                        self._recording_since[u] = time.monotonic()
                         live_id = f"{u}_{int(utc_now().timestamp())}"
 
                         task = asyncio.create_task(self._record_member_task(member, live_id))
@@ -1745,6 +2018,10 @@ class JKT48LiveBot:
                 # Telegram upload pauses HLS/Showroom detection for hours.
                 if loop_counter % 120 == 0:
                     self._schedule_retry_workers()
+
+                # 5b. Watchdog state rekaman: slot yang tidak pernah lepas berarti
+                # member yang sedang live diam-diam tidak akan pernah dikejar lagi.
+                self._watchdog_recording_state()
 
                 # 6. Arsip TikTok (OPSIONAL): satu akun per siklus (round-robin)
                 #    sebagai BACKGROUND TASK. run_once() bisa memakan waktu lama

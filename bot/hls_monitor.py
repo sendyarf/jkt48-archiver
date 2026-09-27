@@ -57,24 +57,28 @@ class HLSMonitor:
             )
         return self._client
 
-    async def is_stream_active(self, hls_url: str) -> bool:
+    async def probe(self, hls_url: str) -> tuple[bool, str]:
         """
-        Check if an HLS URL is currently broadcasting.
-        Returns True if HTTP 200 and content starts with '#EXTM3U'.
+        Cek satu HLS URL dan kembalikan (aktif, alasan).
+
+        `is_stream_active()` hanya menjawab ya/tidak, sedangkan diagnosis
+        (“kenapa member yang lagi live nggak terekam?”) butuh alasan teknisnya:
+        HTTP 404 = URL HLS basi/kanal berpindah, HTTP 200 tanpa #EXTM3U = respons
+        HTML (proxy/rate-limit), error jaringan = IP server diblokir.
         """
         if not hls_url:
-            return False
+            return False, "URL HLS kosong (member belum punya playback_url di DB)"
 
         async with self._semaphore:
             client = self._get_client()
-            last_error = ""
+            last_error = "tidak ada respons"
             for attempt in range(1, self._probe_attempts + 1):
                 try:
                     resp = await client.get(hls_url)
                     if resp.status_code == 200:
                         text = resp.text[:200].lstrip()
                         if "#EXTM3U" in text:
-                            return True
+                            return True, f"HTTP 200 + #EXTM3U (live)"
                         last_error = f"HTTP 200 tanpa #EXTM3U: {text[:80]!r}"
                     else:
                         last_error = f"HTTP {resp.status_code}"
@@ -82,19 +86,28 @@ class HLSMonitor:
                         attempt >= self._probe_attempts
                         or resp.status_code not in _RETRYABLE_HTTP_STATUSES
                     ):
-                        return False
+                        return False, last_error
                 except httpx.RequestError as exc:
-                    last_error = repr(exc)
+                    last_error = f"request gagal: {exc!r}"
                     if attempt >= self._probe_attempts:
-                        return False
+                        return False, last_error
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.debug("HLS probe error for %s: %s", hls_url, exc)
-                    return False
+                    return False, f"error tak terduga: {exc!r}"
 
                 await asyncio.sleep(self._retry_delay_seconds)
 
             logger.debug("HLS probe failed for %s (%s)", hls_url, last_error)
-            return False
+            return False, last_error
+
+    async def is_stream_active(self, hls_url: str) -> bool:
+        """
+        Check if an HLS URL is currently broadcasting.
+        Returns True if HTTP 200 and content starts with '#EXTM3U'.
+        """
+        active, _reason = await self.probe(hls_url)
+        return active
+
 
     async def check_active_members(self, members: list[dict]) -> list[dict]:
         """

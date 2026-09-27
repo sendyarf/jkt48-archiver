@@ -188,6 +188,14 @@ def _ensure_download_dir() -> Path:
     return path
 
 
+def available_disk_mb() -> Optional[int]:
+    """Ruang bebas (MB) di partisi DOWNLOAD_DIR; None bila tidak bisa dibaca."""
+    try:
+        return shutil.disk_usage(str(_ensure_download_dir())).free // (1024 * 1024)
+    except OSError:
+        return None
+
+
 def has_enough_disk_space(min_mb: Optional[int] = None) -> bool:
     """
     True bila space bebas di DOWNLOAD_DIR masih di atas ambang MIN_FREE_DISK_MB.
@@ -196,9 +204,8 @@ def has_enough_disk_space(min_mb: Optional[int] = None) -> bool:
     tengah jalan karena disk penuh (insiden yang tercatat di SHOWROOM-PLAN §6.1).
     """
     threshold_mb = Config.MIN_FREE_DISK_MB if min_mb is None else min_mb
-    try:
-        free_mb = shutil.disk_usage(str(_ensure_download_dir())).free // (1024 * 1024)
-    except OSError:
+    free_mb = available_disk_mb()
+    if free_mb is None:
         # Tidak bisa cek → jangan blokir recording (mis. FS aneh).
         return True
     if free_mb < threshold_mb:

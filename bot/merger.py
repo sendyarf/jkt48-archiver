@@ -53,7 +53,7 @@ from bot.database import (
 )
 from bot.downloader import delete_file, has_enough_disk_space
 from bot.idn_lookup import live_key_from
-from bot.telegram_sender import _format_size, _platform_label
+from bot.telegram_sender import _format_live_time, _format_size, _platform_label
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,9 @@ class MergeManager:
         self._timers: dict[str, asyncio.Task] = {}  # scope -> timer task
         self._active_downloads: dict[str, int] = {}  # scope -> count of in-flight downloads
         self._lock = asyncio.Lock()
+        # Grup yang sudah mengumumkan "LIVE SELESAI". Finalize bisa di-defer
+        # ulang (mis. disk penuh) — notifikasi cukup sekali per grup.
+        self._live_finish_notified: set[int] = set()
 
     async def _notify(self, text: str) -> None:
         """Kirim notifikasi progres merge ke admin (best-effort, tak pernah raise)."""
@@ -521,27 +524,59 @@ class MergeManager:
 
         segments = valid_segments
         file_paths = [s["file_path"] for s in segments]
-        if not file_paths:
-            logger.warning("Merge group %d has no valid file paths", group_id)
-            await self._notify(
-                "⚠️ <b>MERGE GAGAL</b>\n"
-                f"👤 <b>{member_username}</b>\n"
-                f"Semua segmen grup {group_id} hilang/kosong — tidak ada yang bisa diupload."
-            )
-            fail_merge_group(group_id)
-            return
 
+        # Meta grup dibaca SEBELUM percabangan supaya semua notifikasi merge —
+        # termasuk yang gagal — bisa menyebut tanggal/jam WIB + judul sesi.
+        # Admin melihat puluhan baris antrean di Telegram tanpa punya DB di tangan.
         group = get_merge_group(group_id)
+        meta_member_name = group["member_name"] if group else member_username
+        meta_started_at = group["started_at"] if group else timeutil.utc_now_iso()
+        meta_thumbnail_url = group.get("thumbnail_url", "") if group else ""
+        meta_live_title = group.get("live_title", "") if group else ""
+        meta_time_line = (
+            f"🗓 <b>{_format_live_time(meta_started_at)}</b>\n" if meta_started_at else ""
+        )
+        meta_title_line = f"📌 {meta_live_title[:120]}\n" if meta_live_title else ""
+
         # Platform grup menentukan label judul upload (IDN / SHOWROOM).
         group_platform = ""
         if group:
             group_platform = group.get("platform") or "idn"
         else:
-            group_platform = (valid_segments[0].get("platform") or "idn") if valid_segments else "idn"
-        meta_member_name = group["member_name"] if group else member_username
-        meta_started_at = group["started_at"] if group else timeutil.utc_now_iso()
-        meta_thumbnail_url = group.get("thumbnail_url", "") if group else ""
-        meta_live_title = group.get("live_title", "") if group else ""
+            group_platform = (segments[0].get("platform") or "idn") if segments else "idn"
+
+        if not file_paths:
+            logger.warning("Merge group %d has no valid file paths", group_id)
+            await self._notify(
+                "⚠️ <b>MERGE GAGAL</b>\n"
+                f"👤 <b>{member_username}</b>\n"
+                f"{meta_time_line}{meta_title_line}"
+                f"Semua segmen grup {group_id} hilang/kosong — tidak ada yang bisa diupload."
+            )
+            fail_merge_group(group_id)
+            return
+
+        # Kabar LIVE SELESAI dikirim setelah guard di atas (jangan umumkan
+        # live selesai untuk grup tanpa segmen) dan hanya SEKALI per grup
+        # (finalize bisa ter-defer ulang, mis. disk penuh).
+        if group_id not in self._live_finish_notified:
+            self._live_finish_notified.add(group_id)
+            try:
+                total_bytes = sum(
+                    Path(fp).stat().st_size for fp in file_paths if Path(fp).exists()
+                )
+            except OSError:
+                total_bytes = 0
+            await self._notify(
+                "⏹️ <b>LIVE SELESAI</b> · "
+                f"<b>{_platform_label(group_platform)}</b>\n"
+                f"👤 <b>{meta_member_name}</b>\n"
+                f"{meta_time_line}"
+                f"🕒 Selesai {_format_live_time(timeutil.utc_now_iso())}\n"
+                f"{meta_title_line}"
+                f"🎞 {len(file_paths)} segmen · {_format_size(total_bytes)} total\n"
+                "⏳ Mulai merge → upload Telegram → YouTube"
+            )
 
         first = segments[0]
 
@@ -578,6 +613,7 @@ class MergeManager:
                 "🧩 <b>MERGE MULAI</b> · "
                 f"<b>{_platform_label(group_platform)}</b>\n"
                 f"👤 <b>{meta_member_name}</b>\n"
+                f"{meta_time_line}{meta_title_line}"
                 f"🎞 {len(file_paths)} segmen → concat (grup {group_id})"
             )
             merged_path = await self._concat_files(file_paths, member_username, group_id)
@@ -587,6 +623,7 @@ class MergeManager:
                     "⚠️ <b>MERGE GAGAL</b> · "
                     f"<b>{_platform_label(group_platform)}</b>\n"
                     f"👤 <b>{meta_member_name}</b>\n"
+                    f"{meta_time_line}{meta_title_line}"
                     f"Concat {len(file_paths)} segmen gagal (grup {group_id}) — "
                     "segmen diupload terpisah."
                 )
@@ -618,6 +655,7 @@ class MergeManager:
             "✅ <b>MERGE SELESAI</b> · "
             f"<b>{_platform_label(group_platform)}</b>\n"
             f"👤 <b>{meta_member_name}</b>\n"
+            f"{meta_time_line}{meta_title_line}"
             f"🎞 {len(file_paths)} segmen → {_format_size(merged_size)}\n"
             f"🆔 <code>{merged_live_id}</code> → lanjut upload"
         )
