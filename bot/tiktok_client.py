@@ -660,6 +660,10 @@ class TikwmProvider(BaseProvider):
         unique_id = (account.get("unique_id") or "").strip()
         if not unique_id:
             return []
+        if self.is_blocked():
+            # Jendela blokir tikwm masih aktif — jangan buang GET+POST yang
+            # pasti "sedang dijeda" untuk tiap akun (lihat _note_limit).
+            raise ProviderError("tikwm /user/story: sedang dijeda (rate/quota limit)")
         collected: list[TikTokItem] = []
         cursor: Any = ""
         for page_index in range(5):
@@ -680,6 +684,10 @@ class TikwmProvider(BaseProvider):
                 else:
                     raise
             except ProviderError as exc:
+                if "sedang dijeda" in str(exc):
+                    # Blokir menang: retry POST di jendela yang sama tidak
+                    # mengubah apa-apa, cukup laporkan sekali.
+                    raise
                 if page_index == 0:
                     logger.info("tikwm story GET gagal (%s); coba POST.", exc)
                     payload = await self._call(
@@ -866,35 +874,77 @@ class YtDlpProvider(BaseProvider):
         if not unique_id:
             return []
         wanted = max(1, int(limit))
-        await self._limiter.wait()
-        code, stdout, stderr = await self._run(
-            [
-                "--flat-playlist",
-                "--playlist-end", str(wanted),
-                "--dump-single-json",
-                "--skip-download",
-                "--no-warnings",
-                *self._config_args(),
-                self._target_url(account),
-            ],
-            self.LIST_TIMEOUT_SECONDS,
-        )
-        if code != 0:
-            message = (stderr or stdout or "").strip().replace("\n", " ")[:200]
-            raise self._classify_error(message)
-        try:
-            payload = json.loads(stdout or "{}")
-        except ValueError as exc:
-            raise ProviderError(f"yt-dlp listing bukan JSON: {exc}") from exc
+        for attempt in range(2):
+            await self._limiter.wait()
+            code, stdout, stderr = await self._run(
+                [
+                    "--flat-playlist",
+                    "--playlist-end", str(wanted),
+                    "--dump-single-json",
+                    "--skip-download",
+                    "--no-warnings",
+                    *self._config_args(),
+                    self._target_url(account),
+                ],
+                self.LIST_TIMEOUT_SECONDS,
+            )
+            if code != 0:
+                message = (stderr or stdout or "").strip().replace("\n", " ")[:200]
+                classified = self._classify_error(message)
+                if (
+                    attempt == 0
+                    and "butuh secUid" in str(classified)
+                    and await self._bootstrap_sec_uid(account)
+                ):
+                    # secUid ketemu via tikwm /user/info — ulangi sekali dengan
+                    # input tiktokuser:<secUid> yang stabil.
+                    continue
+                raise classified
+            try:
+                payload = json.loads(stdout or "{}")
+            except ValueError as exc:
+                raise ProviderError(f"yt-dlp listing bukan JSON: {exc}") from exc
 
-        items: list[TikTokItem] = []
-        for entry in payload.get("entries") or []:
-            if not isinstance(entry, dict):
-                continue
-            item = normalize_ytdlp_entry(entry, unique_id)
-            if item.id:
-                items.append(item)
-        return items
+            items: list[TikTokItem] = []
+            for entry in payload.get("entries") or []:
+                if not isinstance(entry, dict):
+                    continue
+                item = normalize_ytdlp_entry(entry, unique_id)
+                if item.id:
+                    items.append(item)
+            return items
+        raise ProviderError("yt-dlp listing gagal setelah bootstrap secUid")
+
+    async def _bootstrap_sec_uid(self, account: dict) -> bool:
+        """
+        Cari secUid akun lewat tikwm `/user/info`, simpan ke DB, lalu pakai
+        untuk `tiktokuser:<secUid>`.
+
+        Tanpa ini listing profil yt-dlp selalu gagal "Unable to extract
+        secondary user ID" karena TikTok menjawab halaman stub ke IP server —
+        sementara tikwm tetap bisa menjawab `/user/info` (insiden 28 Sep 2026:
+        posts 403, story 200, user/info 200). Return True bila berhasil.
+        """
+        source = getattr(self, "_sec_uid_source", None)
+        unique_id = (account.get("unique_id") or "").strip()
+        if source is None or not unique_id:
+            return False
+        try:
+            info = await source.fetch_user_info(unique_id)
+        except Exception as exc:  # noqa: BLE001 - bootstrap best-effort
+            logger.debug("Bootstrap secUid %s via tikwm gagal: %s", unique_id, exc)
+            return False
+        sec_uid = (info.get("sec_uid") or "").strip()
+        if not sec_uid:
+            return False
+        account["sec_uid"] = sec_uid
+        try:
+            from bot import database
+            database.set_tiktok_account_meta(unique_id, sec_uid=sec_uid)
+        except Exception as exc:  # noqa: BLE001 - cache in-memory tetap berlaku
+            logger.debug("Simpan secUid %s gagal: %s", unique_id, exc)
+        logger.info("secUid %s diperoleh via tikwm — listing yt-dlp diaktifkan.", unique_id)
+        return True
 
     async def fetch_item_detail(self, page_url: str, unique_id: str) -> Optional[TikTokItem]:
         """Detail satu postingan (dipakai saat unduhan butuh metadata lengkap)."""
@@ -992,7 +1042,11 @@ class EmbedProvider(BaseProvider):
         status, body = await http_get_text_retry(
             f"{TIKTOK_WEB_BASE}/embed/@{unique_id}", timeout=30.0
         )
-        if status in (403, 429):
+        if status in (403, 429, 503):
+            # 503 final (semua retry habis) = TikTok sedang menolak IP ini,
+            # sama seperti 403/429: tandai penyedia tidak sehat supaya sisa
+            # akun dalam siklus ini tidak memicu badai retry 1.5s/2.6s tiap
+            # akun (insiden 28 Sep 2026: embed 503 berulang di puluhan akun).
             raise ProviderBlocked(f"embed profil @{unique_id}: HTTP {status}")
         if status != 200 or not body:
             raise ProviderError(f"embed profil @{unique_id}: HTTP {status}")
@@ -1407,9 +1461,13 @@ def build_providers(mode: Optional[str] = None) -> list[BaseProvider]:
         return [YtDlpProvider(limiter)]
     if choice != "auto":
         logger.warning("TIKTOK_PROVIDER=%r tidak dikenal; memakai 'auto'.", choice)
+    tikwm = TikwmProvider(limiter)
+    ytdlp = YtDlpProvider(limiter)
+    # yt-dlp butuh secUid untuk listing profil; sumbernya tikwm /user/info.
+    ytdlp._sec_uid_source = tikwm
     return [
-        TikwmProvider(limiter),
+        tikwm,
         EmbedProvider(limiter),
         ScrapeProvider(limiter),
-        YtDlpProvider(limiter),
+        ytdlp,
     ]

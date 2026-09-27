@@ -155,6 +155,12 @@ class TikTokMonitor:
         self._providers = build_providers()
         self._cursor = 0
         self._dry_run = dry_run
+        # (capability, unique_id) -> pesan error terakhir yang sudah dilaporkan.
+        # Dedup: "Semua penyedia gagal ..." hanya di-log saat PESANNYA BERUBAH
+        # atau pertama kali; pulih → dihapus (kepulihan tercatat oleh mark
+        # unhealthy/provider log). Tanpa ini satu blokir IP yang sama di-log
+        # untuk 51 akun setiap siklus.
+        self._cap_fail_reported: dict[tuple[str, str], str] = {}
 
     # ── utilitas ────────────────────────────────────────────────────────────
     def _yt_pool(self) -> Optional[YouTubeChannelPool]:
@@ -296,6 +302,7 @@ class TikTokMonitor:
             (daftar item, penyedia yang berhasil) — ([], None) bila semua gagal.
         """
         last_error: Optional[Exception] = None
+        fail_key = (capability, account.get("unique_id") or "")
         base_method = getattr(BaseProvider, method_name, None)
         for provider in self._providers:
             if not provider.is_healthy(capability):
@@ -331,14 +338,22 @@ class TikTokMonitor:
                 last_error = exc
                 continue
             if items:
+                self._cap_fail_reported.pop(fail_key, None)
                 return items, provider
             # Berhasil tapi kosong (mis. akun tidak punya story) → itu jawaban sah.
+            self._cap_fail_reported.pop(fail_key, None)
             return [], provider
         if last_error is not None:
-            logger.warning(
-                "Semua penyedia gagal mengambil %s untuk %s (%s).",
-                capability, account.get("unique_id"), last_error,
-            )
+            # Dedup: pesan yang sama untuk akun yang sama tidak di-log ulang
+            # tiap siklus — blokir IP yang sama dulu sempat membanjiri log
+            # untuk 51 akun per 5 menit (28 Sep 2026).
+            msg = str(last_error)
+            if self._cap_fail_reported.get(fail_key) != msg:
+                self._cap_fail_reported[fail_key] = msg
+                logger.warning(
+                    "Semua penyedia gagal mengambil %s untuk %s (%s).",
+                    capability, account.get("unique_id"), last_error,
+                )
         return [], None
 
 
