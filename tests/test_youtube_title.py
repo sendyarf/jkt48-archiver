@@ -240,3 +240,18 @@ class TestThumbnailCollage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestSanitizeVideoText(unittest.TestCase):
+    def test_strips_angle_brackets_and_control_chars(self):
+        from bot.youtube_uploader import sanitize_video_text
+        out = sanitize_video_text("hai <3 semua>x07", max_len=5000)
+        self.assertNotIn("<", out)
+        self.assertNotIn(">", out)
+
+    def test_truncates_to_max_len(self):
+        from bot.youtube_uploader import sanitize_video_text
+        self.assertEqual(len(sanitize_video_text("x" * 6000, max_len=5000)), 5000)
+
+    def test_empty_input(self):
+        from bot.youtube_uploader import sanitize_video_text
+        self.assertEqual(sanitize_video_text("", max_len=100), "")
