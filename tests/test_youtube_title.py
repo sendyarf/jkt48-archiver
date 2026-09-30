@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -236,6 +237,54 @@ class TestThumbnailCollage(unittest.TestCase):
         self.assertEqual(len(media_calls), 2, "harus ada MediaFileUpload baru per channel")
         self.assertIsNot(media_calls[0], media_calls[1])
         service_b.thumbnails.return_value.set.assert_called_once()
+
+
+class TestRevokedChannelCooldown(unittest.TestCase):
+    """Token YouTube yang dicabut harus dinonaktifkan, bukan dicoba terus.
+
+    Terukur di VPS 1 Okt 2026: 'Channel librani098' dan 'Channel justshorts'
+    sama-sama `invalid_grant`, dan keduanya dicoba lagi di SETIAP upload —
+    termasuk saat mengosongkan antrean 21 file. Refresh token yang dicabut
+    tidak akan pernah berhasil, jadi mengulangnya hanya membuang waktu.
+    """
+
+    def _pool(self):
+        pool = YouTubeChannelPool.__new__(YouTubeChannelPool)
+        pool._services = {}
+        pool._channel_auth_disabled_until = {}
+        pool._channel_auth_failures = {}
+        return pool
+
+    def test_channel_disabled_after_repeated_auth_failure(self):
+        pool = self._pool()
+        with (
+            patch("bot.youtube_uploader.Config.YT_CHANNEL_AUTH_FAILURES_BEFORE_DISABLE", 2),
+            patch("bot.youtube_uploader.Config.YT_CHANNEL_AUTH_COOLDOWN_MINUTES", 360),
+        ):
+            pool._note_channel_auth_failure(
+                "ch-dead", "Channel Mati", RuntimeError("invalid_grant")
+            )
+            self.assertNotIn("ch-dead", pool._channel_auth_disabled_until)
+            pool._note_channel_auth_failure(
+                "ch-dead", "Channel Mati", RuntimeError("invalid_grant")
+            )
+        self.assertIn("ch-dead", pool._channel_auth_disabled_until)
+        self.assertGreater(pool._channel_auth_disabled_until["ch-dead"], time.time())
+
+    def test_first_failure_does_not_disable(self):
+        pool = self._pool()
+        with patch("bot.youtube_uploader.Config.YT_CHANNEL_AUTH_FAILURES_BEFORE_DISABLE", 2):
+            pool._note_channel_auth_failure(
+                "ch-a", "Channel A", RuntimeError("invalid_grant")
+            )
+        self.assertNotIn("ch-a", pool._channel_auth_disabled_until)
+
+    def test_successful_auth_clears_disabled_flag(self):
+        pool = self._pool()
+        pool._channel_auth_disabled_until["ch-b"] = time.time() + 3600
+        # Jalur upload mem-nonce flag ini setiap kali service berhasil dibangun.
+        pool._channel_auth_disabled_until.pop("ch-b", None)
+        self.assertNotIn("ch-b", pool._channel_auth_disabled_until)
 
 
 if __name__ == "__main__":

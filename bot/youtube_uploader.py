@@ -131,7 +131,34 @@ class YouTubeChannelPool:
 
     def __init__(self) -> None:
         self._services: dict[str, any] = {}  # token_file -> service client
+        # channel id -> epoch detik sampai kapan channel dinonaktifkan karena
+        # token-nya dicabut. In-memory: restart bot =- reset, sesuai harapan
+        # "coba lagi setelah operator re-auth".
+        self._channel_auth_disabled_until: dict[str, float] = {}
+        self._channel_auth_failures: dict[str, int] = {}
         self._sync_channels_with_db()
+
+    def _note_channel_auth_failure(self, ch_id: str, label: str, exc: Exception) -> None:
+        """Hitung kegagalan auth channel; nonaktifkan sementara kalau menumpuk.
+
+        `invalid_grant` (token dicabut) tidak akan hilang dengansendirinya, dan
+        percobaan refresh berikutnya hanya membuang waktu. Setelah ambang
+        kegagalan, channel dilewati beberapa jam.
+        """
+        count = self._channel_auth_failures.get(ch_id, 0) + 1
+        self._channel_auth_failures[ch_id] = count
+        threshold = max(1, int(Config.YT_CHANNEL_AUTH_FAILURES_BEFORE_DISABLE))
+        if count < threshold:
+            return
+        minutes = max(1, int(Config.YT_CHANNEL_AUTH_COOLDOWN_MINUTES))
+        until = time.time() + minutes * 60
+        self._channel_auth_disabled_until[ch_id] = until
+        logger.error(
+            "Channel '%s' gagal auth %d× (%s) - dinonaktifkan %d menit. "
+            "Token yang dicabut tidak pulih sendiri; jalankan "
+            "`python -m bot.auth_youtube` untuk memperbarui kredensialnya.",
+            label, count, exc, minutes,
+        )
 
     def _sync_channels_with_db(self) -> None:
         """Sync channels defined in config/env to the database."""
@@ -228,6 +255,20 @@ class YouTubeChannelPool:
             secret_file = ch["secret_file"]
             label = ch["channel_label"]
 
+            # Token yang dicabut/di-revoke TIDAK akan pulih sendiri: refresh
+            # berikutnya pasti gagal lagi. Tanpa cooldown, dua channel mati
+            # membakar dua percobaan auth (baca token + request OAuth) di
+            # SETIAP upload, termasuk saat ini menjalankan antrean 21 file.
+            # Dikecualikan beberapa jam supaya upload tidak melambat tanpa guna.
+            disabled_until = self._channel_auth_disabled_until.get(ch_id, 0.0)
+            if disabled_until > time.time():
+                logger.debug(
+                    "Lewati channel '%s': token dicabut, dinonaktifkan sampai %s",
+                    label, time.strftime("%H:%M", time.localtime(disabled_until)),
+                )
+                all_quota_exceeded = False
+                continue
+
             logger.info("Trying YouTube channel '%s' (uploads today: %d)", label, ch["uploads_today"])
 
             try:
@@ -235,8 +276,10 @@ class YouTubeChannelPool:
             except Exception as e:
                 logger.warning("Could not authenticate channel '%s' (%s): %s. Trying next channel...",
                                label, token_file, e)
+                self._note_channel_auth_failure(ch_id, label, e)
                 all_quota_exceeded = False
                 continue
+            self._channel_auth_disabled_until.pop(ch_id, None)
 
             media = MediaFileUpload(
                 str(path),

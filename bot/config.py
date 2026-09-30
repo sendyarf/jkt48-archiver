@@ -170,6 +170,17 @@ class Config:
         os.getenv("TELEGRAM_UPLOAD_PART_DELAY_MS", "500")
     )
 
+    # Channel YouTube yang token-nya dicabut (invalid_grant) tidak akan pulih
+    # sendiri. Setelah N kegagalan auth, channel dilewati selama M menit agar
+    # tidak membakar dua percobaan auth di setiap upload (terukur di VPS 1 Okt
+    # 2026: 'Channel librani098' dan 'Channel justshorts' sama-sama dicabut).
+    YT_CHANNEL_AUTH_FAILURES_BEFORE_DISABLE: int = int(
+        os.getenv("YT_CHANNEL_AUTH_FAILURES_BEFORE_DISABLE", "2")
+    )
+    YT_CHANNEL_AUTH_COOLDOWN_MINUTES: int = int(
+        os.getenv("YT_CHANNEL_AUTH_COOLDOWN_MINUTES", "360")
+    )
+
     # Batas waktu untuk request pembuatan pesan (uploadMedia / messages.sendMedia).
     # Semua byte SUDAH di-upload di titik ini, jadi ini hanya "server selesai
     # memproses metadata" - 10 menit sudah sangat longgar.
