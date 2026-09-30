@@ -160,9 +160,20 @@ dibaca benar.
 
 **Catatan `UPLOAD_TARGET`.** Nilai ini dipertahankan hanya untuk kompatibilitas konfigurasi lama; ia tidak mematikan salah satu tujuan live. Tujuan live ditentukan oleh `TELEGRAM_ARCHIVE_UPLOAD_ENABLED` (default **false**): kalau `true`, tiap rekaman wajib melalui **Telegram → YouTube**; kalau `false`, Telegram dilewati dan rekaman langsung diunggah ke **YouTube**.
 
-**Arsip Telegram rekaman live dimatikan (30 Sep 2026).** Upload rekaman live ke Telegram tidak efektif: file 1-2 GB dipecah menjadi ribuan part 512 KiB, memicu `FLOOD_PREMIUM_WAIT` beruntun, dan mengunci sesi di status `pending_upload` berjam-jam - sementara hasil unduh lewat replay bot tetap tidak memenuhi ekspektasi. YouTube adalah sumber playback website, jadi mematikan tahap ini tidak menghapus apa pun dari situs. Set `TELEGRAM_ARCHIVE_UPLOAD_ENABLED=true` untuk mengembalikannya.
+**Arsip Telegram rekaman live dinyalakan kembali (30 Sep 2026).** Sempat dimatikan karena upload file 1-2 GB memicu `FLOOD_PREMIUM_WAIT` beruntun dan mengunci sesi berjam-jam. Tiga perbaikan membuat tahap ini layak dipakai lagi: upload per-part yang bisa di-resume (sidecar `.tgup.json`), serialisasi upload antar-task, dan part hasil split dikirim sebagai **satu pesan album** (bukan N pesan terpisah) - rekaman 3 GB jadi 2 media dalam 1 pesan, bukan satu file 3 GB. Set `TELEGRAM_ARCHIVE_UPLOAD_ENABLED=true`.
 
 Yang **tidak** terpengaruh: notifikasi teks ke channel Telegram, arsip **TikTok** (dikendalikan terpisah oleh `TIKTOK_ARCHIVE_UPLOAD_ENABLED`), dan bot admin. YouTube tetap **unlisted** dan visibilitas website mengikuti aturan `AUTO_PUBLISH_AFTER_HOURS`/publikasi admin. Rekaman Showroom mengikuti pipeline yang sama.
+
+**Upload yang "hilang" tanpa penjelasan (30 Sep 2026).** Gejala: notifikasi `📤 UPLOAD TELEGRAM` masuk, lalu **tidak ada notifikasi apa pun** - tidak `✅`, tidak `⚠️` - bahkan setelah 28 jam, sementara video tidak pernah muncul di channel. Penyebabnya bukan flood, tapi satu request Telethon yang menggantung (koneksi yang tidak maju): coroutine upload tidak pernah selesai maupun melempar error, sehingga
+
+1. baris DB terkunci di `uploading_telegram`, dan status itu **tidak dibaca** `get_all_pending_videos` (hanya `pending_upload`/`download_complete`), jadi tidak pernah di-retry dan tidak pernah diberi tahu hasilnya; dan
+2. lock upload ditahan selamanya - notifikasi admin memakai lock yang sama, jadi notifikasi **gagal** pun tidak bisa keluar. Itu sebabnya hanya notifikasi *awal* yang terlihat.
+
+Perbaikannya tiga lapis:
+
+* **Batas waktu keras di setiap request** (`TELEGRAM_PART_UPLOAD_TIMEOUT_SECONDS=300`, `TELEGRAM_SEND_TIMEOUT_SECONDS=600`): part 512 KiB yang tidak respons 5 menit dianggap koneksi macet, upload gagal dengan cepat, lock dilepas, dan notifikasi hasil (`✅`/`⚠️`) tetap terkirim. Progres di sidecar dibuang karena `file_id` MTProto bisa kedaluwarsa setelah timeout.
+* **Notifikasi teks tidak lagi memakai lock upload** (`TELEGRAM_NOTIFY_TIMEOUT_SECONDS=60`): status upload tidak pernah hostage oleh file 1 GB yang sedang naik.
+* **Recovery periodik + watchdog**: tiap siklus retry, baris `uploading_*` yang ditinggalkan proses mati dipulihkan ke `pending_upload` (file yang upload-nya **sedang berjalan** dikecualikan agar tidak ter-upload dua kali), dan upload yang melewati `TELEGRAM_UPLOAD_STALE_MINUTES` (default 90 menit) dibatalkan lalu dikembalikan ke antrean.
 
 **Deadlock disk (30 Sep 2026) - kenapa bot tiba-tiba tidak merekam member yang sedang live.** Gejalanya: bot kadang merekam, kadang tidak, Showroom sama sekali tidak merekam, bahkan tidak terdeteksi. Penyebabnya bukan HLS, tapi ruang disk:
 

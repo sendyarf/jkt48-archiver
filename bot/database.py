@@ -747,7 +747,9 @@ def clean_interrupted_downloads() -> None:
         )
 
 
-def recover_interrupted_uploads() -> int:
+def recover_interrupted_uploads(
+    skip_live_ids: Optional[set[str]] = None,
+) -> int:
     """Reconcile upload rows after a restart without losing completed work.
 
     ``uploading_telegram`` and ``uploading_youtube`` are in-flight markers, not
@@ -760,8 +762,14 @@ def recover_interrupted_uploads() -> int:
     recorded a canonical merged artifact.  A concat-failed group keeps its
     historical ID but represents independent segment uploads, so recovery must
     reconcile each of those rows on its own.
+
+    ``skip_live_ids`` berisi live_id yang upload-nya SEDANG berjalan di proses
+    ini. Baris seperti itu belum tentu gagal: kalau dipulihkan, file yang
+    sama akan ter-upload dua kali. Karena itu skip hanya berlaku untuk status
+    in-flight, dan baris tersebut tidak disentuh sama sekali.
     """
     changed = 0
+    skip = {str(value) for value in (skip_live_ids or set()) if value}
     with _get_conn() as conn:
         # Older code could persist a finalized merge group before all session
         # rows reached the upload-ready state.  Normalize only *finalized*
@@ -805,12 +813,16 @@ def recover_interrupted_uploads() -> int:
         ).fetchall()
 
         for row in rows:
+            # Upload yang sedang berjalan di proses ini bukan "interrupted".
+            if row["status"] in ("uploading_telegram", "uploading_youtube"):
+                if str(row["live_id"]) in skip:
+                    continue
             raw_group_id = row["merge_group_id"]
             group_id = None
             group_row = None
             if raw_group_id is not None:
                 group_row = conn.execute(
-                    """SELECT status, merged_file_path
+                    """SELECT status, merged_file_path, merged_live_id
                        FROM merge_groups WHERE id = ?""",
                     (raw_group_id,),
                 ).fetchone()
@@ -820,6 +832,13 @@ def recover_interrupted_uploads() -> int:
                     and str(group_row["merged_file_path"] or "").strip()
                 ):
                     group_id = int(raw_group_id)
+                # Upload grup berjalan di bawah live_id hasil merge, bukan
+                # live_id segmen, jadi ikut dicek agar grup yang sedang di-upload
+                # tidak dipulihkan menjadi pending (jd upload ganda).
+                if group_row is not None and str(
+                    group_row["merged_live_id"] or ""
+                ).strip() in skip:
+                    continue
 
             if group_id is not None:
                 state = conn.execute(

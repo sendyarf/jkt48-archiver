@@ -24,6 +24,7 @@ from bot.telegram_sender import (
     MAX_FILE_PARTS_PREMIUM,
     TelegramFileTooLarge,
     TelegramFloodExhausted,
+    TelegramUploadStalled,
     _format_size,
     _flood_wait_seconds,
     _flood_wait_with_jitter,
@@ -1124,6 +1125,130 @@ class TestSplitThresholdGuard(unittest.TestCase):
             captured["max_bytes"], safe_split_bytes(MAX_FILE_PARTS_FREE),
             "akun biasa: ambang dijepit ke kapasitas part server",
         )
+
+
+class _HangingClient:
+    """Client yang tidak pernah merespons — meniru koneksi TCP macet."""
+
+    def __init__(self) -> None:
+        self.upload_lock_held = False
+        self.send_file_started = False
+        self.requests: list[object] = []
+        self._upload_lock = asyncio.Lock()
+        self._notify_lock = asyncio.Lock()
+        self._max_file_parts_cached = MAX_FILE_PARTS_FREE
+
+    def __call__(self, request):
+        self.requests.append(request)
+        async def _never():
+            await asyncio.sleep(3600)
+        return _never()
+
+    async def get_me(self):
+        return None
+
+    async def send_message(self, *args, **kwargs):
+        return None
+
+    async def send_file(self, *args, **kwargs):
+        self.send_file_started = True
+        async def _never():
+            await asyncio.sleep(3600)
+        return await _never()
+
+
+class TestTelegramAntiHang(unittest.TestCase):
+    """Upload tidak boleh menggantung selamanya (insiden 30 Sep 2026).
+
+    Gejala: notifikasi "UPLOAD TELEGRAM" terkirim, lalu tidak ada notifikasi
+    apa pun selama 28 jam sementara video tidak pernah muncul di channel.
+    Root cause: satu ``await`` RPC Telethon tidak pernah selesai maupun
+    melempar error, sehingga status baris terkunci di ``uploading_telegram``
+    (tak terlihat worker retry) dan lock upload membekukan notifikasi admin
+    karena notifikasi memakai lock yang sama.
+    """
+
+    def _sender(self, client):
+        sender = TelegramSender.__new__(TelegramSender)
+        sender._client = client
+        sender._connected = True
+        return sender
+
+    def test_rpc_timeout_becomes_stalled_error(self):
+        """``_rpc`` mengubah asyncio.TimeoutError jadi TelegramUploadStalled."""
+        from bot.telegram_sender import _rpc
+
+        async def probe():
+            with self.assertRaises(TelegramUploadStalled):
+                await _rpc(asyncio.sleep(5), "mengirim pesan", 1)
+
+        asyncio.run(probe())
+
+    def test_rpc_returns_value_when_fast(self):
+        from bot.telegram_sender import _rpc
+
+        async def probe():
+            return await _rpc(asyncio.sleep(0, result="ok"), "mengirim pesan", 5)
+
+        self.assertEqual(asyncio.run(probe()), "ok")
+
+    def test_notification_does_not_wait_for_upload_lock(self):
+        """Notifikasi tidak boleh hostage oleh lock upload yang sedang dipegang."""
+        client = _HangingClient()
+        sender = self._sender(client)
+        sender.connect = AsyncMock()
+
+        async def run():
+            # Simulasikan upload besar yang sedang memegang lock upload.
+            await sender._upload_guard().acquire()
+            try:
+                sender._client.send_message = AsyncMock(return_value=_fake_message(7))
+                with patch.object(Config, "TELEGRAM_NOTIFY_TIMEOUT_SECONDS", 2):
+                    return await sender.send_message("halo", channel_id=123)
+            finally:
+                sender._upload_lock.release()
+
+        self.assertEqual(asyncio.run(run()), 7)
+
+    def test_upload_lock_is_released_after_stall(self):
+        """Setelah timeout, lock upload WAJIB bisa dipakai lagi."""
+        client = _HangingClient()
+        sender = self._sender(client)
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                video = Path(directory) / "big.mp4"
+                video.write_bytes(b"0" * (65 * 1024 * 1024))
+                with patch.object(
+                    Config, "TELEGRAM_PART_UPLOAD_TIMEOUT_SECONDS", 1
+                ), patch.object(Config, "TELEGRAM_SEND_TIMEOUT_SECONDS", 1):
+                    result = await sender.send_video_file(video, caption="x")
+                # Timeout = gagal (return None), bukan menggantung.
+                self.assertIsNone(result)
+                self.assertFalse(sender._upload_guard().locked())
+
+        asyncio.run(run())
+
+    def test_stalled_upload_does_not_hammer_retries(self):
+        """Timeout mengakhiri percobaan, bukan mengulang 3x tanpa jeda."""
+        client = _HangingClient()
+        sender = self._sender(client)
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                video = Path(directory) / "big.mp4"
+                video.write_bytes(b"0" * (65 * 1024 * 1024))
+                with patch.object(
+                    Config, "TELEGRAM_PART_UPLOAD_TIMEOUT_SECONDS", 1
+                ), patch.object(Config, "TELEGRAM_SEND_TIMEOUT_SECONDS", 1):
+                    return await sender.send_video_file(video, caption="x")
+
+        self.assertIsNone(asyncio.run(run()))
+        self.assertEqual(
+            len(client.requests), 1,
+            "part yang menggantung harus dihentikan seketika, bukan diulang",
+        )
+        self.assertFalse(sender._upload_guard().locked())
 
 
 if __name__ == "__main__":

@@ -72,6 +72,19 @@ class TelegramFileTooLarge(RuntimeError):
     """
 
 
+class TelegramUploadStalled(RuntimeError):
+    """Server Telegram tidak merespons dalam batas waktu (koneksi macet).
+
+    Insiden 30 Sep 2026: satu ``await`` RPC menggantung selamanya sehingga
+    upload tidak pernah selesai maupun melempar error, baris DB terkunci di
+    ``uploading_telegram``, dan lock upload memblokir notifikasi admin
+    (gejala: notifikasi "UPLOAD TELEGRAM" tanpa lanjutan selama 28 jam).
+    Semua request kini dibungkus ``asyncio.wait_for``; timeout ini yang
+    datang dari sana. Progres upload tetap aman di sidecar, jadi percobaan
+    berikutnya melanjutkan dari part terakhir.
+    """
+
+
 _PREMIUM_WAIT_RE = re.compile(r"FLOOD_PREMIUM_WAIT_(\d+)")
 
 # File di atas ambang ini di-upload lewat SaveBigFilePartRequest yang bisa
@@ -124,6 +137,24 @@ def _flood_wait_with_jitter(seconds: int) -> int:
     return int(seconds * (1 + random.uniform(0.0, 0.3)))
 
 
+async def _rpc(awaitable, what: str, timeout: float) -> "object":
+    """Jalankan satu request Telethon dengan batas waktu keras.
+
+    Tanpa ``wait_for``, satu koneksi TCP yang tidak maju membuat ``await``
+    menggantung selamanya: upload tidak pernah selesai, tidak pernah melempar
+    error, lock upload tidak pernah dilepas, dan notifikasi admin ikut
+    membeku karena memakai lock yang sama (insiden 30 Sep 2026). Timeout
+    diubah jadi ``TelegramUploadStalled`` supaya pemanggil memperlakukannya
+    sebagai kondisi transien (retry dari sidecar), bukan error tak terduga.
+    """
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise TelegramUploadStalled(
+            f"Telegram tidak merespons dalam {int(timeout)} detik saat {what}"
+        ) from exc
+
+
 def _format_size(size_bytes: int) -> str:
     """Format bytes to human-readable string."""
     if not size_bytes:
@@ -173,6 +204,24 @@ class TelegramSender:
         if lock is None:
             lock = asyncio.Lock()
             self._upload_lock = lock
+        return lock
+
+    def _notify_guard(self) -> asyncio.Lock:
+        """Lock terpisah untuk notifikasi TEKS.
+
+        Notifikasi tidak memakai ``_upload_guard`` dengan sengaja. Notifikasi
+        beberapa ratus byte tidak berebut kuota request dengan upload file
+        besar, sedangkan memakai lock yang sama berarti satu upload yang
+        menggantung ikut membekukan seluruh notifikasi admin — persis gejala
+        insiden 30 Sep 2026 (notifikasi "UPLOAD TELEGRAM" masuk, lalu tidak
+        ada lagi notifikasi apa pun, termasuk penanda kegagalan). Lock ini
+        hanya mencegah notifikasi-notifikasi saling berebut di antara
+        themselves.
+        """
+        lock = getattr(self, "_notify_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._notify_lock = lock
         return lock
 
     async def _max_file_parts(self) -> int:
@@ -237,12 +286,16 @@ class TelegramSender:
         flood_waits = 0
         while True:
             try:
-                async with self._upload_guard():
-                    msg = await self._client.send_message(
-                        target,
-                        text,
-                        parse_mode="html",
-                        link_preview=link_preview,
+                async with self._notify_guard():
+                    msg = await _rpc(
+                        self._client.send_message(
+                            target,
+                            text,
+                            parse_mode="html",
+                            link_preview=link_preview,
+                        ),
+                        f"mengirim pesan notifikasi ke {target}",
+                        Config.TELEGRAM_NOTIFY_TIMEOUT_SECONDS,
                     )
                 logger.info("Telegram notification sent to %d. Message ID: %d", target, msg.id)
                 return msg.id
@@ -259,6 +312,12 @@ class TelegramSender:
                 wait = _flood_wait_with_jitter(_flood_wait_seconds(exc))
                 logger.warning("Telegram flood %ds saat kirim pesan. Menunggu...", wait)
                 await asyncio.sleep(wait)
+            except TelegramUploadStalled as exc:
+                # Timeout = koneksi macet, bukan flood. Notifikasi yang gagal
+                # tidak boleh menahan antrean upload, jadi langsung menyerah
+                # (retry upload berikutnya akan mengirim notifikasi ulang).
+                logger.error("Notifikasi Telegram gagal: %s", exc)
+                return None
             except Exception as exc:
                 logger.error("Failed to send Telegram message: %s", exc)
                 return None
@@ -351,7 +410,11 @@ class TelegramSender:
                         request = functions.upload.SaveFilePartRequest(
                             file_id, part_index, part
                         )
-                    result = await self._client(request)
+                    result = await _rpc(
+                        self._client(request),
+                        f"mengirim part {part_index + 1}/{total_parts} {path.name}",
+                        Config.TELEGRAM_PART_UPLOAD_TIMEOUT_SECONDS,
+                    )
                     if not result:
                         raise RuntimeError(
                             f"Failed to upload file part {part_index}."
@@ -439,25 +502,33 @@ class TelegramSender:
                         input_file = await self._upload_with_resume(
                             path, size, mtime, _default_progress
                         )
-                        msg = await self._client.send_file(
-                            target,
-                            file=input_file,
-                            caption=caption,
-                            parse_mode="html",
-                            attributes=attributes,
-                            thumb=thumb,
-                            supports_streaming=True,
+                        msg = await _rpc(
+                            self._client.send_file(
+                                target,
+                                file=input_file,
+                                caption=caption,
+                                parse_mode="html",
+                                attributes=attributes,
+                                thumb=thumb,
+                                supports_streaming=True,
+                            ),
+                            f"membuat pesan untuk {path.name}",
+                            Config.TELEGRAM_SEND_TIMEOUT_SECONDS,
                         )
                     else:
-                        msg = await self._client.send_file(
-                            target,
-                            file=str(path),
-                            caption=caption,
-                            parse_mode="html",
-                            attributes=attributes,
-                            thumb=thumb,
-                            supports_streaming=True,
-                            progress_callback=_default_progress,
+                        msg = await _rpc(
+                            self._client.send_file(
+                                target,
+                                file=str(path),
+                                caption=caption,
+                                parse_mode="html",
+                                attributes=attributes,
+                                thumb=thumb,
+                                supports_streaming=True,
+                                progress_callback=_default_progress,
+                            ),
+                            f"mengunggah {path.name}",
+                            Config.TELEGRAM_SEND_TIMEOUT_SECONDS,
                         )
                 sidecar.unlink(missing_ok=True)
                 logger.info("Successfully uploaded video %s to %d (Message ID: %d)", path.name, target, msg.id)
@@ -492,6 +563,20 @@ class TelegramSender:
                 logger.exception(
                     "Upload ditolak Telegram untuk %s (media tidak valid); "
                     "tidak diulang.", path.name,
+                )
+                return None
+            except TelegramUploadStalled as exc:
+                # Server tidak merespons. Lock upload sudah dilepas (async with
+                # keluar) supaya file lain dan notifikasi admin tidak ikut
+                # tersumbat. Sidecar dibuang dengan sengaja: file_id MTProto
+                # hanya valid selama sesi upload masih hidup di sisi server,
+                # dan setelah timeout reference-nya bisa saja sudah kedaluwarsa
+                # — me-resume ke file_id yang sudah dibuang akan gagal dengan
+                # error yang jauh lebih sulit dibaca daripada upload ulang.
+                sidecar.unlink(missing_ok=True)
+                logger.error(
+                    "Upload %s macet: %s (sidecar dibuang, upload ulang dari awal)",
+                    path.name, exc,
                 )
                 return None
             except TelegramFileTooLarge as exc:
@@ -541,7 +626,11 @@ class TelegramSender:
 
         thumb_handle = None
         if thumb_path and Path(thumb_path).exists():
-            thumb_handle = await self._client.upload_file(str(thumb_path))
+            thumb_handle = await _rpc(
+                self._client.upload_file(str(thumb_path)),
+                "mengunggah thumbnail",
+                Config.TELEGRAM_SEND_TIMEOUT_SECONDS,
+            )
 
         # Flood dihormati seperti jalur lain: jeda sesuai durasi Telegram,
         # habis jatah → TelegramFloodExhausted agar retry worker memberi
@@ -550,7 +639,7 @@ class TelegramSender:
         flood_attempts = 0
         while True:
             try:
-                return await self._send_parts_album_once(
+                ids = await self._send_parts_album_once(
                     entity, parts, caption_result, thumb_handle, progress_callback
                 )
             except FloodError as exc:
@@ -566,6 +655,22 @@ class TelegramSender:
                     wait,
                 )
                 await asyncio.sleep(wait)
+                continue
+            break
+
+        # Album sukses → sidecar resume tiap part sudah tidak diperlukan;
+        # hapus agar tidak menumpuk di disk (per-part path menghapusnya di
+        # send_video_file, jalur album harus membersihkannya sendiri).
+        for part in parts:
+            try:
+                Path(str(part.file_path) + ".tgup.json").unlink(missing_ok=True)
+            except OSError:
+                pass
+        logger.info(
+            "Album %d part terkirim ke %d dalam 1 pesan. Message IDs: %s",
+            len(parts), target, ids,
+        )
+        return ids
 
     async def _send_parts_album_once(
         self,
@@ -586,8 +691,12 @@ class TelegramSender:
                         part.file_path, size, mtime, progress_callback
                     )
                 else:
-                    file_handle = await self._client.upload_file(
-                        str(part.file_path), progress_callback=progress_callback
+                    file_handle = await _rpc(
+                        self._client.upload_file(
+                            str(part.file_path), progress_callback=progress_callback
+                        ),
+                        f"mengunggah {part.file_path.name}",
+                        Config.TELEGRAM_SEND_TIMEOUT_SECONDS,
                     )
                 uploaded = types.InputMediaUploadedDocument(
                     file=file_handle,
@@ -604,8 +713,12 @@ class TelegramSender:
                     ttl_seconds=None,
                     nosound_video=True,
                 )
-                response = await self._client(
-                    functions.messages.UploadMediaRequest(entity, media=uploaded)
+                response = await _rpc(
+                    self._client(
+                        functions.messages.UploadMediaRequest(entity, media=uploaded)
+                    ),
+                    f"membuat media album untuk {part.file_path.name}",
+                    Config.TELEGRAM_SEND_TIMEOUT_SECONDS,
                 )
                 media.append(
                     types.InputSingleMedia(
@@ -619,26 +732,17 @@ class TelegramSender:
             request = functions.messages.SendMultiMediaRequest(
                 entity, multi_media=media
             )
-            result = await self._client(request)
+            result = await _rpc(
+                self._client(request),
+                f"mengirim album {len(media)} part",
+                Config.TELEGRAM_SEND_TIMEOUT_SECONDS,
+            )
             random_ids = [m.random_id for m in media]
             messages = self._client._get_response_message(random_ids, result, entity)
 
         if not isinstance(messages, list):
             messages = [messages]
-        ids = [m.id for m in messages if m is not None]
-        # Album sukses → sidecar resume tiap part sudah tidak diperlukan;
-        # hapus agar tidak menumpuk di disk (per-part path menghapusnya di
-        # send_video_file, jalur album harus membersihkannya sendiri).
-        for part in parts:
-            try:
-                Path(str(part.file_path) + ".tgup.json").unlink(missing_ok=True)
-            except OSError:
-                pass
-        logger.info(
-            "Album %d part terkirim ke %d dalam 1 pesan. Message IDs: %s",
-            len(parts), target, ids,
-        )
-        return ids
+        return [m.id for m in messages if m is not None]
 
     async def upload_video_with_splitting(
         self,
@@ -961,12 +1065,16 @@ class TelegramSender:
             for attempt in range(3):
                 try:
                     async with self._upload_guard():
-                        msg = await self._client.send_file(
-                            target,
-                            paths[0],
-                            caption=caption,
-                            parse_mode="html",
-                            force_document=as_document,
+                        msg = await _rpc(
+                            self._client.send_file(
+                                target,
+                                paths[0],
+                                caption=caption,
+                                parse_mode="html",
+                                force_document=as_document,
+                            ),
+                            f"mengirim media tunggal {Path(paths[0]).name}",
+                            Config.TELEGRAM_SEND_TIMEOUT_SECONDS,
                         )
                     logger.info(
                         "Media tunggal TikTok terkirim ke %d (Message ID: %d): %s",
@@ -1004,12 +1112,16 @@ class TelegramSender:
         for attempt in range(3):
             try:
                 async with self._upload_guard():
-                    result = await self._client.send_file(
-                        target,
-                        paths,
-                        caption=caption,
-                        parse_mode="html",
-                        force_document=as_document,
+                    result = await _rpc(
+                        self._client.send_file(
+                            target,
+                            paths,
+                            caption=caption,
+                            parse_mode="html",
+                            force_document=as_document,
+                        ),
+                        f"mengirim album {len(paths)} media TikTok",
+                        Config.TELEGRAM_SEND_TIMEOUT_SECONDS,
                     )
                 messages = result if isinstance(result, list) else [result]
                 ids = [m.id for m in messages if m is not None]

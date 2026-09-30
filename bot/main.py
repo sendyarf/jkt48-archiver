@@ -269,6 +269,10 @@ class JKT48LiveBot:
         # diam (log saja) sampai berhasil atau dead-letter. In-memory cukup —
         # restart pm2 paling-paling mengulang satu notifikasi pertama.
         self._tg_fail_count: dict[str, int] = {}
+        # live_id -> (asyncio.Task, monotonic saat mulai). Dipakai recovery
+        # periodik untuk TIDAK menyentuh upload yang sedang berjalan, dan
+        # dipakai watchdog untuk membatalkan upload yang menggantung.
+        self._active_uploads: dict[str, tuple[Optional[asyncio.Task], float]] = {}
         self.admin_bot: Optional[AdminBot] = None
         self.replay_bot: Optional[ReplayBot] = None
         # Arsip TikTok (OPSIONAL): hanya dibuat bila TIKTOK_ENABLED=true,
@@ -502,6 +506,55 @@ class JKT48LiveBot:
         async with self._upload_lock:
             return await self._handle_upload_ready_impl(**kwargs)
 
+    def _track_active_upload(self, live_id: str) -> tuple[asyncio.Task, float]:
+        """Catat upload yang SEDANG berjalan supaya recovery tidak menabraknya.
+
+        Baris ``uploading_telegram``/``uploading_youtube`` milik proses ini
+        masih aktif, sehingga recovery periodik HARUS_ERROR lewat agar file
+        yang sama tidak ter-upload dua kali. Dictionari ini juga menjadi bahan
+        watchdog: entri yang jauh lebih tua dari
+        ``TELEGRAM_UPLOAD_STALE_MINUTES`` dianggap hang dan task-nya dibatalkan.
+        """
+        entry = (asyncio.current_task(), time.monotonic())
+        self._active_uploads[live_id] = entry
+        return entry
+
+    def _release_active_upload(self, live_id: str) -> None:
+        self._active_uploads.pop(live_id, None)
+
+    def _cancel_stuck_uploads(self) -> list[str]:
+        """Batalkan upload yang menggantung terlalu lama; kembalikan live_id-nya.
+
+        Semua request Telegram sudah dibungkus ``wait_for``, jadi timeout yang
+        biasanya menyisso sudah ditangani. Watchdog ini adalah jaring pengaman
+        kedua untuk hal yang TIDAK melewati request: awaits tak berjam-jam, atau
+        satu item antrean yang menahan lock upload selamanya.
+        Membatalkan task mengembalikan lock, dan baris DB-nya lalu dipulihkan
+        ke antrean oleh ``recover_interrupted_uploads`` pada siklus berikutnya —
+        jadi file ini akhirnya diproses (dan ketahuan hasilnya) alih-alih
+        terkunci diam.
+        """
+        limit = max(5, int(Config.TELEGRAM_UPLOAD_STALE_MINUTES)) * 60
+        now = time.monotonic()
+        stuck: list[str] = []
+        for live_id, (task, started) in list(self._active_uploads.items()):
+            if now - started <= limit:
+                continue
+            stuck.append(live_id)
+            # Entri HARUS dihapus di sini, bukan hanya saat task selesai:
+            # recovery dijalankan pada siklus yang sama, dan selama entri masih
+            # ada baris ini akan dianggap "upload aktif" lalu dilewati — tepat
+            # akunnya yang membuat baris terkunci selamanya di insiden 30 Sep.
+            self._active_uploads.pop(live_id, None)
+            if task is not None and not task.done():
+                logger.error(
+                    "Upload %s berjalan %.0f menit (> TELEGRAM_UPLOAD_STALE_MINUTES); "
+                    "dibatalkan agar file tidak terkunci diam.",
+                    live_id, (now - started) / 60,
+                )
+                task.cancel()
+        return stuck
+
     async def handle_upload_ready(
         self,
         *args,
@@ -510,10 +563,21 @@ class JKT48LiveBot:
         **kwargs,
     ) -> bool:
         """Upload one ready video, serialized unless an internal caller holds the lock."""
-        if _upload_lock_held:
+        live_id = str(kwargs.get("live_id") or (args[0] if args else ""))
+        if not live_id:
             return await self._handle_upload_ready_impl(*args, keep_file=keep_file, **kwargs)
-        async with self._upload_lock:
-            return await self._handle_upload_ready_impl(*args, keep_file=keep_file, **kwargs)
+        self._track_active_upload(live_id)
+        try:
+            if _upload_lock_held:
+                return await self._handle_upload_ready_impl(
+                    *args, keep_file=keep_file, **kwargs
+                )
+            async with self._upload_lock:
+                return await self._handle_upload_ready_impl(
+                    *args, keep_file=keep_file, **kwargs
+                )
+        finally:
+            self._release_active_upload(live_id)
 
     async def _handle_upload_ready_impl(
         self,
@@ -1866,6 +1930,28 @@ class JKT48LiveBot:
 
     async def retry_pending_uploads(self) -> None:
         """Retry sessions that were previously paused or pending upload."""
+        # Watchdog: upload yang menggantung dibatalkan lebih dulu supaya lock
+        # upload kembali bebas dan barisnya bisa dipulihkan ke antrean.
+        stuck = self._cancel_stuck_uploads()
+        if stuck:
+            logger.error(
+                "%d upload dibatalkan karena menggantung: %s",
+                len(stuck), ", ".join(stuck),
+            )
+        # Recovery periodik: baris 'uploading_telegram'/'uploading_youtube'
+        # yang ditinggalkan proses mati (atau oleh task yang dibatalkan di
+        # atas) kembali jadi pending_upload. Tanpa ini file tersebut tidak
+        # pernah terlihat worker retry DAN tidak pernah dinotifikasi —
+        # gejala 30 Sep 2026: notifikasi "UPLOAD TELEGRAM" tanpa lanjutan
+        # selama 28 jam sementara video tidak pernah muncul di channel.
+        # Upload yang SEDANG berjalan (live_id di _active_uploads) dikecualikan.
+        try:
+            database.recover_interrupted_uploads(
+                skip_live_ids=set(self._active_uploads)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Recovery upload gagal (diabaikan): %s", exc)
+
         # Live queue is a single two-destination pipeline.  Always include
         # pending_upload and download_complete, regardless of UPLOAD_TARGET.
         pending = database.get_all_pending_videos()

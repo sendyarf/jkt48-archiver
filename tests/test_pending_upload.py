@@ -660,5 +660,94 @@ class RetryLoopTestCase(HandleUploadReadyTestCase):
             self.assertNotEqual(err, "Telegram archive pending")
 
 
+class TestStuckUploadRecovery(HandleUploadReadyTestCase):
+    """Baris 'uploading_telegram' yang ditinggalkan harus kembali ke antrean.
+
+    Insiden 30 Sep 2026: admin menerima notifikasi "UPLOAD TELEGRAM" untuk
+    jkt48_michie_1790670389, lalu tidak ada notifikasi lanjutan sama sekali
+    selama 28 jam dan video tidak pernah muncul di channel. Barisnya terkunci
+    di 'uploading_telegram' — status yang TIDAK dibaca
+    ``get_all_pending_videos``, jadi tidak pernah di-retry dan tidak pernah
+    diberi tahu hasilnya. Recovery periodik di ``retry_pending_uploads`` +
+    watchdog upload yang menggantung adalah dua Flamengo penutupnya.
+    """
+
+    def test_stale_uploading_row_returns_to_queue(self):
+        bot = self._make_bot()
+        path = self._write_video()
+        gid = self._insert_session_for_upload(path)
+        database.update_status("daisy_a", "uploading_telegram", file_path=str(path))
+
+        calls: list[str] = []
+
+        async def fake_handle(**kwargs):
+            calls.append(kwargs["live_id"])
+
+        bot.handle_upload_ready = fake_handle  # type: ignore[method-assign]
+        asyncio.run(bot.retry_pending_uploads())
+
+        self.assertTrue(
+            calls, "baris uploading_telegram yang tertinggal harus masuk antrean lagi"
+        )
+        statuses = {row["live_id"]: row["status"] for row in self._group_rows(gid)}
+        self.assertNotEqual(
+            statuses.get("daisy_a"), "uploading_telegram",
+            "baris tidak boleh tetap terkunci di status in-flight",
+        )
+
+    def test_active_upload_is_not_recovered(self):
+        """Upload yang SEDANG berjalan tidak boleh di-reset (jd upload ganda)."""
+        bot = self._make_bot()
+        path = self._write_video()
+        gid = self._insert_session_for_upload(path)
+        database.update_status("daisy_a", "uploading_telegram", file_path=str(path))
+
+        calls: list[str] = []
+
+        async def fake_handle(**kwargs):
+            calls.append(kwargs["live_id"])
+
+        bot.handle_upload_ready = fake_handle  # type: ignore[method-assign]
+        # Simulasikan upload daisy_a yang masih berjalan di proses ini.
+        import time as _time
+        bot._active_uploads["daisy_a"] = (None, _time.monotonic())
+        try:
+            asyncio.run(bot.retry_pending_uploads())
+        finally:
+            bot._active_uploads.pop("daisy_a", None)
+
+        self.assertNotIn("daisy_a", calls, "upload aktif tidak boleh di-retry")
+        statuses = {row["live_id"]: row["status"] for row in self._group_rows(gid)}
+        self.assertEqual(statuses.get("daisy_a"), "uploading_telegram")
+
+    def test_watchdog_cancels_upload_that_exceeds_stale_window(self):
+        """Upload yang menggantung > TELEGRAM_UPLOAD_STALE_MINUTES dibatalkan."""
+        bot = self._make_bot()
+        bot._active_uploads["merged_x"] = (None, 0.0)
+
+        async def run():
+            with patch.object(Config, "TELEGRAM_UPLOAD_STALE_MINUTES", 0):
+                return bot._cancel_stuck_uploads()
+
+        stuck = asyncio.run(run())
+        self.assertEqual(stuck, ["merged_x"])
+        self.assertNotIn(
+            "merged_x", bot._active_uploads,
+            "baris harus bisa dipulihkan recovery setelah dibatalkan",
+        )
+
+    def test_watchdog_keeps_upload_within_window(self):
+        bot = self._make_bot()
+        import time as _time
+        bot._active_uploads["merged_ok"] = (None, _time.monotonic())
+
+        async def run():
+            with patch.object(Config, "TELEGRAM_UPLOAD_STALE_MINUTES", 90):
+                return bot._cancel_stuck_uploads()
+
+        self.assertEqual(asyncio.run(run()), [])
+        self.assertIn("merged_ok", bot._active_uploads)
+
+
 if __name__ == "__main__":
     unittest.main()

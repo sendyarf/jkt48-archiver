@@ -138,6 +138,50 @@ class Config:
         os.getenv("TELEGRAM_FLOOD_COOLDOWN_MINUTES", "90")
     )
 
+    # ─── Anti-hang upload Telegram (detik) ─────────────────────────────────
+    #
+    # Insiden 30 Sep 2026: admin menerima "UPLOAD TELEGRAM" lalu tidak ada
+    # notifikasi apa pun selama 28 jam, padahal video tidak pernah muncul di
+    # channel. Penyebabnya bukan flood: salah satu await RPC Telethon menggantung
+    # (koneksi TCP yang tidak maju) sehingga coroutine upload TIDAK PERNAH
+    # selesai ATAU melempar error. Akibatnya:
+    #   1) status baris terkunci di 'uploading_telegram' - tak terlihat oleh
+    #      get_all_pending_videos (hanya pending_upload/download_complete),
+    #      jadi tidak pernah di-retry dan tidak pernah dinotifikasi;
+    #   2) lock upload ditahan selamanya, dan notifikasi admin memakai lock
+    #      yang sama, sehingga notifikasi gagal pun tidak bisa terkirim.
+    #
+    # Solusi: setiap request dibungkus wait_for. Part 512 KiB normalnya selesai
+    # dalam hitungan detik, jadi 300 detik tanpa respons = koneksi macet.
+    TELEGRAM_PART_UPLOAD_TIMEOUT_SECONDS: int = int(
+        os.getenv("TELEGRAM_PART_UPLOAD_TIMEOUT_SECONDS", "300")
+    )
+
+    # Batas waktu untuk request pembuatan pesan (uploadMedia / messages.sendMedia).
+    # Semua byte SUDAH di-upload di titik ini, jadi ini hanya "server selesai
+    # memproses metadata" - 10 menit sudah sangat longgar.
+    TELEGRAM_SEND_TIMEOUT_SECONDS: int = int(
+        os.getenv("TELEGRAM_SEND_TIMEOUT_SECONDS", "600")
+    )
+
+    # Notifikasi teks (termasuk notifikasi admin tahap upload) punya batas
+    # sendiri yang jauh lebih pendek: pesan seukuran beberapa ratus byte tidak
+    # mungkin butuh lebih dari 60 detik, dan notifikasi yang menggantung lebih
+    # buruk daripada notifikasi yang hilang.
+    TELEGRAM_NOTIFY_TIMEOUT_SECONDS: int = int(
+        os.getenv("TELEGRAM_NOTIFY_TIMEOUT_SECONDS", "60")
+    )
+
+    # Upload yang masih berjalan di proses INI boleh sesaat berada di status
+    # 'uploading_telegram'. Baris dengan usia di bawah ambang ini dianggap
+    # benar-benar sedang berjalan, jadi recovery periodik tidak menyentuhnya.
+    # Harus LEBIH BESAR dari TELEGRAM_SEND_TIMEOUT_SECONDS + durasi flood
+    # terpanjang, kalau tidak recovery bisa menabrak upload yang sedang jalan
+    # (menghasilkan upload ganda untuk file yang sama).
+    TELEGRAM_UPLOAD_STALE_MINUTES: int = int(
+        os.getenv("TELEGRAM_UPLOAD_STALE_MINUTES", "90")
+    )
+
     # Kegagalan upload Telegram NON-flood (network, RPC error, dsb) juga
     # diberi cooldown yang ESKALATIF per file: 15 → 30 → 60 → … menit sampai
     # TELEGRAM_RETRY_MAX_MINUTES. Tanpa ini, file yang memang tidak bisa
