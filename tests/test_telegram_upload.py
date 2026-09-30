@@ -277,6 +277,128 @@ class TestTelegramMultipartResume(unittest.TestCase):
             self.assertEqual(uploaded_parts, ["part2.mp4", "part3.mp4"])
             self.assertEqual(saved_prefixes[-1], [101, 202, 303])
 
+    def _make_two_part_scenario(self, directory):
+        source = Path(directory) / "source.mp4"
+        source.write_bytes(b"video")
+        parts = [
+            VideoPart(i, 2, Path(directory) / f"part{i}.mp4", 10, 1, 16, 9, True)
+            for i in (1, 2)
+        ]
+        for part in parts:
+            part.file_path.write_bytes(b"part")
+        return source, parts
+
+    def test_multi_part_sent_as_single_album_message(self):
+        """2..10 part -> satu pesan album; send_video_file tidak dipanggil."""
+        with tempfile.TemporaryDirectory() as directory:
+            source, parts = self._make_two_part_scenario(directory)
+            sender = TelegramSender.__new__(TelegramSender)
+            sender.send_video_file = AsyncMock()
+            sender._send_parts_album = AsyncMock(return_value=[501, 502])
+            saved = []
+
+            async def fake_split(path, max_bytes=None):
+                return parts
+
+            async def run():
+                with (
+                    patch("bot.telegram_sender.split_video_if_needed", side_effect=fake_split),
+                    patch("bot.telegram_sender.generate_thumbnail", new=AsyncMock(return_value=None)),
+                    patch("bot.telegram_sender.cleanup_video_parts"),
+                ):
+                    return await sender.upload_video_with_splitting(
+                        source, "Test", "jkt48_test", "2026-09-24T00:00:00+00:00",
+                        on_part_sent=lambda ids: saved.append(list(ids)),
+                    )
+
+            result = asyncio.run(run())
+            self.assertEqual(result, [501, 502])
+            self.assertEqual(saved, [[501, 502]])
+            sender.send_video_file.assert_not_awaited()
+            # Caption album tidak memuat header [Part x/y] per-part.
+            album_caption = sender._send_parts_album.await_args.args[1]
+            self.assertNotIn("[Part", album_caption)
+            self.assertIn("album", album_caption.lower())
+
+    def test_album_rejection_falls_back_to_per_part(self):
+        """Album return None -> jatuh ke pengiriman per-part seperti semula."""
+        with tempfile.TemporaryDirectory() as directory:
+            source, parts = self._make_two_part_scenario(directory)
+            sender = TelegramSender.__new__(TelegramSender)
+            sender.send_video_file = AsyncMock(side_effect=[601, 602])
+            sender._send_parts_album = AsyncMock(return_value=None)
+
+            async def fake_split(path, max_bytes=None):
+                return parts
+
+            async def run():
+                with (
+                    patch("bot.telegram_sender.split_video_if_needed", side_effect=fake_split),
+                    patch("bot.telegram_sender.generate_thumbnail", new=AsyncMock(return_value=None)),
+                    patch("bot.telegram_sender.cleanup_video_parts"),
+                ):
+                    return await sender.upload_video_with_splitting(
+                        source, "Test", "jkt48_test", "2026-09-24T00:00:00+00:00",
+                    )
+
+            result = asyncio.run(run())
+            self.assertEqual(result, [601, 602])
+            self.assertEqual(sender.send_video_file.await_count, 2)
+
+    def test_resume_partial_ids_skip_album_path(self):
+        """Resume dari marker parsial tidak boleh mengirim ulang sebagai album."""
+        with tempfile.TemporaryDirectory() as directory:
+            source, parts = self._make_two_part_scenario(directory)
+            sender = TelegramSender.__new__(TelegramSender)
+            sender.send_video_file = AsyncMock(return_value=602)
+            sender._send_parts_album = AsyncMock()
+
+            async def fake_split(path, max_bytes=None):
+                return parts
+
+            async def run():
+                with (
+                    patch("bot.telegram_sender.split_video_if_needed", side_effect=fake_split),
+                    patch("bot.telegram_sender.generate_thumbnail", new=AsyncMock(return_value=None)),
+                    patch("bot.telegram_sender.cleanup_video_parts"),
+                ):
+                    return await sender.upload_video_with_splitting(
+                        source, "Test", "jkt48_test", "2026-09-24T00:00:00+00:00",
+                        existing_message_ids=[601],
+                    )
+
+            result = asyncio.run(run())
+            self.assertEqual(result, [601, 602])
+            sender._send_parts_album.assert_not_awaited()
+
+    def test_oversized_split_part_aborts_before_upload(self):
+        """Part hasil split di atas batas part server -> gagal sebelum byte naik."""
+        with tempfile.TemporaryDirectory() as directory:
+            source, parts = self._make_two_part_scenario(directory)
+            parts[0] = VideoPart(1, 2, parts[0].file_path, 9 * 1024 ** 3, 1, 16, 9, True)
+            sender = TelegramSender.__new__(TelegramSender)
+            sender.send_video_file = AsyncMock()
+            sender._send_parts_album = AsyncMock()
+
+            async def fake_split(path, max_bytes=None):
+                return parts
+
+            async def run():
+                with (
+                    patch("bot.telegram_sender.split_video_if_needed", side_effect=fake_split),
+                    patch("bot.telegram_sender.generate_thumbnail", new=AsyncMock(return_value=None)),
+                    patch("bot.telegram_sender.cleanup_video_parts"),
+                ):
+                    with self.assertRaises(TelegramFileTooLarge):
+                        await sender.upload_video_with_splitting(
+                            source, "Test", "jkt48_test",
+                            "2026-09-24T00:00:00+00:00",
+                        )
+
+            asyncio.run(run())
+            sender.send_video_file.assert_not_awaited()
+            sender._send_parts_album.assert_not_awaited()
+
 
 
 def _fake_message(message_id: int):

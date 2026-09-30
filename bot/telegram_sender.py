@@ -32,6 +32,7 @@ from bot import timeutil
 from bot.telegram_limits import (
     MAX_FILE_PARTS_FREE,
     MAX_FILE_PARTS_PREMIUM,
+    max_file_bytes,
     safe_split_bytes,
 )
 from bot.video_splitter import (
@@ -389,7 +390,6 @@ class TelegramSender:
             return None
 
         # Build video streaming attributes so Telegram client renders it as a playable video
-        # Build video streaming attributes so Telegram client renders it as a playable video
         attributes = [
             DocumentAttributeVideo(
                 duration=int(duration or 0),
@@ -512,6 +512,134 @@ class TelegramSender:
 
         return None
 
+    async def _send_parts_album(
+        self,
+        parts: list["VideoPart"],
+        caption: str,
+        thumb_path: Optional[Path],
+        target: int,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Optional[list[int]]:
+        """Kirim semua part hasil split sebagai SATU pesan album (media group).
+
+        Telegram menganggapnya beberapa media dalam satu pesan (album), bukan
+        satu file raksasa — persis perilaku yang diharapkan untuk video >2 GB.
+        Batas album Telegram adalah 10 media per pesan.
+
+        Setiap part >= 64 MB di-upload lewat jalur resume (sidecar JSON), jadi
+        flood/restart tidak mengulang byte yang sudah terkirim. Message ID
+        urut sesuai urutan part.
+
+        Return ``None`` bila album ditolak (mis. media tidak valid) sehingga
+        pemanggil bisa jatuh ke pengiriman per-part; FloodError naik ke
+        pemanggil supaya retry/cooldown worker yang mengatur jeda.
+        """
+        await self.connect()
+        entity = await self._client.get_input_entity(target)
+
+        caption_result = await self._client._parse_message_text(caption or "", "html")
+
+        thumb_handle = None
+        if thumb_path and Path(thumb_path).exists():
+            thumb_handle = await self._client.upload_file(str(thumb_path))
+
+        # Flood dihormati seperti jalur lain: jeda sesuai durasi Telegram,
+        # habis jatah → TelegramFloodExhausted agar retry worker memberi
+        # cooldown. Progres part besar aman di sidecar sehingga retry album
+        # melanjutkan dari byte terakhir, bukan mengulang file dari nol.
+        flood_attempts = 0
+        while True:
+            try:
+                return await self._send_parts_album_once(
+                    entity, parts, caption_result, thumb_handle, progress_callback
+                )
+            except FloodError as exc:
+                flood_attempts += 1
+                if flood_attempts >= Config.TELEGRAM_FLOOD_MAX_RETRIES:
+                    raise TelegramFloodExhausted(
+                        f"Telegram tetap flood setelah {flood_attempts} "
+                        f"percobaan album ({len(parts)} part)"
+                    )
+                wait = _flood_wait_with_jitter(_flood_wait_seconds(exc))
+                logger.warning(
+                    "Telegram flood %ds saat mengirim album part. Menunggu...",
+                    wait,
+                )
+                await asyncio.sleep(wait)
+
+    async def _send_parts_album_once(
+        self,
+        entity,
+        parts: list["VideoPart"],
+        caption_result,
+        thumb_handle,
+        progress_callback: Optional[Callable[[int, int], None]],
+    ) -> list[int]:
+        """Satu percobaan pengiriman album; FloodError dibiarkan naik."""
+        async with self._upload_guard():
+            media = []
+            for index, part in enumerate(parts):
+                size = part.size_bytes
+                mtime = part.file_path.stat().st_mtime
+                if size >= _RESUME_MIN_SIZE_BYTES:
+                    file_handle = await self._upload_with_resume(
+                        part.file_path, size, mtime, progress_callback
+                    )
+                else:
+                    file_handle = await self._client.upload_file(
+                        str(part.file_path), progress_callback=progress_callback
+                    )
+                uploaded = types.InputMediaUploadedDocument(
+                    file=file_handle,
+                    mime_type="video/mp4",
+                    attributes=[
+                        DocumentAttributeVideo(
+                            duration=int(part.duration_seconds or 0),
+                            w=int(part.width or 0),
+                            h=int(part.height or 0),
+                            supports_streaming=True,
+                        )
+                    ],
+                    thumb=thumb_handle,
+                    ttl_seconds=None,
+                    nosound_video=True,
+                )
+                response = await self._client(
+                    functions.messages.UploadMediaRequest(entity, media=uploaded)
+                )
+                media.append(
+                    types.InputSingleMedia(
+                        utils.get_input_media(
+                            response.document, supports_streaming=True
+                        ),
+                        message=caption_result[0] if index == 0 else "",
+                        entities=caption_result[1] if index == 0 else None,
+                    )
+                )
+            request = functions.messages.SendMultiMediaRequest(
+                entity, multi_media=media
+            )
+            result = await self._client(request)
+            random_ids = [m.random_id for m in media]
+            messages = self._client._get_response_message(random_ids, result, entity)
+
+        if not isinstance(messages, list):
+            messages = [messages]
+        ids = [m.id for m in messages if m is not None]
+        # Album sukses → sidecar resume tiap part sudah tidak diperlukan;
+        # hapus agar tidak menumpuk di disk (per-part path menghapusnya di
+        # send_video_file, jalur album harus membersihkannya sendiri).
+        for part in parts:
+            try:
+                Path(str(part.file_path) + ".tgup.json").unlink(missing_ok=True)
+            except OSError:
+                pass
+        logger.info(
+            "Album %d part terkirim ke %d dalam 1 pesan. Message IDs: %s",
+            len(parts), target, ids,
+        )
+        return ids
+
     async def upload_video_with_splitting(
         self,
         file_path: Union[str, Path],
@@ -527,7 +655,11 @@ class TelegramSender:
     ) -> list[int]:
         """
         Splits video if > 2GB (TELEGRAM_MAX_FILE_SIZE_MB) and uploads all parts
-        sequentially to the Telegram channel.
+        to the Telegram channel.
+
+        Video hasil split (2..10 part) dikirim sebagai SATU pesan album
+        (media group); part lebih dari 10 atau resume parsial tetap dikirim
+        per-part seperti semula.
 
         `platform` ('idn'/'showroom') dipakai untuk header caption agar rekaman
         Showroom tidak lagi dilabeli "IDN LIVE REPLAY".
@@ -548,10 +680,29 @@ class TelegramSender:
         try:
             # 1. Split video into parts if needed — ambangnya mengikuti jumlah
             #    part yang benar-benar diterima server untuk akun ini.
+            max_part_count = await self._max_file_parts()
             parts = await split_video_if_needed(
                 path, max_bytes=await self._split_limit_bytes()
             )
             total_parts = len(parts)
+
+            # Guard pasca-split: ffmpeg memotong berbasis DURASI pada stream
+            # VBR, jadi satu part bisa membengkak melewati batas part server
+            # (FILE_PARTS_INVALID — ditolak mentah, tanpa resume). Gagalkan
+            # SEKARANG sebelum byte pertama naik, bukan di tengah upload yang
+            # akan meninggalkan arsip parsial.
+            hard_limit = max_file_bytes(max_part_count)
+            oversized = [p for p in parts if p.size_bytes > hard_limit]
+            if oversized:
+                names = ", ".join(
+                    f"{p.file_path.name} ({p.size_bytes / 1024 ** 3:.2f} GB)"
+                    for p in oversized
+                )
+                raise TelegramFileTooLarge(
+                    f"Hasil split {path.name} memuat part di atas batas akun "
+                    f"(~{hard_limit / 1024 ** 3:.2f} GB): {names}. Turunkan "
+                    f"TELEGRAM_MAX_FILE_SIZE_MB atau naikkan akun ke Premium."
+                )
 
             # 2. Generate a thumbnail frame for the video
             thumb_path = await generate_thumbnail(path)
@@ -570,6 +721,50 @@ class TelegramSender:
                     total_parts,
                 )
             start_index = len(sent_message_ids)
+
+            # Video hasil split (2..10 part, belum ada part terkirim) dikirim
+            # sebagai SATU pesan album: Telegram menampilkannya sebagai media
+            # group, bukan N pesan terpisah. Bila album ditolak (return None)
+            # atau jumlah part > 10, jatuh ke pengiriman per-part di bawah.
+            if 10 >= total_parts > 1 and start_index == 0:
+                album_caption = build_telegram_video_caption(
+                    member_name=member_name,
+                    member_username=member_username,
+                    started_at=started_at,
+                    live_title=live_title,
+                    part_number=1,
+                    total_parts=1,
+                    file_size_bytes=sum(p.size_bytes for p in parts),
+                    platform=platform,
+                ) + f"\n📁 Terbagi {total_parts} part dalam 1 album"
+                try:
+                    album_ids = await self._send_parts_album(
+                        parts,
+                        album_caption,
+                        thumb_path,
+                        channel_id or Config.TELEGRAM_CHANNEL_ID,
+                        progress_callback=progress_callback,
+                    )
+                except TelegramFloodExhausted:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "Pengiriman album %s gagal (%s); jatuh ke pengiriman "
+                        "per-part. Byte yang sudah ter-upload aman di sidecar.",
+                        path.name, exc,
+                    )
+                    album_ids = None
+                if album_ids is not None:
+                    if len(album_ids) != total_parts:
+                        logger.warning(
+                            "Album %s mengembalikan %d message ID untuk %d "
+                            "part; ID yang tersedia tetap dipakai.",
+                            path.name, len(album_ids), total_parts,
+                        )
+                    sent_message_ids.extend(album_ids)
+                    if on_part_sent is not None:
+                        on_part_sent(list(sent_message_ids))
+                    return sent_message_ids
 
             for part in parts[start_index:]:
                 caption = build_telegram_video_caption(
