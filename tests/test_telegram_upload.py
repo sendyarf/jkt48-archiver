@@ -1157,6 +1157,82 @@ class _HangingClient:
         return await _never()
 
 
+class _OkUploadClient:
+    """Client yang menerima semua part (tanpa flood, tanpa delay)."""
+
+    def __init__(self) -> None:
+        self.requests: list[object] = []
+        self._upload_lock = asyncio.Lock()
+        self._notify_lock = asyncio.Lock()
+        self._max_file_parts_cached = MAX_FILE_PARTS_FREE
+
+    def __call__(self, request):
+        self.requests.append(request)
+
+        async def _ok():
+            return True
+
+        return _ok()
+
+    async def get_me(self):
+        return None
+
+
+class TestTelegramPartPacing(unittest.TestCase):
+    """Upload besar harus dijeda antar part, bukan mendorong tanpa henti.
+
+    Terukur di VPS 1 Okt 2026: tanpa jeda, bot memompa ~3,6 part/detik
+    (1,8 MB/s) lalu kena FLOOD_PREMIUM_WAIT 930-1042 detik setelah hanya
+    ~20 MB - laju efektifnya 1,27 MB/menit, sementara YouTube mengunggah file
+    yang sama dalam 2 menit 38 detik. Jeda 500 ms per part (~1 MB/s) menukar
+    penalti 15 menit dengan transfer yang terus berjalan.
+    """
+
+    def _upload(self, delay_ms: int) -> tuple[list[float], int]:
+        client = _OkUploadClient()
+        sender = TelegramSender.__new__(TelegramSender)
+        sender._client = client
+        sender._connected = True
+        sender._max_file_parts_cached = MAX_FILE_PARTS_FREE
+
+        sleeps: list[float] = []
+        real_sleep = asyncio.sleep
+
+        async def fake_sleep(seconds, *args, **kwargs):
+            sleeps.append(seconds)
+            return await real_sleep(0)
+
+        async def run():
+            with tempfile.TemporaryDirectory() as directory:
+                video = Path(directory) / "big.mp4"
+                # Telethon memilih ukuran part sendiri (128 KiB untuk file
+                # kecil, 256-512 KiB untuk yang lebih besar), jadi fixture
+                # tidak perlu menebak: yang penting jumlah part > 1.
+                video.write_bytes(b"0" * (2 * 1024 * 1024))
+                with patch.object(
+                    Config, "TELEGRAM_UPLOAD_PART_DELAY_MS", delay_ms
+                ), patch("bot.telegram_sender.asyncio.sleep", fake_sleep):
+                    await sender._upload_with_resume(
+                        video, video.stat().st_size, 0.0
+                    )
+            return len(client.requests)
+
+        parts = asyncio.run(run())
+        self.assertGreater(parts, 1, "fixture harus terdiri dari beberapa part")
+        return sleeps, parts
+
+    def test_sleep_between_parts(self):
+        sleeps, parts = self._upload(500)
+        self.assertTrue(sleeps, "harus ada jeda antar part")
+        self.assertAlmostEqual(max(sleeps), 0.5, places=3)
+        # Part terakhir tidak perlu jeda, jadi jeda = jumlah part - 1.
+        self.assertEqual(len(sleeps), parts - 1)
+
+    def test_pacing_disabled_when_zero(self):
+        sleeps, _ = self._upload(0)
+        self.assertEqual(sleeps, [])
+
+
 class TestTelegramAntiHang(unittest.TestCase):
     """Upload tidak boleh menggantung selamanya (insiden 30 Sep 2026).
 

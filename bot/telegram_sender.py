@@ -425,6 +425,16 @@ class TelegramSender:
                     if progress_callback:
                         sent = min(parts_sent * part_size, size)
                         await helpers._maybe_await(progress_callback(sent, size))
+                    # Pacing: jeda di antara part supaya laju upload tetap di
+                    # bawah batas aman akun. Tanpa jeda, bot mendorong ~1,8 MB/s
+                    # dan kena FLOOD_PREMIUM_WAIT 930-1042 detik SETELAH ~20 MB.
+                    # Perhitungannya: 15 menit penalti untuk 20 MB jauh lebih
+                    # buruk daripada transfer 2x lebih lambat yang jalan terus -
+                    # laju 1 MB/s membuat file 332 MB selesai dalam ~5 menit,
+                    # bukan ~4 jam. Part terakhir tidak perlu jeda.
+                    delay = int(Config.TELEGRAM_UPLOAD_PART_DELAY_MS) / 1000
+                    if delay > 0 and part_index + 1 < total_parts:
+                        await asyncio.sleep(delay)
 
         # Pemanggil hanya memakai jalur ini untuk file >= 64 MB, jadi hasilnya
         # selalu InputFileBig (>10 MB).

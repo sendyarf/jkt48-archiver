@@ -157,6 +157,19 @@ class Config:
         os.getenv("TELEGRAM_PART_UPLOAD_TIMEOUT_SECONDS", "300")
     )
 
+    # Jeda antar part saat upload (milidetik). Ukuran part Telethon dipilih
+    # sendiri (128 KiB untuk file kecil, 256-512 KiB untuk yang besar), jadi
+    # file 1 GB bisa jadi 4.000-an request. Tanpa jeda bot memompa ~1,8 MB/s
+    # lalu kena FLOOD_PREMIUM_WAIT 930-1042 detik setelah hanya ~20 MB
+    # (terukur di VPS 1 Okt 2026: 20 MB per 15 menit, padahal YouTube
+    # mengunggah file yang sama dalam 2 menit 38 detik). Penalti 15 menit untuk
+    # 20 MB jauh lebih mahal daripada transfer 2x lebih lambat yang berjalan
+    # terus. Naikkan hanya kalau account sudah bebas dari FLOOD_PREMIUM_WAIT
+    # secara rutin.
+    TELEGRAM_UPLOAD_PART_DELAY_MS: int = int(
+        os.getenv("TELEGRAM_UPLOAD_PART_DELAY_MS", "500")
+    )
+
     # Batas waktu untuk request pembuatan pesan (uploadMedia / messages.sendMedia).
     # Semua byte SUDAH di-upload di titik ini, jadi ini hanya "server selesai
     # memproses metadata" - 10 menit sudah sangat longgar.
