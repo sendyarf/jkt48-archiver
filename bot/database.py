@@ -302,6 +302,21 @@ def init_db() -> None:
             conn.execute("ALTER TABLE merge_groups ADD COLUMN platform TEXT NOT NULL DEFAULT 'idn'")
             logger.info("Schema migration: added platform column to merge_groups")
 
+        # 30 Sep 2026: YouTube jadi tujuan WAJIB dan Telegram turun jadi arsip
+        # best-effort. Kalau Telegram gagal terus, file tidak boleh menggantung
+        # selamanya (menumpuk di disk) dan tidak boleh terus diretry. Marker
+        # ini menyatakan "Telegram sudah menyerah untuk rekaman ini" — file
+        # aman dihapus begitu youtube_video_id ada, dan website tetap
+        # menayangkannya (tanpa tombol download, karena tidak ada arsip).
+        if "telegram_gave_up" not in cols:
+            conn.execute(
+                "ALTER TABLE live_sessions "
+                "ADD COLUMN telegram_gave_up INTEGER NOT NULL DEFAULT 0"
+            )
+            logger.info(
+                "Schema migration: added telegram_gave_up column to live_sessions"
+            )
+
         # Kolom arsip TikTok: database lama dibuat sebelum `avatar_url` ada,
         # jadi harus ditambahkan manual (CREATE TABLE IF NOT EXISTS tidak
         # mengubah tabel yang sudah ada). Tabelnya pasti ada karena baru saja
@@ -439,6 +454,7 @@ _SESSION_FIELD_COLS = {
     "telegram_message_id",
     "telegram_message_ids",
     "telegram_partial_message_ids",
+    "telegram_gave_up",
     "youtube_video_id",
     "content_uid",
     "download_started_at",
@@ -505,6 +521,7 @@ def get_group_upload_state(
         "telegram_message_ids": "",
         "telegram_partial_message_ids": "",
         "telegram_message_id": 0,
+        "telegram_gave_up": 0,
     }
     with _get_conn() as conn:
         if group_id is not None:
@@ -512,7 +529,8 @@ def get_group_upload_state(
                 """SELECT MAX(COALESCE(youtube_video_id, '')) AS youtube_video_id,
                           MAX(COALESCE(telegram_message_ids, '')) AS telegram_message_ids,
                           MAX(COALESCE(telegram_partial_message_ids, '')) AS telegram_partial_message_ids,
-                          MAX(COALESCE(telegram_message_id, 0)) AS telegram_message_id
+                          MAX(COALESCE(telegram_message_id, 0)) AS telegram_message_id,
+                          MAX(COALESCE(telegram_gave_up, 0)) AS telegram_gave_up
                    FROM live_sessions
                    WHERE merge_group_id = ?""",
                 (group_id,),
@@ -522,7 +540,8 @@ def get_group_upload_state(
                 """SELECT COALESCE(youtube_video_id, '') AS youtube_video_id,
                           COALESCE(telegram_message_ids, '') AS telegram_message_ids,
                           COALESCE(telegram_partial_message_ids, '') AS telegram_partial_message_ids,
-                          COALESCE(telegram_message_id, 0) AS telegram_message_id
+                          COALESCE(telegram_message_id, 0) AS telegram_message_id,
+                          COALESCE(telegram_gave_up, 0) AS telegram_gave_up
                    FROM live_sessions
                    WHERE live_id = ?""",
                 (live_id,),
@@ -844,7 +863,8 @@ def recover_interrupted_uploads(
                 state = conn.execute(
                     """SELECT MAX(COALESCE(telegram_message_ids, '')) AS telegram_ids,
                               MAX(COALESCE(telegram_message_id, 0)) AS singular_tg,
-                              MAX(COALESCE(youtube_video_id, '')) AS youtube_id
+                              MAX(COALESCE(youtube_video_id, '')) AS youtube_id,
+                              MAX(COALESCE(telegram_gave_up, 0)) AS gave_up
                        FROM live_sessions
                        WHERE merge_group_id = ?""",
                     (group_id,),
@@ -858,7 +878,8 @@ def recover_interrupted_uploads(
                 state = conn.execute(
                     """SELECT COALESCE(telegram_message_ids, '') AS telegram_ids,
                               COALESCE(telegram_message_id, 0) AS singular_tg,
-                              COALESCE(youtube_video_id, '') AS youtube_id
+                              COALESCE(youtube_video_id, '') AS youtube_id,
+                              COALESCE(telegram_gave_up, 0) AS gave_up
                        FROM live_sessions
                        WHERE live_id = ?""",
                     (row["live_id"],),
@@ -867,6 +888,23 @@ def recover_interrupted_uploads(
 
             telegram_done = bool(str(state["telegram_ids"] or "").strip())
             youtube_done = bool(str(state["youtube_id"] or "").strip())
+
+            # Telegram menyerah = tujuan selesai, bukan pekerjaan tertunda.
+            # Kalau baris ini masih "uploading_*" (mis. proses mati tepat
+            # sesudah marker_ABANDON ditulis), ia harus diselesaikan sebagai
+            # success bila YouTube sudah ada — kalau tidak, file 1-2 GB akan
+            # diretry Telegram selamanya padahal sudah diputuskan menyerah.
+            if int(state["gave_up"] or 0) and youtube_done:
+                conn.execute(
+                    """UPDATE live_sessions
+                       SET status = 'done_youtube'
+                       WHERE live_id = ? AND status IN (
+                           'uploading_telegram', 'pending_upload'
+                       )""",
+                    (row["live_id"],),
+                )
+                changed += 1
+                continue
 
             file_exists = any(_nonempty_file(candidate) for candidate in file_candidates)
 

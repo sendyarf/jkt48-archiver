@@ -160,7 +160,17 @@ dibaca benar.
 
 **Catatan `UPLOAD_TARGET`.** Nilai ini dipertahankan hanya untuk kompatibilitas konfigurasi lama; ia tidak mematikan salah satu tujuan live. Tujuan live ditentukan oleh `TELEGRAM_ARCHIVE_UPLOAD_ENABLED` (default **false**): kalau `true`, tiap rekaman wajib melalui **Telegram → YouTube**; kalau `false`, Telegram dilewati dan rekaman langsung diunggah ke **YouTube**.
 
-**Arsip Telegram rekaman live dinyalakan kembali (30 Sep 2026).** Sempat dimatikan karena upload file 1-2 GB memicu `FLOOD_PREMIUM_WAIT` beruntun dan mengunci sesi berjam-jam. Tiga perbaikan membuat tahap ini layak dipakai lagi: upload per-part yang bisa di-resume (sidecar `.tgup.json`), serialisasi upload antar-task, dan part hasil split dikirim sebagai **satu pesan album** (bukan N pesan terpisah) - rekaman 3 GB jadi 2 media dalam 1 pesan, bukan satu file 3 GB. Set `TELEGRAM_ARCHIVE_UPLOAD_ENABLED=true`.
+**Arsip Telegram rekaman live diturunkan jadi bonus: YouTube wajib, Telegram best-effort (30 Sep 2026).** Sempat dimatikan karena upload file 1-2 GB memicu `FLOOD_PREMIUM_WAIT` beruntun. Setelah upload diperbaiki (resume per-part, serialisasi, album satu pesan, anti-hang), tahapnya dinyalakan lagi dengan **urutan dibalik**:
+
+```
+YouTube (WAJIB)  →  Telegram arsip (best-effort)  →  notifikasi  →  hapus file
+```
+
+Tiga aturan yang berubah:
+
+* **Kegagalan Telegram tidak lagi menahan apa pun.** Dulu Telegram dijalankan lebih dulu dan kegagalannya memblokir YouTube — video tidak pernah tayang dan file 1-2 GB tertahan. Sekarang YouTube selalu dicoba lebih dulu.
+* **Telegram menyerah, bukan menggagalkan pipeline.** Setelah `TELEGRAM_UPLOAD_MAX_FAILURES` (default 8) kegagalan, marker `telegram_gave_up` ditulis dan arsip tidak pernah dicoba lagi. Karena YouTube sudah selesai, file **tetap dihapus** — tidak menumpuk di VPS. Flood yang tidak mau berakhir ikut mekanismenya (dulu `TelegramFloodExhausted` dilempar keluar sebelum penghitung kegagalan jalan, jadi file bisa menggantung selamanya).
+* **Tombol download mengikuti keberadaan arsip, bukan keberhasilan pipeline.** Website menanyakan `telegram_message_ids`; rekaman yang menyerah tetap tayang di website, hanya tanpa tombol download karena memang tidak ada salinan di channel arsip. Upload manual tetap mungkin: `python -m bot.upload_pending`.
 
 Yang **tidak** terpengaruh: notifikasi teks ke channel Telegram, arsip **TikTok** (dikendalikan terpisah oleh `TIKTOK_ARCHIVE_UPLOAD_ENABLED`), dan bot admin. YouTube tetap **unlisted** dan visibilitas website mengikuti aturan `AUTO_PUBLISH_AFTER_HOURS`/publikasi admin. Rekaman Showroom mengikuti pipeline yang sama.
 

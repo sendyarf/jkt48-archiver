@@ -656,6 +656,10 @@ class JKT48LiveBot:
         # completed.  ``telegram_message_id`` is the notification-message marker
         # in the current pipeline and must never be treated as an archive ID.
         telegram_ok = bool(telegram_ids)
+        # Telegram sudah menyerah pada rekaman ini (jatah retry habis). Arsip
+        # best-effort sudah selesai, bukan pekerjaan yang masih tertunda — ini
+        # yang mengizinkan file dihapus begitu YouTube rampung.
+        telegram_gave_up = bool(int(prior.get("telegram_gave_up") or 0))
         youtube_video_id = (prior.get("youtube_video_id") or "").strip()
         youtube_ok = bool(youtube_video_id)
         # A notification is considered sent only when it is distinct from the
@@ -694,132 +698,13 @@ class JKT48LiveBot:
         file_size = get_file_size_bytes(path)
         errors: list[str] = []
 
-        # ---- Stage 1: Telegram archive (opsional, tidak memakai kuota YouTube) ----
-        if telegram_required and not telegram_ok:
-            set_status(
-                "uploading_telegram",
-                file_path=str(path),
-                file_size_bytes=file_size,
-            )
-            # Retry (pernah gagal sebelumnya) tidak perlu mengumumkan ulang
-            # "sedang upload" — hanya percobaan pertama yang diberitahukan.
-            if not self._tg_fail_count.get(live_id):
-                await self._notify_admin(
-                    _admin_live_message(
-                        "📤 <b>UPLOAD TELEGRAM</b>",
-                        platform=plat,
-                        member_name=member_name or member_username,
-                        member_username=member_username,
-                        live_id=live_id,
-                        started_at=started_at,
-                        live_title=live_title,
-                        detail=f"💾 {_format_size(file_size)} → channel arsip",
-                    )
-                )
-            # Both live destinations are mandatory.  Prefer the private archive
-            # channel, but retain the regular channel as a migration fallback.
-            archive_channel = Config.TELEGRAM_ARCHIVE_CHANNEL_ID or Config.TELEGRAM_CHANNEL_ID
-            archive_ok, archive_error = await self._archive_to_telegram(
-                path=path,
-                member_name=member_name or member_username,
-                member_username=member_username,
-                started_at=started_at,
-                live_title=live_title,
-                live_id=live_id,
-                group_id=group_id,
-                channel_id=archive_channel,
-                platform=plat,
-            )
-            telegram_ok = archive_ok
-            if archive_error:
-                errors.append(archive_error)
-            if archive_ok:
-                was_failing = self._clear_telegram_failure(live_id)
-                logger.info("Telegram archive selesai untuk %s; lanjut ke YouTube", live_id)
-                await self._notify_admin(
-                    _admin_live_message(
-                        "✅ <b>TELEGRAM SELESAI</b>",
-                        platform=plat,
-                        member_name=member_name or member_username,
-                        member_username=member_username,
-                        live_id=live_id,
-                        started_at=started_at,
-                        live_title=live_title,
-                        detail=(
-                            "🎉 Berhasil setelah retry otomatis\n"
-                            "📦 Arsip aman di channel → lanjut YouTube"
-                        ) if was_failing else "📦 Arsip aman di channel → lanjut YouTube",
-                    )
-                )
-            else:
-                # Telegram is the download archive.  Do not send the same local
-                # file to YouTube until this mandatory first stage is safe.
-                count, minutes = self._note_telegram_failure(live_id)
-                logger.warning(
-                    "Telegram archive belum selesai untuk %s (gagal %d×; "
-                    "cooldown %d menit); YouTube ditunda",
-                    live_id, count, minutes,
-                )
-                max_failures = max(1, int(Config.TELEGRAM_UPLOAD_MAX_FAILURES))
-                if count >= max_failures:
-                    # Dead-letter: berhenti meng-hammer akun; admin diberi tahu
-                    # SEKALI untuk upload manual. Status 'failed' dikeluarkan
-                    # dari antrean retry otomatis (hanya pending_upload/
-                    # download_complete yang diproses worker).
-                    set_status(
-                        "failed",
-                        error_message=(
-                            f"telegram archive gagal {count}× berturut-turut: "
-                            f"{archive_error or 'unknown'}"
-                        ),
-                    )
-                    self._tg_fail_count.pop(live_id, None)
-                    await self._notify_admin(
-                        _admin_live_message(
-                            "🛑 <b>TELEGRAM DITUNDA PERMANEN</b>",
-                            platform=plat,
-                            member_name=member_name or member_username,
-                            member_username=member_username,
-                            live_id=live_id,
-                            started_at=started_at,
-                            live_title=live_title,
-                            detail=(
-                                f"⚠️ {str(archive_error or '')[:200]}\n"
-                                f"Gagal {count}× berturut-turut — retry otomatis "
-                                "dihentikan; file TETAP aman di disk.\n"
-                                "🔧 Upload manual: <code>python -m bot.upload_pending</code>"
-                            ),
-                        )
-                    )
-                    return False
-                if count == 1:
-                    # Hanya kegagalan PERTAMA yang dinotifikasi — spam N kali
-                    # per file (insiden Nala 28 Sep 2026: 5 pasang notif
-                    # gagal/ulang dalam 45 menit) tidak menambah informasi.
-                    await self._notify_admin(
-                        _admin_live_message(
-                            "⚠️ <b>TELEGRAM GAGAL</b>",
-                            platform=plat,
-                            member_name=member_name or member_username,
-                            member_username=member_username,
-                            live_id=live_id,
-                            started_at=started_at,
-                            live_title=live_title,
-                            detail=(
-                                f"⚠️ {str(archive_error or '')[:300]}\n"
-                                f"⏳ Retry otomatis ±{minutes} menit (percobaan "
-                                f"1/{max_failures}) — notifikasi gagal berikutnya "
-                                "untuk file ini disembunyikan sampai berhasil."
-                            ),
-                        )
-                    )
-                set_status(
-                    "pending_upload",
-                    error_message=" | ".join(errors) or archive_error or "Telegram archive pending",
-                )
-                return False
-
-        # ---- Stage 2: YouTube (runs only after Telegram succeeded) ----
+        # ---- Stage 1: YouTube (WAJIB — playback publik di website) ----
+        #
+        # 30 Sep 2026: urutan dibalik. Dulu Telegram dulu lalu YouTube, sehingga
+        # satu arsip Telegram yang gagal/maceng memblokir YouTube selamanya dan
+        # file 1-2 GB tertahan di disk. Sekarang YouTube jadi syarat selesai,
+        # dan Telegram turun jadi arsip best-effort yang tidak pernah menahan
+        # file maupun video website.
         if youtube_required and not youtube_ok:
             set_status(
                 "uploading_youtube",
@@ -929,13 +814,10 @@ class JKT48LiveBot:
                         started_at=started_at,
                         live_title=live_title,
                         detail=(
-                            (
-                                "📦 Video sudah aman di Telegram\n"
-                                if telegram_required
-                                else ""
-                            )
-                            + f"⚠️ {str(exc)[:300]}\n"
-                            "⏳ Upload YouTube menunggu kuota harian (retry otomatis)"
+                            f"⚠️ {str(exc)[:300]}\n"
+                            "⏳ Upload YouTube menunggu kuota harian (retry "
+                            "otomatis); arsip Telegram dicoba di stage berikutnya "
+                            "dan tidak memblokir file"
                         ),
                     )
                 )
@@ -956,8 +838,181 @@ class JKT48LiveBot:
                     )
                 )
 
-        # ---- Stage 3: notification, only after every required upload ----
-        if (telegram_ok or not telegram_required) and youtube_ok:
+        # ---- Stage 2: Telegram archive (best-effort; tidak menahan file) ----
+        if telegram_required and not telegram_ok and not telegram_gave_up:
+            set_status(
+                "uploading_telegram",
+                file_path=str(path),
+                file_size_bytes=file_size,
+            )
+            # Retry (pernah gagal sebelumnya) tidak perlu mengumumkan ulang
+            # "sedang upload" — hanya percobaan pertama yang diberitahukan.
+            if not self._tg_fail_count.get(live_id):
+                await self._notify_admin(
+                    _admin_live_message(
+                        "📤 <b>UPLOAD TELEGRAM</b>",
+                        platform=plat,
+                        member_name=member_name or member_username,
+                        member_username=member_username,
+                        live_id=live_id,
+                        started_at=started_at,
+                        live_title=live_title,
+                        detail=f"💾 {_format_size(file_size)} → channel arsip",
+                    )
+                )
+            # Telegram is the download archive, not a mandatory destination, so
+            # prefer the private archive channel but keep the regular channel as
+            # a migration fallback.  Flood exhaustion is folded into the normal
+            # failure path: raising here would skip the failure counter, so a
+            # file that keeps getting flood-limited could never reach the
+            # give-up decision and would sit in the queue forever.
+            archive_channel = Config.TELEGRAM_ARCHIVE_CHANNEL_ID or Config.TELEGRAM_CHANNEL_ID
+            telegram_was_flood = False
+            try:
+                archive_ok, archive_error = await self._archive_to_telegram(
+                    path=path,
+                    member_name=member_name or member_username,
+                    member_username=member_username,
+                    started_at=started_at,
+                    live_title=live_title,
+                    live_id=live_id,
+                    group_id=group_id,
+                    channel_id=archive_channel,
+                    platform=plat,
+                )
+            except TelegramFloodExhausted as exc:
+                archive_ok = False
+                archive_error = f"telegram flood (jatah retry habis): {exc}"
+                telegram_was_flood = True
+            telegram_ok = archive_ok
+            if archive_error:
+                errors.append(archive_error)
+            if archive_ok:
+                was_failing = self._clear_telegram_failure(live_id)
+                logger.info("Telegram archive selesai untuk %s", live_id)
+                await self._notify_admin(
+                    _admin_live_message(
+                        "✅ <b>TELEGRAM SELESAI</b>",
+                        platform=plat,
+                        member_name=member_name or member_username,
+                        member_username=member_username,
+                        live_id=live_id,
+                        started_at=started_at,
+                        live_title=live_title,
+                        detail=(
+                            "🎉 Berhasil setelah retry otomatis\n"
+                            "📦 Arsip aman di channel → tombol download aktif di website"
+                        ) if was_failing else (
+                            "📦 Arsip aman di channel → tombol download aktif di website"
+                        ),
+                    )
+                )
+            else:
+                # Telegram hanya arsip unduhan. Kegagalannya tidak boleh
+                # menahan file maupun video YouTube — yang sudah selesai di
+                # stage sebelumnya.
+                count, minutes = self._note_telegram_failure(
+                    live_id, flood=telegram_was_flood
+                )
+                logger.warning(
+                    "Telegram archive belum selesai untuk %s (gagal %d×; cooldown "
+                    "%d menit); YouTube tetap selesai, file tetap aman",
+                    live_id, count, minutes,
+                )
+                max_failures = max(1, int(Config.TELEGRAM_UPLOAD_MAX_FAILURES))
+                if count >= max_failures:
+                    # Menyerah, bukan menggagalkan pipeline. Marker durable ini
+                    # yang membuat file boleh dihapus begitu YouTube selesai,
+                    # sehingga tidak ada lagi file 1-2 GB yang tertahan cuma
+                    # karena Telegram. Website tetap menayangkannya tanpa tombol
+                    # download (tidak ada arsip untuk disalin).
+                    set_status(
+                        "pending_upload",
+                        telegram_gave_up=1,
+                        error_message=(
+                            f"telegram archive menyerah setelah {count}×: "
+                            f"{archive_error or 'unknown'}"
+                        ),
+                    )
+                    self._tg_fail_count.pop(live_id, None)
+                    telegram_gave_up = True
+                    await self._notify_admin(
+                        _admin_live_message(
+                            "🛑 <b>ARSIP TELEGRAM DIHENTIKAN</b>",
+                            platform=plat,
+                            member_name=member_name or member_username,
+                            member_username=member_username,
+                            live_id=live_id,
+                            started_at=started_at,
+                            live_title=live_title,
+                            detail=(
+                                f"⚠️ {str(archive_error or '')[:200]}\n"
+                                f"Gagal {count}× berturut-turut — retry Telegram "
+                                "dihentikan permanen.\n"
+                                + (
+                                    "📺 Video sudah aman di YouTube; file lokal "
+                                    "akan dihapus (tombol download tidak muncul "
+                                    "untuk rekaman ini).\n"
+                                    if youtube_ok
+                                    else "📺 YouTube menyusul di siklus berikutnya.\n"
+                                )
+                                + "🔧 Upload manual: <code>python -m bot.upload_pending</code>"
+                            ),
+                        )
+                    )
+                    # Tidak `return False` bila YouTube sudah selesai: rekaman ini
+                    # sudah memenuhi syarat, jadi file harus dihapus (Stage 3).
+                    # Bila YouTube belum selesai, baris tetap pending supaya
+                    # siklus berikutnya menyelesaikan YouTube lalu menghapus file.
+                    if not youtube_ok:
+                        return False
+                elif count == 1:
+                    # Hanya kegagalan PERTAMA yang dinotifikasi — spam N kali
+                    # per file (insiden Nala 28 Sep 2026: 5 pasang notif
+                    # gagal/ulang dalam 45 menit) tidak menambah informasi.
+                    # Dipercabangkan dari cabang menyerah supaya file yang sudah
+                    # diputuskan menyerah tidak kembali dianggap "masih dicoba".
+                    await self._notify_admin(
+                        _admin_live_message(
+                            "⚠️ <b>TELEGRAM GAGAL</b>",
+                            platform=plat,
+                            member_name=member_name or member_username,
+                            member_username=member_username,
+                            live_id=live_id,
+                            started_at=started_at,
+                            live_title=live_title,
+                            detail=(
+                                f"⚠️ {str(archive_error or '')[:300]}\n"
+                                f"⏳ Retry otomatis ±{minutes} menit (percobaan "
+                                f"1/{max_failures}) — notifikasi gagal berikutnya "
+                                "untuk file ini disembunyikan sampai berhasil.\n"
+                                "📺 YouTube tidak terpengaruh oleh kegagalan ini."
+                            ),
+                        )
+                    )
+                if not telegram_gave_up:
+                    # Masih dalam jatah retry: baris tetap pending dan file
+                    # disimpan agar arsip Telegram masih bisa naik di siklus
+                    # berikutnya. Status ini tidak memengaruhi YouTube — marker
+                    # youtube_video_id sudah ada, jadi upload-nya dilewati.
+                    set_status(
+                        "pending_upload",
+                        error_message=(
+                            " | ".join(errors)
+                            or archive_error
+                            or "Telegram archive pending"
+                        ),
+                    )
+                    return False
+
+        # ---- Stage 3: notification + penyelesaian ----
+        #
+        # Syarat selesai HANYA YouTube (tujuan wajib) plus satu dari: arsip
+        # Telegram sukses, tahap Telegram dimatikan, atau Telegram menyerah
+        # (telegram_gave_up). Berhentinya retry Telegram tidak boleh menahan
+        # file 1-2 GB di disk — justru sebaliknya, video sudah tayang di
+        # YouTube sehingga file tidak ada gunanya disimpan lagi.
+        if youtube_ok and (telegram_ok or not telegram_required or telegram_gave_up):
             if not notification_sent:
                 notification = build_youtube_notification(
                     member_name=member_name or member_username,
@@ -994,14 +1049,21 @@ class JKT48LiveBot:
             set_status("done_youtube", youtube_video_id=youtube_video_id)
             if Config.AUTO_DELETE_AFTER_UPLOAD and not keep_file:
                 delete_file(path)
+                if telegram_gave_up and not telegram_ok:
+                    logger.info(
+                        "File %s dihapus: YouTube selesai, arsip Telegram "
+                        "menyerah (rekaman tayang tanpa tombol download).",
+                        path.name,
+                    )
             return True
 
-        # ---- Stage 2b: dead-letter YouTube yang hopeless ----
+        # ---- Dead-letter YouTube yang hopeless ----
         # Tanpa batas percobaan, file 1-2 GB dengan kuota YouTube habis
         # retry SELAMANYA: tidak pernah ter-upload, tidak pernah terhapus, dan
         # akhirnya memicu disk guard yang memblokir SEMUA rekaman (IDN +
         # Showroom). Dead-letter membuat file itu terminal sehingga bisa
-        # direclaim oleh bot/disk_reclaim.py.
+        # direclaim oleh bot/disk_reclaim.py. Arsip Telegram sudah dicoba di
+        # stage sebelumnya, jadi file tetap punya salinan di channel arsip.
         if youtube_required and not youtube_ok and path.exists():
             fail_count = self._note_youtube_failure(live_id)
             max_yt = max(1, int(Config.YOUTUBE_UPLOAD_MAX_FAILURES))

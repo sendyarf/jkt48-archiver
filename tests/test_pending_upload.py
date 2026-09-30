@@ -749,5 +749,153 @@ class TestStuckUploadRecovery(HandleUploadReadyTestCase):
         self.assertIn("merged_ok", bot._active_uploads)
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestTelegramGivesUp(HandleUploadReadyTestCase):
+    """Arsip Telegram menyerah → file TETAP dihapus, video tetap tayang.
+
+    Permintaan pemilik (30 Sep 2026): YouTube adalah tujuan wajib, Telegram
+    hanya bonus. Kalau Telegram gagal terus, file tidak boleh menumpuk di VPS;
+    website tetap menayangkannya, hanya tanpa tombol download karena tidak ada
+    arsip untuk disalin.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._old_auto_del = Config.AUTO_DELETE_AFTER_UPLOAD
+        self._old_max_fail = Config.TELEGRAM_UPLOAD_MAX_FAILURES
+        Config.AUTO_DELETE_AFTER_UPLOAD = True
+        Config.TELEGRAM_UPLOAD_MAX_FAILURES = 2
+
+    def tearDown(self):
+        Config.AUTO_DELETE_AFTER_UPLOAD = self._old_auto_del
+        Config.TELEGRAM_UPLOAD_MAX_FAILURES = self._old_max_fail
+        super().tearDown()
+
+    def _failing_telegram(self, bot, message="flood wait"):
+        bot.tg.upload_video_with_splitting = AsyncMock(
+            side_effect=RuntimeError(message)
+        )
+        bot.tg.send_message = AsyncMock(return_value=None)
+        bot.yt_pool.upload_video = Mock(return_value=("ytOK", "ch1"))
+        bot.yt_pool.set_thumbnail = Mock(return_value=False)
+
+    def _run(self, bot, path):
+        with patch("bot.main.Config.THUMBNAIL_COLLAGE_ENABLED", False):
+            return asyncio.run(bot.handle_upload_ready(
+                live_id="merged_1",
+                member_username="jkt48_daisy",
+                member_name="Daisy",
+                started_at="2026-09-22T13:00:00+00:00",
+                file_path=str(path),
+                platform="idn",
+            ))
+
+    def test_file_deleted_after_telegram_gives_up(self):
+        bot = self._make_bot()
+        path = self._write_video()
+        gid = self._insert_session_for_upload(path)
+        self._failing_telegram(bot)
+
+        # Percobaan 1 dan 2: Telegram gagal, YouTube tetap naik di percobaan 1.
+        self._run(bot, path)
+        self.assertTrue(
+            path.exists(),
+            "selama Telegram masih dicoba, file tidak boleh dihapus",
+        )
+        self._run(bot, path)
+
+        self.assertFalse(
+            path.exists(),
+            "YouTube sukses + Telegram menyerah → file harus dihapus dari VPS",
+        )
+        rows = self._group_rows(gid)
+        for row in rows:
+            self.assertEqual(row["status"], "done_youtube")
+            self.assertEqual(row["youtube_video_id"], "ytOK")
+            self.assertFalse(
+                row["telegram_message_ids"],
+                "tanpa arsip, website tidak menampilkan tombol download",
+            )
+            self.assertEqual(
+                row["telegram_gave_up"], 1,
+                "marker menyerah harus durable agar tidak retry lagi",
+            )
+
+    def test_pipeline_reports_complete_after_give_up(self):
+        bot = self._make_bot()
+        path = self._write_video()
+        self._insert_session_for_upload(path)
+        self._failing_telegram(bot)
+
+        self._run(bot, path)
+        complete = self._run(bot, path)
+
+        self.assertTrue(
+            complete,
+            "YouTube wajib + Telegram menyerah = pipeline selesai",
+        )
+
+    def test_gave_up_row_is_not_retried_telegram_again(self):
+        bot = self._make_bot()
+        path = self._write_video()
+        self._insert_session_for_upload(path)
+        self._failing_telegram(bot)
+
+        self._run(bot, path)
+        self._run(bot, path)
+        calls_after_give_up = bot.tg.upload_video_with_splitting.await_count
+
+        # Siklus berikutnya: marker gave_up harus mencegah percobaan baru.
+        bot.tg.upload_video_with_splitting.reset_mock()
+        self._run(bot, path)
+        self.assertEqual(
+            bot.tg.upload_video_with_splitting.await_count, 0,
+            "Telegram yang sudah menyerah tidak boleh dicoba lagi",
+        )
+        self.assertEqual(calls_after_give_up, 2)
+
+    def test_temporary_telegram_failure_keeps_file_for_retry(self):
+        """Kegagalan pertama (belum menyerah) tetap menahan file agar arsip bisa comeback."""
+        bot = self._make_bot()
+        path = self._write_video()
+        self._insert_session_for_upload(path)
+        self._failing_telegram(bot)
+
+        self._run(bot, path)
+
+        self.assertTrue(path.exists())
+        rows = self._group_rows(1)
+        for row in rows:
+            self.assertEqual(row["status"], "pending_upload")
+            self.assertEqual(row["youtube_video_id"], "ytOK")
+            self.assertEqual(row["telegram_gave_up"], 0)
+
+    def test_flood_exhaustion_also_reaches_give_up(self):
+        """Flood yang terus-menerus juga harus akhirnya menyerah (bukan menggantung).
+
+        `TelegramFloodExhausted` sebelumnya dilempar keluar sebelum penghitung
+        kegagalan berjalan, jadi file yang terus kena flood tidak pernah bisa
+        mencapai keputusan menyerah dan tertahan di antrean tanpa henti.
+        """
+        bot = self._make_bot()
+        path = self._write_video()
+        self._insert_session_for_upload(path)
+        bot.tg.upload_video_with_splitting = AsyncMock(
+            side_effect=TelegramFloodExhausted("flood 900s")
+        )
+        bot.tg.send_message = AsyncMock(return_value=None)
+        bot.yt_pool.upload_video = Mock(return_value=("ytOK", "ch1"))
+        bot.yt_pool.set_thumbnail = Mock(return_value=False)
+
+        self._run(bot, path)
+        self.assertTrue(path.exists(), "masih ada jatah retry")
+        self._run(bot, path)
+
+        self.assertFalse(
+            path.exists(),
+            "flood yang tidak mau berhenti harus berakhir surrender, bukan menggantung",
+        )
+        for row in self._group_rows(1):
+            self.assertEqual(row["status"], "done_youtube")
+            self.assertEqual(row["telegram_gave_up"], 1)
+
+

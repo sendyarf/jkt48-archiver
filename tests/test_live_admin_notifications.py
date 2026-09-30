@@ -354,21 +354,47 @@ class TestUploadNotifications(HandleUploadReadyTestCase):
         self.assertTrue(any("KUOTA HABIS" in t for t in texts), texts)
         self.assertTrue(any("TELEGRAM SELESAI" in t for t in texts), texts)
 
-    def test_telegram_gagal_mengirim_notifikasi_dan_menunda_youtube(self):
+    def test_telegram_gagal_tidak_menunda_youtube(self):
+        """Kebijakan 30 Sep 2026: YouTube wajib, Telegram tidak pernah menahannya.
+
+        Dulu Telegram dijalankan lebih dulu dan kegagalannya memblokir YouTube
+        (video tidak pernah tayang, file 1-2 GB tertahan). Sekarang YouTube
+        selalu dicoba lebih dulu; Telegram yang best-effort.
+        """
         bot, notify = self._bot_with_notify()
         path = self._write_video()
         self._insert_session_for_upload(path)
 
         bot.tg.upload_video_with_splitting = AsyncMock(side_effect=RuntimeError("flood wait"))
-        bot.yt_pool.upload_video = Mock(return_value=("SHOULD", "not"))
+        bot.yt_pool.upload_video = Mock(return_value=("ytNEW", "ch1"))
+        bot.yt_pool.set_thumbnail = Mock(return_value=False)
 
-        complete = self._upload(bot, path)
+        with patch("bot.main.build_collage", return_value=None):
+            complete = self._upload(bot, path)
 
-        self.assertFalse(complete)
-        bot.yt_pool.upload_video.assert_not_called()
+        bot.yt_pool.upload_video.assert_called_once()
+        self.assertFalse(
+            complete, "arsip Telegram belum selesai, jadi pipeline belum tuntas"
+        )
         texts = _texts(notify)
         self.assertTrue(any("TELEGRAM GAGAL" in t and "flood wait" in t for t in texts), texts)
-        self.assertFalse(any("UPLOAD YOUTUBE" in t for t in texts), texts)
+        self.assertTrue(any("YOUTUBE SELESAI" in t for t in texts), texts)
+
+    def test_youtube_tetap_dicoba_walau_telegram_gagal(self):
+        """Urutan dibalik: notifikasi UPLOAD YOUTUBE muncul walau Telegram macet."""
+        bot, notify = self._bot_with_notify()
+        path = self._write_video()
+        self._insert_session_for_upload(path)
+
+        bot.tg.upload_video_with_splitting = AsyncMock(side_effect=RuntimeError("flood wait"))
+        bot.yt_pool.upload_video = Mock(return_value=("ytNEW", "ch1"))
+        bot.yt_pool.set_thumbnail = Mock(return_value=False)
+
+        with patch("bot.main.build_collage", return_value=None):
+            self._upload(bot, path)
+
+        texts = _texts(notify)
+        self.assertTrue(any("UPLOAD YOUTUBE" in t for t in texts), texts)
 
     def test_file_hilang_mengirim_notifikasi_gagal(self):
         bot, notify = self._bot_with_notify()

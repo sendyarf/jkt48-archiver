@@ -205,11 +205,15 @@ def _telegram_archive_required() -> bool:
 def _telegram_done(state: dict) -> bool:
     """True bila tahap Telegram dianggap selesai.
 
-    Ketika ``TELEGRAM_ARCHIVE_UPLOAD_ENABLED=false`` tahap itu tidak pernah
-    dijalankan, jadi ketiadaan marker Telegram BUKAN kegagalan - video boleh
-    dinyatakan lengkap begitu YouTube punya video_id.
+    Tiga kondisi yang berarti selesai: ada message ID arsip, tahapnya dimatikan
+    lewat config, atau bot sudah menyerah (``telegram_gave_up``) setelah jatah
+    retry habis. Yang terakhir penting: tanpa itu, file 1-2 GB akan dianggap
+    belum lengkap selamanya padahal YouTube sudah selesai dan file sudah
+    dihapus — CLI akan terus melaporkannya gagal.
     """
     if not _telegram_archive_required():
+        return True
+    if bool(int(state.get("telegram_gave_up") or 0)):
         return True
     return bool((state.get("telegram_message_ids") or "").strip())
 
