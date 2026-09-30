@@ -35,6 +35,7 @@ from bot.showroom_monitor import (
 )
 from bot.timeutil import utc_now_iso, utc_now
 from bot.admin_bot import AdminBot
+from bot.disk_reclaim import reclaim_disk
 from bot.downloader import (
     available_disk_mb,
     download_stream,
@@ -241,6 +242,14 @@ class JKT48LiveBot:
         self._retry_task: Optional[asyncio.Task] = None
         self._tiktok_retry_task: Optional[asyncio.Task] = None
         self._hls_refresh_task: Optional[asyncio.Task] = None
+        # Reclaim disk berjalan sebagai background task: menghapus ratusan file
+        # 1-2 GB (unlink + update DB) tidak boleh menghentikan loop deteksi.
+        self._reclaim_task: Optional[asyncio.Task] = None
+        self._last_reclaim_at: float = 0.0
+        # live_id -> jumlah kegagalan upload YouTube berturut-turut.
+        # Dipakai untuk dead-letter: file yang upload YouTube-nya hopeless
+        # harus jadi terminal supaya bisa direclaim, bukan menumpuk selamanya.
+        self._yt_fail_count: dict[str, int] = {}
         self._tiktok_task: Optional[asyncio.Task] = None
         # Guard single-flight untuk shutdown(): handler sinyal dan blok finally
         # sama-sama bisa memanggil shutdown() — hanya satu yang boleh berjalan.
@@ -402,6 +411,23 @@ class JKT48LiveBot:
             del self._flood_cooldown[live_id]
             save_flood_cooldown(self._flood_cooldown)
         return had
+
+    def _note_youtube_failure(self, live_id: str) -> int:
+        """Catat satu kegagalan upload YouTube. Return jumlah kegagalan beruntun.
+
+        Berbeda dari Telegram (yang punya cooldown flood), kegagalan YouTube
+        biasanya berupa kuota harian habis. Yang penting di sini adalah
+        dead-letter: tanpa batas percobaan, sesi dengan file 1-2 GB retry
+        selamanya, file tidak pernah terhapus, dan disk guard akhirnya
+        memblokir seluruh rekaman.
+        """
+        count = self._yt_fail_count.get(live_id, 0) + 1
+        self._yt_fail_count[live_id] = count
+        return count
+
+    def _clear_youtube_failure(self, live_id: str) -> None:
+        """Upload YouTube berhasil → bersihkan penghitung kegagalan."""
+        self._yt_fail_count.pop(live_id, None)
 
     async def _notify_admin(self, text: str) -> None:
         """Kirim notifikasi progres live ke admin (best-effort, tak pernah raise).
@@ -781,6 +807,7 @@ class JKT48LiveBot:
                 else:
                     youtube_video_id = str(video_id)
                     youtube_ok = True
+                    self._clear_youtube_failure(live_id)
                     set_status("uploading_youtube", youtube_video_id=youtube_video_id)
                     logger.info(
                         "Successfully uploaded to YouTube (%s). Video ID: %s",
@@ -904,6 +931,48 @@ class JKT48LiveBot:
             if Config.AUTO_DELETE_AFTER_UPLOAD and not keep_file:
                 delete_file(path)
             return True
+
+        # ---- Stage 2b: dead-letter YouTube yang hopeless ----
+        # Tanpa batas percobaan, file 1-2 GB dengan kuota YouTube habis
+        # retry SELAMANYA: tidak pernah ter-upload, tidak pernah terhapus, dan
+        # akhirnya memicu disk guard yang memblokir SEMUA rekaman (IDN +
+        # Showroom). Dead-letter membuat file itu terminal sehingga bisa
+        # direclaim oleh bot/disk_reclaim.py.
+        if youtube_required and not youtube_ok and path.exists():
+            fail_count = self._note_youtube_failure(live_id)
+            max_yt = max(1, int(Config.YOUTUBE_UPLOAD_MAX_FAILURES))
+            if fail_count >= max_yt:
+                set_status(
+                    "failed",
+                    error_message=(
+                        f"youtube gagal {fail_count}x berturut-turut: "
+                        f"{' | '.join(errors) or 'unknown'}"
+                    ),
+                )
+                self._yt_fail_count.pop(live_id, None)
+                logger.warning(
+                    "YouTube dead-letter %s setelah %d kegagalan; file %s "
+                    "dibiarkan untuk di-reclaim.",
+                    live_id, fail_count, path.name,
+                )
+                await self._notify_admin(
+                    _admin_live_message(
+                        "🛑 <b>YOUTUBE BERHENTI DIRETRY</b>",
+                        platform=plat,
+                        member_name=member_name or member_username,
+                        member_username=member_username,
+                        live_id=live_id,
+                        started_at=started_at,
+                        live_title=live_title,
+                        detail=(
+                            f"⚠️ {str(' | '.join(errors))[:200]}\n"
+                            f"Gagal {fail_count}× berturut-turut — retry dihentikan.\n"
+                            "Rekaman tidak muncul di YouTube. File akan dihapus "
+                            "otomatis bila ruang disk menipis (untuk jaga VPS)."
+                        ),
+                    )
+                )
+                return False
 
         # One or more stages are retryable.  Preserve the specific error instead
         # of overwriting a Telegram FloodWait with a generic pending message.
@@ -1751,6 +1820,45 @@ class JKT48LiveBot:
 
         self._tiktok_task = asyncio.create_task(_run(), name="tiktok-cycle")
 
+    def _schedule_disk_reclaim(self, *, urgent: bool = False) -> None:
+        """
+        Jalankan reclaim disk di background task.
+
+        `urgent=True` dipakai saat disk guard baru saja memblokir rekaman:
+        Deadline saat itu adalah "ruang kosong", jadi reclaim harus berjalan
+        sekarang juga, bukan menunggu siklus berkala berikutnya.
+        """
+        if not Config.DISK_RECLAIM_ENABLED:
+            return
+        task = self._reclaim_task
+        if task is not None and not task.done():
+            return
+
+        async def _run() -> None:
+            try:
+                result = await asyncio.to_thread(
+                    reclaim_disk, max_files=Config.DISK_RECLAIM_MAX_FILES
+                )
+                if result.removed:
+                    await self._notify_admin(
+                        _admin_live_message(
+                            "💾 <b>RECLAIM DISK</b>",
+                            detail=(
+                                f"🗑 {result.removed} rekaman terminal dihapus "
+                                f"({result.freed_mb:.0f} MB dibebaskan)\n"
+                                "File ini sudah gagal upload permanen dan tidak "
+                                "akan pernah dikirim ke YouTube."
+                            ),
+                        )
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Reclaim disk gagal (diabaikan): %s", exc)
+
+        name = "disk-reclaim-urgent" if urgent else "disk-reclaim"
+        self._reclaim_task = asyncio.create_task(_run(), name=name)
+
     def _schedule_retry_workers(self) -> None:
         """Schedule all optional queue workers without blocking the poll loop."""
         self._schedule_pending_uploads()
@@ -1983,6 +2091,13 @@ class JKT48LiveBot:
                     # yang dilewati. Sekarang nama member + angka ruang dicatat
                     # (dithrottle 5 menit: loop ini berputar tiap beberapa detik).
                     if active_now and not has_enough_disk_space():
+                        # Rekaman yang sudah gagal permanen tidak akan pernah
+                        # ter-upload, jadi file-nya hanya memblokir disk. Hapus
+                        # SEKARANG (background) alih-alih menunggu siklus
+                        # berkala - tanpa ini bot terkunci selamanya: disk penuh
+                        # memblokir rekaman, dan rekaman yang diblokir tidak pernah
+                        # menghasilkan file baru yang bisa dihapus.
+                        self._schedule_disk_reclaim(urgent=True)
                         if time.monotonic() - self._last_disk_block_warn >= 300:
                             self._last_disk_block_warn = time.monotonic()
                             free_mb = available_disk_mb()
@@ -2032,6 +2147,21 @@ class JKT48LiveBot:
                 # Telegram upload pauses HLS/Showroom detection for hours.
                 if loop_counter % 120 == 0:
                     self._schedule_retry_workers()
+
+                # 5a. Reclaim disk berkala. Berhenti dari file terminal yang
+                # memblokir ruang, sehingga guard disk tidak mengunci bot
+                # hanya karena sisa-sisa upload yang sudah gagal permanen.
+                reclaim_every = max(
+                    1.0,
+                    float(Config.DISK_RECLAIM_INTERVAL_MINUTES) * 60.0
+                    / max(1, Config.HLS_CHECK_INTERVAL_SECONDS),
+                )
+                if (
+                    loop_counter == 1
+                    or loop_counter - self._last_reclaim_at >= reclaim_every
+                ):
+                    self._last_reclaim_at = loop_counter
+                    self._schedule_disk_reclaim()
 
                 # 5b. Watchdog state rekaman: slot yang tidak pernah lepas berarti
                 # member yang sedang live diam-diam tidak akan pernah dikejar lagi.
@@ -2090,6 +2220,13 @@ class JKT48LiveBot:
         # Stop Telegram replay bot listener
         if self.replay_bot:
             await self.replay_bot.stop()
+
+        # Reclaim disk dibatalkan eksplisit supaya tidak ada thread yang
+        # masih berjalan setelah proses mulai tutup.
+        if self._reclaim_task is not None and not self._reclaim_task.done():
+            self._reclaim_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._reclaim_task
 
         await self._stop_retry_workers()
 

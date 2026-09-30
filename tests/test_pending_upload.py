@@ -430,6 +430,78 @@ class TestTelegramArchiveDisabled(HandleUploadReadyTestCase):
             self.assertEqual(row["status"], "done_youtube")
 
 
+class TestYouTubeDeadLetter(HandleUploadReadyTestCase):
+    """
+    Upload YouTube yang hopeless harus jadi terminal, bukan retry selamanya.
+
+    Ini kunci pembubaran deadlock disk: file 1-2 GB yang `pending_upload`
+    tanpa batas percobaan tidak pernah terhapus, dan menumpuknya itulah yang
+    membuat disk guard memblokir seluruh rekaman.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._old_max = Config.YOUTUBE_UPLOAD_MAX_FAILURES
+        Config.YOUTUBE_UPLOAD_MAX_FAILURES = 3
+
+    def tearDown(self):
+        Config.YOUTUBE_UPLOAD_MAX_FAILURES = self._old_max
+        super().tearDown()
+
+    def _fail_upload(self, bot, path) -> None:
+        bot.tg.upload_video_with_splitting = AsyncMock(return_value=[9])
+        bot.tg.send_message = AsyncMock(return_value=1)
+        bot.yt_pool.upload_video = Mock(
+            side_effect=YouTubeQuotaExceeded("All channels quota exceeded")
+        )
+        with patch("bot.main.Config.THUMBNAIL_COLLAGE_ENABLED", False):
+            asyncio.run(bot.handle_upload_ready(
+                live_id="merged_1",
+                member_username="jkt48_daisy",
+                member_name="Daisy",
+                started_at="2026-09-22T13:00:00+00:00",
+                file_path=str(path),
+                platform="idn",
+            ))
+
+    def test_repeated_youtube_failures_mark_session_failed(self):
+        bot = self._make_bot()
+        path = self._write_video()
+        self._insert_session_for_upload(path)
+
+        for _ in range(3):
+            self._fail_upload(bot, path)
+
+        for row in self._group_rows(1):
+            self.assertEqual(
+                row["status"], "failed",
+                "upload YouTube hopeless harus dead-letter, bukan pending selamanya",
+            )
+            self.assertTrue(path.exists(), "file boleh tinggal, tapi harus terminal")
+
+    def test_failures_reset_after_successful_upload(self):
+        bot = self._make_bot()
+        path = self._write_video()
+        self._insert_session_for_upload(path)
+
+        self._fail_upload(bot, path)
+        self.assertEqual(bot._yt_fail_count.get("merged_1"), 1)
+
+        bot.yt_pool.upload_video = Mock(return_value=("ytOK", "ch1"))
+        bot.yt_pool.set_thumbnail = Mock(return_value=False)
+        with patch("bot.main.Config.THUMBNAIL_COLLAGE_ENABLED", False):
+            asyncio.run(bot.handle_upload_ready(
+                live_id="merged_1",
+                member_username="jkt48_daisy",
+                member_name="Daisy",
+                started_at="2026-09-22T13:00:00+00:00",
+                file_path=str(path),
+                platform="idn",
+            ))
+
+        self.assertIsNone(bot._yt_fail_count.get("merged_1"))
+
+
 class FloodCooldownTestCase(HandleUploadReadyTestCase):
     """File yang kehabisan jatah flood harus DIDIAMKAN, bukan digiling terus.
 

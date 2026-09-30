@@ -164,6 +164,27 @@ dibaca benar.
 
 Yang **tidak** terpengaruh: notifikasi teks ke channel Telegram, arsip **TikTok** (dikendalikan terpisah oleh `TIKTOK_ARCHIVE_UPLOAD_ENABLED`), dan bot admin. YouTube tetap **unlisted** dan visibilitas website mengikuti aturan `AUTO_PUBLISH_AFTER_HOURS`/publikasi admin. Rekaman Showroom mengikuti pipeline yang sama.
 
+**Deadlock disk (30 Sep 2026) - kenapa bot tiba-tiba tidak merekam member yang sedang live.** Gejalanya: bot kadang merekam, kadang tidak, Showroom sama sekali tidak merekam, bahkan tidak terdeteksi. Penyebabnya bukan HLS, tapi ruang disk:
+
+1. Setiap upload yang GAGAL meninggalkan file 1-2 GB di disk (`AUTO_DELETE_AFTER_UPLOAD` hanya menghapus setelah upload **berhasil**).
+2. Antrean `pending_upload` di-retry **tanpa batas umur** (`database.get_all_pending_videos`).
+3. `bot.status --cleanup` **sengaja mengecualikan** `pending_upload`.
+4. Begitu ruang bebas < `MIN_FREE_DISK_MB`, `main.py` menyetel `active_now = []` dan memblokir **semua** rekaman - IDN dan Showroom sekaligus.
+
+Jadinya kondisi terkunci: disk penuh memblokir rekaman, dan rekaman yang terblokir tidak pernah menghasilkan file baru yang bisa dihapus.
+
+Perbaikannya:
+
+* `bot/disk_reclaim.py` (default **aktif**) menghapus file yang statusnya sudah **terminal** (`failed`/`abandoned`/`done_*`) dan tidak dirujuk baris lain yang masih aktif. Dijalankan otomatis tiap `DISK_RECLAIM_INTERVAL_MINUTES`, dan langsung saat disk guard baru saja memblokir rekaman.
+* `YOUTUBE_UPLOAD_MAX_FAILURES` (default 6)=dead-letter YouTube yang hopeless, supaya file-nya jadi terminal dan bisa direclaim (sebelumnya kuota habis = retry selamanya).
+
+File `pending_upload` yang masih punya chances retry **tidak pernah** ikut dihapus. Cek ukuran sisa:
+
+```bash
+python3 -m bot.disk_reclaim --dry-run   # preview
+python3 -m bot.disk_reclaim             # eksekusi
+```
+
 **Foto TikTok selalu bisa diunduh.** Dua lapis perlindungan di `bot/tiktok_media.py` + `bot/telegram_sender.py`:
 
 1. Format gambar dideteksi dari **magic bytes** isi berkas, bukan ekstensi URL - CDN TikTok menyajikan WebP dengan URL berakhiran `.jpg`. WebP/HEIC/AVIF/GIF otomatis dikonversi ke JPEG saat unduhan.

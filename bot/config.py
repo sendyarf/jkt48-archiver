@@ -158,6 +158,15 @@ class Config:
         os.getenv("TELEGRAM_UPLOAD_MAX_FAILURES", "8")
     )
 
+    # Setelah N kegagalan upload YouTube berturut-turut untuk file yang sama,
+    # sesi ditandai 'failed' (dead-letter) agar file-nya bisa direclaim disk.
+    # Tanpa ini, kuota harian yang habis membuat sesi retry SELAMANYA dengan
+    # file 1-2 GB yang tertahan di disk - dan antrean itu justrulah yang
+    # memicu disk guard memblokir semua rekaman.
+    YOUTUBE_UPLOAD_MAX_FAILURES: int = int(
+        os.getenv("YOUTUBE_UPLOAD_MAX_FAILURES", "6")
+    )
+
     # ─── YouTube Data API v3 ────────────────────────────────────────────
     # Fallback single channel config (backward compatibility)
     YOUTUBE_CLIENT_SECRET_FILE: str = os.getenv(
@@ -317,6 +326,38 @@ class Config:
     # ini deteksi live di-skip + warning log (bukan crash) supaya ffmpeg
     # tidak gagal di tengah jalan dan meninggalkan sesi macet.
     MIN_FREE_DISK_MB: int = int(os.getenv("MIN_FREE_DISK_MB", "2048"))
+
+    # ─── Reclaim disk otomatis (default AKTIF) ─────────────────────────────
+    # Rekoraman yang upload-nya sudah gagal permanen (dead-letter) TIDAK PERNAH
+    # dihapus oleh pipeline: `AUTO_DELETE_AFTER_UPLOAD` hanya menghapus setelah
+    # upload BERHASIL. Ditambah antrean `pending_upload` di-retry tanpa batas umur
+    # dan `bot.status --cleanup` sengaja mengecualikannya, jadi file 1-2 GB
+    # menumpuk selamanya. Begitu ruang bebas < MIN_FREE_DISK_MB, disk guard
+    # memblokir SEMUA rekaman (IDN + Showroom) - gejala luarnya "bot kadang
+    # merekam, kadang tidak, bahkan tidak bisa mendeteksi member live".
+    #
+    # true = bot menghapus otomatis file yang statusnya sudah terminal
+    #        (failed/abandoned/done_*) dan tidak direference baris lain yang
+    #        masih aktif. pending_upload yang masih bisa dicoba TIDAK ikut.
+    DISK_RECLAIM_ENABLED: bool = (
+        os.getenv("DISK_RECLAIM_ENABLED", "true").lower() == "true"
+    )
+
+    # Umur minimum (jam) sebelum file terminal boleh dihapus otomatis, supaya
+    # sesi yang baru saja gagal masih punya chances retry biasa.
+    DISK_RECLAIM_MIN_AGE_HOURS: float = float(
+        os.getenv("DISK_RECLAIM_MIN_AGE_HOURS", "6")
+    )
+
+    # Seberapa sering (menit) reclaim dijalankan.
+    DISK_RECLAIM_INTERVAL_MINUTES: float = float(
+        os.getenv("DISK_RECLAIM_INTERVAL_MINUTES", "30")
+    )
+
+    # Jumlah file maksimum per satu kali reclaim (batas waktu eksekusi).
+    DISK_RECLAIM_MAX_FILES: int = int(
+        os.getenv("DISK_RECLAIM_MAX_FILES", "200")
+    )
 
     # Thumbnail kolase 3x2 utk video BARU (true/false). Dibuat dari file lokal
     # via ffmpeg lalu dipasang ke YouTube (~50 unit kuota). Gagal membuat /
