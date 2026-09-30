@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import hashlib
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ except ModuleNotFoundError:  # pragma: no cover - bergantung interpreter
 from bot.config import Config
 from bot import database
 from bot import timeutil
+from bot.upload_lock import upload_lock_holder
 from bot.main import JKT48LiveBot, load_flood_cooldown
 from bot.video_splitter import get_default_max_bytes, get_video_metadata
 
@@ -414,9 +416,30 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Preview pending videos without uploading")
     parser.add_argument("--scan-dir", action="store_true", help="Also scan DOWNLOAD_DIR for untracked videos")
     parser.add_argument("--keep", action="store_true", help="Keep video files on disk after upload")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Upload meski proses lain (bot PM2) sedang meng-upload akun yang sama",
+    )
     args = parser.parse_args()
 
     _setup_logging()
+
+    # Rate limit Telegram per AKUN. Bot PM2 yang sedang upload live baru dan
+    # CLI ini akan saling memperpendek kuota dan sama-sama kena flood. Deteksi
+    # di awal supaya operator tidak menunggu 21 file yang semuanya ditolak.
+    holder = upload_lock_holder()
+    if holder and int(holder.get("pid") or 0) != os.getpid() and not args.force:
+        print(
+            "\n⚠️  Upload sedang berjalan di proses lain pada mesin ini:\n"
+            f"     pid {holder.get('pid')} di {holder.get('host')}\n"
+            f"     lock: {holder.get('path')}\n\n"
+            "   Menjalankan dua uploader bersamaan memperpendek kuota request\n"
+            "   akun yang sama sehingga flood datang jauh lebih awal.\n"
+            "   Bot PM2 memproses antrean ini sendiri di siklus retry-nya.\n"
+            "   Gunakan --force hanya bila proses lain itu memang sudah mati.\n",
+            flush=True,
+        )
+        return
 
     try:
         items = asyncio.run(collect_pending_items(scan_dir=args.scan_dir))

@@ -59,6 +59,7 @@ from bot.telegram_sender import (
     _platform_label,
     build_youtube_notification,
 )
+from bot.upload_lock import UploadBusyError, interprocess_upload_lock
 from bot.replay_bot import ReplayBot
 from bot.tiktok_monitor import TikTokMonitor
 from bot.youtube_uploader import YouTubeChannelPool, YouTubeQuotaExceeded
@@ -501,10 +502,32 @@ class JKT48LiveBot:
             return None
         return await self.idn_lookup.fetch_member_live(username)
 
+    async def _with_upload_lease(self, coro_factory):
+        """Jalankan pipeline upload di bawah kunci antar-proses satu akun.
+
+        Rate limit Telegram dihitung per akun, jadi bot PM2 yang merekam live
+        baru dan `python -m bot.upload_pending` yang mengosongkan antrean TIDAK
+        boleh meng-upload bersamaan: keduanya akan saling memperpendek kuota
+        dan membuat flood datang jauh lebih awal. Kunci ini menolak (bukan
+        menunggu) supaya file diproses di siklus retry berikutnya, bukan
+        membekukan antrean.
+        """
+        try:
+            with interprocess_upload_lock():
+                return await coro_factory()
+        except UploadBusyError as exc:
+            logger.warning(
+                "Upload ditunda, proses lain sedang meng-upload akun yang sama: %s",
+                exc,
+            )
+            return False
+
     async def _handle_upload_ready_serialized(self, **kwargs) -> bool:
         """Serialize upload callbacks from the merge timer."""
         async with self._upload_lock:
-            return await self._handle_upload_ready_impl(**kwargs)
+            return await self._with_upload_lease(
+                lambda: self._handle_upload_ready_impl(**kwargs)
+            )
 
     def _track_active_upload(self, live_id: str) -> tuple[asyncio.Task, float]:
         """Catat upload yang SEDANG berjalan supaya recovery tidak menabraknya.
@@ -569,12 +592,16 @@ class JKT48LiveBot:
         self._track_active_upload(live_id)
         try:
             if _upload_lock_held:
-                return await self._handle_upload_ready_impl(
-                    *args, keep_file=keep_file, **kwargs
+                return await self._with_upload_lease(
+                    lambda: self._handle_upload_ready_impl(
+                        *args, keep_file=keep_file, **kwargs
+                    )
                 )
             async with self._upload_lock:
-                return await self._handle_upload_ready_impl(
-                    *args, keep_file=keep_file, **kwargs
+                return await self._with_upload_lease(
+                    lambda: self._handle_upload_ready_impl(
+                        *args, keep_file=keep_file, **kwargs
+                    )
                 )
         finally:
             self._release_active_upload(live_id)

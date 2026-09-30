@@ -9,6 +9,9 @@ Cakup:
     retry tidak mengulang tujuan yang sudah selesai
 """
 import asyncio
+import json
+import os
+import socket
 import time
 import unittest
 from pathlib import Path
@@ -17,6 +20,11 @@ from unittest.mock import AsyncMock, Mock, patch
 from bot import database, main as bot_main
 from bot.config import Config
 from bot.telegram_sender import TelegramFloodExhausted
+from bot.upload_lock import (
+    UploadBusyError,
+    interprocess_upload_lock,
+    upload_lock_holder,
+)
 from bot.youtube_uploader import YouTubeQuotaExceeded
 from tests.test_member_manager import MemberManagerTestCase
 
@@ -927,7 +935,88 @@ class TestTelegramGivesUp(HandleUploadReadyTestCase):
         self.assertEqual(row["youtube_video_id"], "ytDONE")
 
 
+class TestInterprocessUploadLock(HandleUploadReadyTestCase):
+    """Satu akun Telegram = satu uploader, walau ada dua proses.
+
+    Rate limit dihitung per akun, jadi bot PM2 yang meng-upload live baru dan
+    `python -m bot.upload_pending` yang mengosongkan antrean tidak boleh jalan
+    bersamaan. Kalau iya, keduanya memakai kuota request yang sama dan flood
+    datang jauh lebih awal.
+    """
+
+    def test_second_process_is_rejected(self):
+        lock_path = Path(self._tmp.name) / "upload.lock"
+        with interprocess_upload_lock(path=lock_path):
+            self.assertIsNotNone(upload_lock_holder(path=lock_path))
+            with self.assertRaises(UploadBusyError):
+                with interprocess_upload_lock(path=lock_path):
+                    pass
+        # Setelah keluar, lock harus bebas lagi.
+        with interprocess_upload_lock(path=lock_path):
+            pass
+
+    def test_lock_released_even_when_pipeline_raises(self):
+        lock_path = Path(self._tmp.name) / "upload.lock"
+        with self.assertRaises(RuntimeError):
+            with interprocess_upload_lock(path=lock_path):
+                raise RuntimeError("upload gagal")
+        with interprocess_upload_lock(path=lock_path):
+            pass
+
+    def test_stale_lock_is_taken_over(self):
+        """Lock dari proses yang sudah mati tidak boleh membekukan upload."""
+        lock_path = Path(self._tmp.name) / "upload.lock"
+        lock_path.mkdir()
+        (lock_path / "owner.json").write_text(
+            json.dumps({
+                "pid": 999999,
+                "host": socket.gethostname(),
+                "acquired_at": 0,
+            }),
+            encoding="utf-8",
+        )
+        # Dipidermakan lewat umur agar penentuan "basi" tidak bergantung pada
+        # pengecekan pid yang tidak bisa dilakukan di semua platform.
+        old = time.time() - 3600
+        os.utime(lock_path, (old, old))
+
+        with interprocess_upload_lock(path=lock_path, max_age_seconds=60):
+            self.assertTrue(lock_path.exists(), "lock harus pindah ke pemilik baru")
+
+    def test_bot_defers_upload_when_another_process_holds_lock(self):
+        bot = self._make_bot()
+        path = self._write_video()
+        self._insert_session_for_upload(path)
+        bot.tg.upload_video_with_splitting = AsyncMock(return_value=[1])
+        bot.yt_pool.upload_video = Mock(return_value=("ytNEW", "ch1"))
+        bot.yt_pool.set_thumbnail = Mock(return_value=False)
+
+        lock_path = Path(self._tmp.name) / "upload.lock"
+        with interprocess_upload_lock(path=lock_path):
+            with patch(
+                "bot.main.interprocess_upload_lock",
+                side_effect=UploadBusyError("proses lain sedang meng-upload"),
+            ):
+                complete = asyncio.run(bot.handle_upload_ready(
+                    live_id="merged_1",
+                    member_username="jkt48_daisy",
+                    member_name="Daisy",
+                    started_at="2026-09-22T13:00:00+00:00",
+                    file_path=str(path),
+                    platform="idn",
+                ))
+
+        self.assertFalse(complete, "upload harus ditunda, bukan dipaksa jalan")
+        bot.yt_pool.upload_video.assert_not_called()
+        self.assertTrue(path.exists(), "file tidak boleh hilang saat upload ditunda")
+        for row in self._group_rows(1):
+            self.assertEqual(
+                row["status"], "pending_upload",
+                "status tidak boleh diubah saat upload ditunda; file akan dicoba "
+                "lagi di siklus retry berikutnya",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
-
 
