@@ -575,7 +575,11 @@ class MergeManager:
                 f"🕒 Selesai {_format_live_time(timeutil.utc_now_iso())}\n"
                 f"{meta_title_line}"
                 f"🎞 {len(file_paths)} segmen · {_format_size(total_bytes)} total\n"
-                "⏳ Mulai merge → upload Telegram → YouTube"
+                + (
+                    "⏳ Mulai merge → upload Telegram → YouTube"
+                    if Config.TELEGRAM_ARCHIVE_UPLOAD_ENABLED
+                    else "⏳ Mulai merge → upload YouTube"
+                )
             )
 
         first = segments[0]
@@ -674,9 +678,9 @@ class MergeManager:
             )
 
         # Source segments are fallback copies, not disposable scratch files.
-        # Keep them until the live pipeline explicitly reports that both
-        # Telegram and YouTube are complete.  Legacy callbacks that return
-        # ``None`` are treated conservatively as incomplete.
+        # Keep them until the live pipeline explicitly reports that every
+        # required upload is complete.  Legacy callbacks that return ``None``
+        # are treated conservatively as incomplete.
         if (
             Config.AUTO_DELETE_AFTER_UPLOAD
             and len(file_paths) > 1
@@ -687,7 +691,7 @@ class MergeManager:
                     delete_file(fp)
         elif len(file_paths) > 1 and pipeline_complete is not True:
             logger.info(
-                "%s: source segments kept until Telegram + YouTube pipeline completes",
+                "%s: source segments kept until the upload pipeline completes",
                 member_username,
             )
 

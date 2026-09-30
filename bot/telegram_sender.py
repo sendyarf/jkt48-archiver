@@ -748,8 +748,16 @@ class TelegramSender:
             return []
         await self.connect()
 
+        # Force-document WAJIB untuk foto TikTok. Tanpa ini Telethon mengirim
+        # gambar sebagai foto inline dan Telegram menampilkannya sebagai
+        # STIKER (WebP adalah format stiker resmi Telegram) - user tidak bisa
+        # mengunduhnya sebagai berkas. Sebagai document, foto tiba sebagai
+        # file JPEG/PNG biasa yang selalu bisa diunduh apa adanya, dan album
+        # tetap dikelompokkan rapi per 10 media.
+        as_document = Config.TIKTOK_PHOTOS_AS_DOCUMENT
+
         # Satu berkas TIDAK boleh dikirim sebagai album. Telethon meneruskan
-        # list apa pun ke `_send_album` → `SendMultiMediaRequest`, dan Telegram
+        # list apa pun ke `_send_album` -> `SendMultiMediaRequest`, dan Telegram
         # menolak album satu media dengan `MediaEmptyError` (terjadi pada
         # story TikTok berupa 1 foto, 26 Sep 2026). Album 1 berkas = kirim
         # sebagai media biasa agar tidak pernah ditolak.
@@ -763,6 +771,7 @@ class TelegramSender:
                             paths[0],
                             caption=caption,
                             parse_mode="html",
+                            force_document=as_document,
                         )
                     logger.info(
                         "Media tunggal TikTok terkirim ke %d (Message ID: %d): %s",
@@ -805,6 +814,7 @@ class TelegramSender:
                         paths,
                         caption=caption,
                         parse_mode="html",
+                        force_document=as_document,
                     )
                 messages = result if isinstance(result, list) else [result]
                 ids = [m.id for m in messages if m is not None]

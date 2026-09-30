@@ -197,8 +197,25 @@ async def collect_pending_items(scan_dir: bool = False) -> list[dict]:
     return items
 
 
+def _telegram_archive_required() -> bool:
+    """True bila tahap arsip Telegram masih diaktifkan untuk rekaman live."""
+    return Config.TELEGRAM_ARCHIVE_UPLOAD_ENABLED
+
+
+def _telegram_done(state: dict) -> bool:
+    """True bila tahap Telegram dianggap selesai.
+
+    Ketika ``TELEGRAM_ARCHIVE_UPLOAD_ENABLED=false`` tahap itu tidak pernah
+    dijalankan, jadi ketiadaan marker Telegram BUKAN kegagalan - video boleh
+    dinyatakan lengkap begitu YouTube punya video_id.
+    """
+    if not _telegram_archive_required():
+        return True
+    return bool((state.get("telegram_message_ids") or "").strip())
+
+
 async def process_uploads(items: list[dict], dry_run: bool = False, keep_files: bool = False) -> None:
-    """Run the same Telegram-then-YouTube pipeline used by the main bot.
+    """Run the same pipeline used by the main bot (YouTube, plus Telegram when enabled).
 
     ``items`` may contain database rows or untracked files.  Database rows are
     updated through the normal idempotent markers; untracked files are uploaded
@@ -229,7 +246,11 @@ async def process_uploads(items: list[dict], dry_run: bool = False, keep_files: 
 
     print("\n" + "=" * 70)
     print("  📋 JKT48 Live - Pending Videos Queue")
-    print("  Target Upload    : Telegram archive → YouTube playback")
+    print("  Target Upload    : " + (
+        "Telegram archive → YouTube playback"
+        if _telegram_archive_required()
+        else "YouTube playback (arsip Telegram dimatikan)"
+    ))
     print(f"  Telegram Channel : {Config.TELEGRAM_ARCHIVE_CHANNEL_ID or Config.TELEGRAM_CHANNEL_ID}")
     print(f"  Split Threshold  : {max_bytes // (1024 * 1024)} MB")
     print(f"  Total Videos     : {len(items)}")
@@ -279,7 +300,7 @@ async def process_uploads(items: list[dict], dry_run: bool = False, keep_files: 
                         if (
                             row is not None
                             and row.get("status") == "done_youtube"
-                            and bool((state.get("telegram_message_ids") or "").strip())
+                            and _telegram_done(state)
                             and bool((state.get("youtube_video_id") or "").strip())
                         ):
                             successful += 1
@@ -329,7 +350,7 @@ async def process_uploads(items: list[dict], dry_run: bool = False, keep_files: 
                         bool(pipeline_complete)
                         and row is not None
                         and row.get("status") == "done_youtube"
-                        and bool((state.get("telegram_message_ids") or "").strip())
+                        and _telegram_done(state)
                         and bool((state.get("youtube_video_id") or "").strip())
                     )
                 else:
@@ -340,7 +361,11 @@ async def process_uploads(items: list[dict], dry_run: bool = False, keep_files: 
 
                 if complete:
                     successful += 1
-                    print("  ✅ Telegram + YouTube selesai.")
+                    print(
+                        "  ✅ Telegram + YouTube selesai."
+                        if _telegram_archive_required()
+                        else "  ✅ YouTube selesai."
+                    )
                 else:
                     failed += 1
                     print("  ⚠️ Pipeline belum selesai; file tetap disimpan untuk retry.")

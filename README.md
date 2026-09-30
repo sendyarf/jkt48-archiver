@@ -137,9 +137,12 @@ nano .env
 ---
 
 ```dotenv
-# Nilai ini hanya kompatibilitas konfigurasi lama. Pipeline live tetap
-# Telegram (arsip/download) → YouTube (playback website).
+# Nilai ini hanya kompatibilitas konfigurasi lama. Pipeline live mengikuti
+# TELEGRAM_ARCHIVE_UPLOAD_ENABLED (arsip Telegram) + YouTubeChannelPool.
 UPLOAD_TARGET=youtube
+
+# Rekaman live hanya diunggah ke YouTube (arsip Telegram dimatikan).
+TELEGRAM_ARCHIVE_UPLOAD_ENABLED=false
 
 # Zona waktu hanya untuk TAMPILAN. Waktu di database selalu UTC, sehingga
 # VPS Seoul (UTC+9) menghasilkan angka yang sama dengan VPS Jakarta.
@@ -155,13 +158,18 @@ hanya dilakukan saat menampilkan. Baris lama tanpa penanda tetap ambigu — bila
 lama diketahui, isi `LEGACY_NAIVE_TIME_OFFSET_HOURS` (mis. `8` atau `9`) agar nilai lama
 dibaca benar.
 
-**Catatan `UPLOAD_TARGET`.** Nilai ini dipertahankan hanya untuk kompatibilitas
-konfigurasi lama; ia tidak mematikan salah satu tujuan live. Setiap rekaman live
-wajib melalui **Telegram → YouTube**. `telegram_message_ids` menyimpan arsip
-Telegram untuk download/replay, sedangkan `youtube_video_id` enables playback
-website. YouTube tetap **unlisted** dan visibilitas website mengikuti aturan
-`AUTO_PUBLISH_AFTER_HOURS`/publikasi admin. Rekaman Showroom mengikuti pipeline
-yang sama.
+**Catatan `UPLOAD_TARGET`.** Nilai ini dipertahankan hanya untuk kompatibilitas konfigurasi lama; ia tidak mematikan salah satu tujuan live. Tujuan live ditentukan oleh `TELEGRAM_ARCHIVE_UPLOAD_ENABLED` (default **false**): kalau `true`, tiap rekaman wajib melalui **Telegram → YouTube**; kalau `false`, Telegram dilewati dan rekaman langsung diunggah ke **YouTube**.
+
+**Arsip Telegram rekaman live dimatikan (30 Sep 2026).** Upload rekaman live ke Telegram tidak efektif: file 1-2 GB dipecah menjadi ribuan part 512 KiB, memicu `FLOOD_PREMIUM_WAIT` beruntun, dan mengunci sesi di status `pending_upload` berjam-jam - sementara hasil unduh lewat replay bot tetap tidak memenuhi ekspektasi. YouTube adalah sumber playback website, jadi mematikan tahap ini tidak menghapus apa pun dari situs. Set `TELEGRAM_ARCHIVE_UPLOAD_ENABLED=true` untuk mengembalikannya.
+
+Yang **tidak** terpengaruh: notifikasi teks ke channel Telegram, arsip **TikTok** (dikendalikan terpisah oleh `TIKTOK_ARCHIVE_UPLOAD_ENABLED`), dan bot admin. YouTube tetap **unlisted** dan visibilitas website mengikuti aturan `AUTO_PUBLISH_AFTER_HOURS`/publikasi admin. Rekaman Showroom mengikuti pipeline yang sama.
+
+**Foto TikTok selalu bisa diunduh.** Dua lapis perlindungan di `bot/tiktok_media.py` + `bot/telegram_sender.py`:
+
+1. Format gambar dideteksi dari **magic bytes** isi berkas, bukan ekstensi URL - CDN TikTok menyajikan WebP dengan URL berakhiran `.jpg`. WebP/HEIC/AVIF/GIF otomatis dikonversi ke JPEG saat unduhan.
+2. Foto dikirim dengan `force_document=True` (`TIKTOK_PHOTOS_AS_DOCUMENT`). Tanpa ini Telegram memakai WebP sebagai format **stiker** resmi, dan user tidak bisa mengunduhnya sebagai berkas.
+
+Keduanya bisa dimatikan lewat `.env` bila perlu, tapi menyalakannya kembali berisiko foto muncul lagi sebagai stiker.
 
 **Diagnostik `.env` saat start.** Bot memeriksa `.env` sekali setiap start dan
 menulis PERINGATAN untuk dua masalah yang dulu berjalan diam-diam:

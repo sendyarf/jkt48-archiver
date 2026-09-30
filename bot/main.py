@@ -503,9 +503,11 @@ class JKT48LiveBot:
     ) -> bool:
         """Run the live-content pipeline in independent, idempotent stages.
 
-        Live archive order is intentionally Telegram first, then YouTube.  The
-        two destination markers in ``live_sessions`` are the source of truth;
-        one destination failing never erases the other destination's marker.
+        YouTube is the mandatory destination.  Telegram is optional and gated by
+        ``TELEGRAM_ARCHIVE_UPLOAD_ENABLED`` (default false); when enabled the
+        order stays Telegram first, then YouTube.  The destination markers in
+        ``live_sessions`` are the source of truth; one destination failing never
+        erases the other destination's marker.
         """
         path = Path(file_path)
         # Only a finalized merge group is an atomic upload destination.  A
@@ -534,21 +536,29 @@ class JKT48LiveBot:
             else:
                 database.update_status(live_id, status, **kwargs)
 
-        # Live recordings have two equally required destinations:
-        #   Telegram = private archive / download source
-        #   YouTube  = public website playback source
-        # ``UPLOAD_TARGET`` remains in Config for compatibility with old
-        # deployments, but it no longer turns off either destination.  Keeping
-        # this decision in one place prevents a stale ``telegram`` setting from
-        # silently skipping YouTube (or vice versa).
+        # Rekaman live punya dua tujuan, tapi HANYA YouTube yang wajib:
+        #   Telegram = arsip privat / sumber unduhan (opsional, lihat Config)
+        #   YouTube  = playback publik di website (wajib)
+        #
+        # `TELEGRAM_ARCHIVE_UPLOAD_ENABLED` (default false) mematikan tahap
+        # Telegram. Sebelumnya flag ini diabaikan dan Telegram selalu wajib,
+        # sehingga satu live yang gagal ter-upload ke Telegram memblokir YouTube
+        # selamanya — persis masalah yang membuat arsip live dimatikan.
+        # `UPLOAD_TARGET` tetap dibaca hanya supaya .env lama tetap ter-parse.
         target = (Config.UPLOAD_TARGET or "").strip().lower()
         if target not in ("telegram", "youtube"):
             logger.warning(
-                "UPLOAD_TARGET=%r tidak dikenal; pipeline live tetap memakai "
-                "Telegram lalu YouTube", Config.UPLOAD_TARGET,
+                "UPLOAD_TARGET=%r tidak dikenal; pipeline live memakai "
+                "konfigurasi TELEGRAM_ARCHIVE_UPLOAD_ENABLED + YouTube",
+                Config.UPLOAD_TARGET,
             )
-        telegram_required = True
+        telegram_required = Config.TELEGRAM_ARCHIVE_UPLOAD_ENABLED
         youtube_required = True
+        if not telegram_required:
+            logger.info(
+                "Arsip Telegram dinonaktifkan (TELEGRAM_ARCHIVE_UPLOAD_ENABLED=false) "
+                "— rekaman live hanya diunggah ke YouTube.",
+            )
 
         prior = database.get_group_upload_state(live_id, group_id)
         telegram_ids = (prior.get("telegram_message_ids") or "").strip()
@@ -572,7 +582,7 @@ class JKT48LiveBot:
             # A completed destination can be finalized even if a stale retry row
             # points at a file that was already cleaned.  Incomplete destinations
             # must remain visibly failed rather than being silently considered done.
-            if telegram_ok and youtube_ok:
+            if (telegram_ok or not telegram_required) and youtube_ok:
                 set_status("done_youtube")
                 return True
             else:
@@ -594,7 +604,7 @@ class JKT48LiveBot:
         file_size = get_file_size_bytes(path)
         errors: list[str] = []
 
-        # ?? Stage 1: Telegram archive (primary, no YouTube quota involved) ??
+        # ---- Stage 1: Telegram archive (opsional, tidak memakai kuota YouTube) ----
         if telegram_required and not telegram_ok:
             set_status(
                 "uploading_telegram",
@@ -828,8 +838,12 @@ class JKT48LiveBot:
                         started_at=started_at,
                         live_title=live_title,
                         detail=(
-                            "📦 Video sudah aman di Telegram\n"
-                            f"⚠️ {str(exc)[:300]}\n"
+                            (
+                                "📦 Video sudah aman di Telegram\n"
+                                if telegram_required
+                                else ""
+                            )
+                            + f"⚠️ {str(exc)[:300]}\n"
                             "⏳ Upload YouTube menunggu kuota harian (retry otomatis)"
                         ),
                     )
@@ -851,8 +865,8 @@ class JKT48LiveBot:
                     )
                 )
 
-        # ---- Stage 3: notification, only after both required uploads ----
-        if telegram_ok and youtube_ok:
+        # ---- Stage 3: notification, only after every required upload ----
+        if (telegram_ok or not telegram_required) and youtube_ok:
             if not notification_sent:
                 notification = build_youtube_notification(
                     member_name=member_name or member_username,
@@ -880,11 +894,11 @@ class JKT48LiveBot:
                     )
                 else:
                     logger.warning(
-                        "Notification Telegram gagal untuk %s; dua upload tetap selesai",
+                        "Notification Telegram gagal untuk %s; upload tetap selesai",
                         live_id,
                     )
 
-            # Completion depends only on the two required media destinations,
+            # Completion depends only on the required media destinations,
             # never on notification delivery.
             set_status("done_youtube", youtube_video_id=youtube_video_id)
             if Config.AUTO_DELETE_AFTER_UPLOAD and not keep_file:

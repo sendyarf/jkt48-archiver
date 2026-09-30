@@ -68,13 +68,21 @@ class Config:
     # dan bot publik harus menjadi admin agar bisa copyMessage dari sini.
     TELEGRAM_ARCHIVE_CHANNEL_ID: int = int(os.getenv("TELEGRAM_ARCHIVE_CHANNEL_ID", "0"))
 
-    # Upload juga video ke channel arsip Telegram (selain YouTube). File lokal
-    # baru dihapus setelah KEDUA upload sukses; jika salah satu gagal, sesi
-    # ditandai pending_upload agar di-retry.
-    # Kept for backward-compatible configuration parsing.  Live recordings
-    # always require the Telegram archive; this flag no longer disables it.
+    # ─── Arsip Telegram rekaman live IDN/Showroom (default NONAKTIF) ────────
+    # true  = rekaman live juga dikirim ke channel arsip Telegram (selain YouTube)
+    # false = HANYA YouTube
+    #
+    # Default false sejak 30 Sep 2026: upload arsip live ke Telegram tidak
+    # efektif. Reservoir file besar (1-2 GB, ~2.000 part 512 KiB per file) habis
+    # bandwidth dan memicu FLOOD_PREMIUM_WAIT beruntun sehingga antrean upload
+    # tertahan berjam-jam, sementara sesi tetap terkunci di status
+    # 'pending_upload'. YouTube adalah sumber playback website, jadi mematikan
+    # tahap ini tidak menghapus apa pun dari situs.
+    #
+    # Arsip TikTok TIDAK terpengaruh flag ini - foto/video TikTok tetap dikirim
+    # ke Telegram (lihat TIKTOK_ARCHIVE_UPLOAD_ENABLED).
     TELEGRAM_ARCHIVE_UPLOAD_ENABLED: bool = (
-        os.getenv("TELEGRAM_ARCHIVE_UPLOAD_ENABLED", "true").lower() == "true"
+        os.getenv("TELEGRAM_ARCHIVE_UPLOAD_ENABLED", "false").lower() == "true"
     )
 
     # Enable the public replay bot listener inside the main bot process (true/false)
@@ -82,9 +90,10 @@ class Config:
         os.getenv("REPLAY_BOT_ENABLED", "true").lower() == "true"
     )
 
-    # Legacy compatibility switches.  Live recordings always use the complete
-    # Telegram-then-YouTube pipeline; these values no longer disable a stage.
-    UPLOAD_TARGET: str = os.getenv("UPLOAD_TARGET", "telegram").lower().strip()
+    # Legacy compatibility switch.  The live pipeline decides its destinations
+    # from TELEGRAM_ARCHIVE_UPLOAD_ENABLED + YouTubeChannelPool; this value is
+    # parsed only so old .env files keep loading without error.
+    UPLOAD_TARGET: str = os.getenv("UPLOAD_TARGET", "youtube").lower().strip()
 
     # Telegram max file size threshold before splitting (MB = MiB di sini).
     # Server membatasi JUMLAH part per file: 4000 part × 512 KiB = 2.000 MiB
@@ -430,6 +439,29 @@ class Config:
     # hanya masuk channel Telegram (YouTube dilewati).
     TIKTOK_YT_UPLOAD_ENABLED: bool = (
         os.getenv("TIKTOK_YT_UPLOAD_ENABLED", "true").lower() == "true"
+    )
+
+    # Kirim media TikTok (foto / video / story) ke channel arsip Telegram.
+    # TERPISAH dari TELEGRAM_ARCHIVE_UPLOAD_ENABLED yang hanya mengatur rekaman
+    # live IDN/Showroom: arsip TikTok sengaja tetap jalan karena medianya kecil
+    # (foto 200-900 KB, video pendek) sehingga tidak pernah jadi bottleneck
+    # seperti upload rekaman live 1-2 GB.
+    TIKTOK_ARCHIVE_UPLOAD_ENABLED: bool = (
+        os.getenv("TIKTOK_ARCHIVE_UPLOAD_ENABLED", "true").lower() == "true"
+    )
+
+    # Kirim foto TikTok sebagai FILE (document), bukan sebagai foto inline.
+    #
+    # Telegram memperlakukan WebP sebagai format STIKER resmi. Foto yang
+    # diunggah tanpa paksaan document tampil sebagai stiker dan user TIDAK
+    # bisa mengunduhnya (stiker tanpa emoji hanya bisa disimpan lewat dialog
+    # "Tambah ke Koleksi"). Force-document membuat foto tiba sebagai berkas
+    # JPEG/PNG biasa yang selalu bisa diunduh apa adanya.
+    #
+    # true  = kirim sebagai document (dapat diunduh, kualitas utuh)
+    # false = kirim sebagai foto inline (kompresi Telegram, sulit diunduh)
+    TIKTOK_PHOTOS_AS_DOCUMENT: bool = (
+        os.getenv("TIKTOK_PHOTOS_AS_DOCUMENT", "true").lower() == "true"
     )
 
     # Jumlah foto maksimum per album Telegram. Postingan foto > nilai ini

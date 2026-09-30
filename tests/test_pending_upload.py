@@ -364,6 +364,72 @@ class TestHandleUploadDualDestination(HandleUploadReadyTestCase):
 
 
 
+class TestTelegramArchiveDisabled(HandleUploadReadyTestCase):
+    """
+    TELEGRAM_ARCHIVE_UPLOAD_ENABLED=false -> live hanya diunggah ke YouTube.
+
+    Sebelumnya flag ini diabaikan (`telegram_required = True` di main.py),
+    jadi tahap Telegram selalu wajib dan YouTube tertahan di belakangnya —
+    satu live yang gagal ter-upload ke Telegram tidak pernah tayang sama sekali.
+    Sekarang Telegram dilewati dan pipeline selesai begitu YouTube punya video_id.
+    """
+
+    def setUp(self):
+        super().setUp()
+        Config.TELEGRAM_ARCHIVE_UPLOAD_ENABLED = False
+
+    def test_pipeline_completes_with_youtube_only(self):
+        bot = self._make_bot()
+        path = self._write_video()
+        self._insert_session_for_upload(path)
+
+        bot.tg.upload_video_with_splitting = AsyncMock(return_value=[1])
+        bot.tg.send_message = AsyncMock(return_value=2)
+        bot.yt_pool.upload_video = Mock(return_value=("ytONLY", "ch1"))
+        bot.yt_pool.set_thumbnail = Mock(return_value=False)
+
+        with patch("bot.main.Config.THUMBNAIL_COLLAGE_ENABLED", False):
+            complete = asyncio.run(bot.handle_upload_ready(
+                live_id="merged_1",
+                member_username="jkt48_daisy",
+                member_name="Daisy",
+                started_at="2026-09-22T13:00:00+00:00",
+                file_path=str(path),
+                platform="idn",
+            ))
+
+        self.assertTrue(complete, "pipeline harus selesai tanpa Telegram")
+        bot.tg.upload_video_with_splitting.assert_not_called()
+        bot.yt_pool.upload_video.assert_called_once()
+
+        for row in self._group_rows(1):
+            self.assertEqual(row["status"], "done_youtube")
+            self.assertEqual(row["youtube_video_id"], "ytONLY")
+            self.assertFalse(row["telegram_message_ids"])
+
+    def test_missing_file_still_finalizes_when_telegram_disabled(self):
+        """File hilang + Telegram nonaktif bukan kegagalan, asal YouTube jadi."""
+        bot = self._make_bot()
+        path = self._write_video()
+        self._insert_session_for_upload(path, youtube_video_id="ytDONE")
+
+        # Berkas dihapus bersih seperti kasus AUTO_DELETE setelah sukses.
+        path.unlink()
+
+        complete = asyncio.run(bot.handle_upload_ready(
+            live_id="merged_1",
+            member_username="jkt48_daisy",
+            member_name="Daisy",
+            started_at="2026-09-22T13:00:00+00:00",
+            file_path=str(path),
+            platform="idn",
+        ))
+
+        self.assertTrue(complete)
+        for row in self._group_rows(1):
+            self.assertEqual(row["status"], "done_youtube")
+
+
 class FloodCooldownTestCase(HandleUploadReadyTestCase):
     """File yang kehabisan jatah flood harus DIDIAMKAN, bukan digiling terus.
 

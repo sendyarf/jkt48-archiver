@@ -54,6 +54,153 @@ _MEDIA_HEADERS = {
 
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 
+# ── Normalisasi format foto untuk Telegram ────────────────────────────────
+# Telegram memperlakukan WebP sebagai format STIKER resmi. Foto WebP yang
+# diunggah apa adanya tampil sebagai stiker dan user TIDAK bisa mengunduhnya
+# (stiker tanpa emoji hanya bisa disimpan lewat dialog "Tambah ke Koleksi",
+# bukan sebagai berkas terpisah). HEIC tidak didukung Telegram sama sekali
+# (tampil sebagai berkas rusak). Keduanya dikonversi ke JPEG saat unduh.
+#
+# Deteksi memakai MAGIC BYTES isi berkas, bukan ekstensi URL: CDN TikTok
+# sering menyajikan gambar WebP dengan URL berakhiran .jpg, jadi tebakan
+# berdasarkan nama berkas menghasilkan berkas .jpg yang isinya WebP — itu
+# persis penyebab foto sesekali sampai ke user sebagai stiker.
+_IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xd8\xff", "jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"GIF87a", "gif"),
+    (b"GIF89a", "gif"),
+)
+
+# Ekstensi → nama format yang boleh dikirim ke Telegram. JPEG & PNG tampil
+# sebagai foto/dokumen biasa yang bisa diunduh; sisanya dinormalisasi dulu.
+_TELEGRAM_READY_FORMATS = {"jpeg", "png"}
+
+
+def sniff_image_format(data: bytes) -> str:
+    """
+    Deteksi format gambar dari magic bytes.
+
+    Mengembalikan nama format lowercase ("jpeg", "png", "webp", "heic", ...)
+    atau "" bila tidak dikenali. WebP & HEIC tidak punya magic bytes di offset 0
+    seperti JPEG/PNG, jadi keduanya diperiksa lewat header RIFF/ftyp.
+    """
+    if not data:
+        return ""
+    for signature, name in _IMAGE_SIGNATURES:
+        if data.startswith(signature):
+            return name
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    # ISO-BMFF (HEIC/AVIF): ukuran 4 byte + "ftyp" + major brand 4 byte.
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        brand = data[8:12].decode("ascii", errors="replace").lower()
+        if brand.startswith(("hei", "mif1", "msf1")):
+            return "heic"
+        if brand.startswith("avif"):
+            return "avif"
+    return ""
+
+
+def telegram_safe_suffix(data: bytes, fallback_suffix: str = ".jpg") -> str:
+    """
+    Ekstensi yang aman dikirim ke Telegram untuk isi berkas gambar ini.
+
+    Format yang Telegram perlakukan sebagai stiker / tidak didukung
+    (WebP, HEIC, AVIF, GIF) dipetakan ke .jpg supaya `normalize_image`
+    mengubahnya. Bila format tidak dikenali, kembali ke tebakan URL — jalur
+    unduhan yang gagal lebih baik dicoba apa adanya daripada dibuang.
+    """
+    fmt = sniff_image_format(data)
+    if not fmt:
+        return fallback_suffix
+    if fmt in _TELEGRAM_READY_FORMATS:
+        return ".jpg" if fmt == "jpeg" else ".png"
+    return ".jpg"
+
+
+async def normalize_image(path: Path) -> Path:
+    """
+    Pastikan berkas gambar aman dikirim ke Telegram; ganti isinya bila perlu.
+
+    Baca magic bytes, lalu bila formatnya bukan JPEG/PNG, konversi ke JPEG
+    dengan ffmpeg (pola yang sama seperti `build_slideshow`). Konversi
+    gagal → berkas asli dikembalikan apa adanya supaya satu foto bermasalah
+    tidak menjatuhkan seluruh album (pemanggil yang memutuskan status).
+    """
+    try:
+        data = path.read_bytes()[:32]
+    except OSError as exc:
+        logger.debug("Gagal membaca header gambar %s: %s", path.name, exc)
+        return path
+
+    if sniff_image_format(data) in _TELEGRAM_READY_FORMATS:
+        return path
+
+    # Konversi SELALU menulis ke nama sementara lalu di-rename ke `.jpg`.
+    # Menulis langsung ke `path.with_name(stem + ".jpg")` collide dengan sumber
+    # saat berkas WebP sudah bernama `.jpg` (hasil pemetaan suffix di
+    # `telegram_safe_suffix`), dan ffmpeg menolak menulis in-place
+    # ("cannot edit existing files in-place"). Via nama sementara, nama akhir
+    # tetap rapi (`01.jpg`) dan sumber tidak pernah jadi target tulis.
+    out = path.with_name(f"{path.stem}.jpg")
+    tmp = path.with_name(f"{path.stem}.conv.jpg")
+    tmp.unlink(missing_ok=True)
+
+    cmd = ["ffmpeg", "-y", "-i", str(path), "-frames:v", "1", "-q:v", "3", str(tmp)]
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+    except FileNotFoundError as exc:
+        logger.warning("ffmpeg tidak ada, gambar %s dikirim apa adanya: %s", path.name, exc)
+        return path
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Gagal menjalankan ffmpeg untuk %s: %s", path.name, exc)
+        return path
+
+    # Hanya HASIL KONVERSI yang dibuang saat gagal. `path` harus selamat: itu
+    # satu-satunya salinan foto, dan menghapusnya akan mengubah masalah format
+    # yang sepele menjadi media hilang.
+    if process.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        logger.warning(
+            "Konversi %s → JPEG gagal, dikirim apa adanya: %s",
+            path.name,
+            (stderr or b"").decode("utf-8", errors="replace")[-200:],
+        )
+        return path
+
+    # `replace` gagal di Windows saat `out` sudah ada DAN sama dengan `path`
+    # (sumber WebP bernama `.jpg`): berkas terkunci, jadi HAPUS sumber lebih
+    # dulu, baru rename. `tmp` sudah berisi salinan JPEG utuh, jadi urutan ini
+    # tidak pernah meninggalkan hasil normalisasi tanpa media.
+    if out == path:
+        try:
+            path.unlink()
+        except OSError as exc:  # pragma: no cover - kunci berkas Windows
+            tmp.unlink(missing_ok=True)
+            logger.warning("Tidak bisa menimpa %s: %s", path.name, exc)
+            return path
+    try:
+        tmp.replace(out)
+    except OSError as exc:  # pragma: no cover - jalur IO
+        tmp.unlink(missing_ok=True)
+        logger.warning("Gagal menyimpan JPEG %s: %s", out.name, exc)
+        return path
+
+    logger.info("Gambar %s dinormalisasi ke JPEG untuk Telegram.", path.name)
+    # Sumber (bila berbeda dari `out`) dibersihkan setelah `out` aman ada.
+    if out != path:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - jalur IO
+            pass
+    return out
+
 
 class MediaError(RuntimeError):
     """Kegagalan mengunduh/mengolah media TikTok.
@@ -164,6 +311,12 @@ async def download_images(
     """
     Unduh daftar foto berurutan (nomor urut dipertahankan pada nama file).
 
+    Nama berkas ditentukan dari MAGIC BYTES isi unduhan, bukan dari ekstensi
+    URL — CDN TikTok menyajikan WebP dengan URL berakhiran `.jpg`, dan file
+    bernama `.jpg` yang isinya WebP inilah yang nanti tampil sebagai STIKER
+    tidak bisa diunduh di Telegram. Berkas yang formatnya tidak ramah
+    Telegram (WebP/HEIC/AVIF/GIF) otomatis dikonversi ke JPEG.
+
     Entri yang berupa PATH LOKAL (dipakai fixture/uji) disalin, bukan diunduh.
     Foto yang gagal diunduh dilewati dengan peringatan — sisanya tetap dipakai.
     """
@@ -177,17 +330,26 @@ async def download_images(
             source = str(url).strip()
             if not source:
                 continue
-            target = out_dir / f"{index:02d}{_guess_suffix(source)}"
             try:
                 local_source = Path(source)
                 if "://" not in source and local_source.exists():
+                    guessed = _guess_suffix(source)
+                    target = out_dir / f"{index:02d}{guessed}"
                     shutil.copyfile(local_source, target)
                 else:
                     response = await client.get(source)
                     response.raise_for_status()
-                    target.write_bytes(response.content)
+                    payload = response.content
+                    # Format asli menentukan nama berkas; tebakan URL hanya
+                    # cadangan untuk payload yang magic bytes-nya tak terbaca.
+                    suffix = telegram_safe_suffix(payload, _guess_suffix(source))
+                    target = out_dir / f"{index:02d}{suffix}"
+                    target.write_bytes(payload)
                 if target.stat().st_size == 0:
                     raise MediaError("file kosong")
+                target = await normalize_image(target)
+                if target.stat().st_size == 0:
+                    raise MediaError("file kosong setelah normalisasi")
                 local_files.append(target)
             except Exception as exc:  # noqa: BLE001 - satu foto gagal ≠ gagal total
                 logger.warning("Unduhan foto #%d gagal (%s): %s", index, source[:80], exc)

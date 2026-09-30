@@ -434,9 +434,11 @@ class TikTokMonitor:
         """
         Unduh + unggah satu postingan TikTok.
 
-        Urutan wajib: Telegram dulu (channel arsip = sumber unduhan publik),
-        baru YouTube. Bila Telegram gagal, media TIDAK dihapus dan status menjadi
-        `pending_upload` supaya di-retry tanpa kehilangan hasil unduhan.
+        Urutan: Telegram dulu bila TIKTOK_ARCHIVE_UPLOAD_ENABLED (channel arsip
+        = sumber unduhan publik), lalu YouTube. Bila Telegram diaktifkan dan
+        gagal, media TIDAK dihapus dan status menjadi `pending_upload` supaya
+        di-retry tanpa kehilangan hasil unduhan. Bila Telegram dimatikan, posting
+        langsung ke YouTube tanpa terhalang tahap Telegram.
         """
         post_id = item.id
         post = database.get_tiktok_post(post_id) or item.to_db_row()
@@ -483,23 +485,37 @@ class TikTokMonitor:
             duration_seconds=int(media.duration_seconds),
         )
 
-        try:
-            message_ids = await self.tg.send_tiktok_archive(media, post=post, account=account)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Kirim arsip TikTok %s ke Telegram gagal: %s", post_id, exc)
-            message_ids = []
+        # Arsip Telegram opsional (Config.TIKTOK_ARCHIVE_UPLOAD_ENABLED, default
+        # true). Saat dimatikan, tahap Telegram dilewati begitu saja dan
+        # upload langsung ke YouTube supaya file hasil unduhan tetap terpakai.
+        message_ids: list[int] = []
+        if Config.TIKTOK_ARCHIVE_UPLOAD_ENABLED:
+            try:
+                message_ids = await self.tg.send_tiktok_archive(media, post=post, account=account)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Kirim arsip TikTok %s ke Telegram gagal: %s", post_id, exc)
+                message_ids = []
+        else:
+            logger.info(
+                "Arsip Telegram dimatikan (TIKTOK_ARCHIVE_UPLOAD_ENABLED=false); "
+                "postingan %s proceeds ke YouTube saja.",
+                post_id,
+            )
 
-        if not message_ids:
+        if Config.TIKTOK_ARCHIVE_UPLOAD_ENABLED and not message_ids:
             logger.warning("Arsip TikTok %s belum masuk Telegram; diantrikan.", post_id)
             database.update_tiktok_post(
                 post_id, status="pending_upload", error_message="Kirim ke Telegram gagal"
             )
             return
 
-        database.update_tiktok_post(
-            post_id, telegram_message_ids=",".join(str(m) for m in message_ids)
-        )
-        logger.info("Arsip TikTok %s tersimpan di Telegram (%d pesan).", post_id, len(message_ids))
+        if message_ids:
+            database.update_tiktok_post(
+                post_id, telegram_message_ids=",".join(str(m) for m in message_ids)
+            )
+            logger.info(
+                "Arsip TikTok %s tersimpan di Telegram (%d pesan).", post_id, len(message_ids)
+            )
 
         youtube_id = await self._upload_to_youtube(item, post, account, media)
         if youtube_id:
