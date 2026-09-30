@@ -898,4 +898,36 @@ class TestTelegramGivesUp(HandleUploadReadyTestCase):
             self.assertEqual(row["status"], "done_youtube")
             self.assertEqual(row["telegram_gave_up"], 1)
 
+    def test_gave_up_row_with_youtube_is_completed_not_retried(self):
+        """Marker menyerah + YouTube selesai → recovery menuntaskan, bukan retry."""
+        bot = self._make_bot()
+        path = self._write_video()
+        gid = self._insert_session_for_upload(path)
+        # Proses mati tepat sesudah marker menyerah ditulis: baris masih
+        # `uploading_telegram` walau keputusan surrender sudah diambil.
+        database.update_status(
+            "daisy_a", "uploading_telegram", file_path=str(path), telegram_gave_up=1
+        )
+        database.set_session_fields(group_id=gid, youtube_video_id="ytDONE")
+
+        calls: list[str] = []
+
+        async def fake_handle(**kwargs):
+            calls.append(kwargs["live_id"])
+
+        bot.handle_upload_ready = fake_handle  # type: ignore[method-assign]
+        asyncio.run(bot.retry_pending_uploads())
+
+        self.assertNotIn(
+            "daisy_a", calls,
+            "baris yang sudah menyerah tidak boleh di-upload Telegram lagi",
+        )
+        row = next(r for r in self._group_rows(gid) if r["live_id"] == "daisy_a")
+        self.assertEqual(row["status"], "done_youtube")
+        self.assertEqual(row["youtube_video_id"], "ytDONE")
+
+
+if __name__ == "__main__":
+    unittest.main()
+
 

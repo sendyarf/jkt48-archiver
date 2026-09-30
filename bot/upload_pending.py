@@ -22,7 +22,15 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-import colorlog
+# `colorlog` hanya pemformatted log. CLI ini alat operasional yang sering
+# dijalankan manual, jadi tidak boleh GAGAL total hanya karena formatter opsional
+# tidak ada di interpreter yang dipakai - gejala nyata di VPS:
+# `python3 -m bot.upload_pending` (Python sistem) berakhir ModuleNotFoundError:
+# colorlog, padahal bot-nya sendiri jalan normal di venv `.venv`.
+try:
+    import colorlog
+except ModuleNotFoundError:  # pragma: no cover - bergantung interpreter
+    colorlog = None
 
 from bot.config import Config
 from bot import database
@@ -34,24 +42,35 @@ logger = logging.getLogger("upload_pending")
 
 
 def _setup_logging() -> None:
-    handler = colorlog.StreamHandler()
-    handler.setFormatter(
-        colorlog.ColoredFormatter(
-            "%(log_color)s%(asctime)s [%(levelname)s] %(name)s%(reset)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-            log_colors={
-                "DEBUG": "cyan",
-                "INFO": "green",
-                "WARNING": "yellow",
-                "ERROR": "red",
-                "CRITICAL": "bold_red",
-            },
-        )
-    )
     root = logging.getLogger()
     root.setLevel(logging.INFO)
-    if not root.handlers:
-        root.addHandler(handler)
+    if root.handlers:
+        return
+    if colorlog is not None:
+        handler = colorlog.StreamHandler()
+        handler.setFormatter(
+            colorlog.ColoredFormatter(
+                "%(log_color)s%(asctime)s [%(levelname)s] %(name)s%(reset)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+                log_colors={
+                    "DEBUG": "cyan",
+                    "INFO": "green",
+                    "WARNING": "yellow",
+                    "ERROR": "red",
+                    "CRITICAL": "bold_red",
+                },
+            )
+        )
+    else:
+        # Tanpa colorlog tetap jalan, hanya tanpa warna terminal.
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+    root.addHandler(handler)
 
 
 def fmt_size(b: Optional[int]) -> str:
