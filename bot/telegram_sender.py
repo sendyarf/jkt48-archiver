@@ -20,6 +20,7 @@ from typing import Callable, Optional, Union
 
 from telethon import TelegramClient, functions, helpers, types, utils
 from telethon.errors import (
+    FilePartMissingError,
     FloodError,
     FloodWaitError,
     MediaEmptyError,
@@ -566,6 +567,30 @@ class TelegramSender:
                     Config.TELEGRAM_FLOOD_MAX_RETRIES,
                 )
                 await asyncio.sleep(wait)
+            except FilePartMissingError as exc:
+                # Sesi upload besar di sisi server sudah TIDAK ADA lagi, jadi
+                # me-resume ke file_id lama tidak akan pernah berhasil (terukur
+                # 1 Okt 2026: sidecar dari ~30 jam sebelumnya masih mencatat
+                # 1007 dari 1403 part "terkirim", padahal server sudah membuang
+                # sebagian - part 532 hilang dan SendMediaRequest menolak dengan
+                # FILE_PART_MISSING). Satu-satunya jalan keluar: buang sidecar
+                # dan unggah ulang dari nol pada percobaan berikutnya. Tanpa ini
+                # error yang sama diulang 7 kali, lalu file menyerah dan arsipnya
+                # hilang padahal upload ulang hanya butuh beberapa menit.
+                had_sidecar = sidecar.exists()
+                sidecar.unlink(missing_ok=True)
+                if had_sidecar and attempt < max_attempts - 1:
+                    logger.warning(
+                        "Sesi upload %s kedaluwarsa di server (%s); mengulang "
+                        "upload dari awal (percobaan %d/%d).",
+                        path.name, exc, attempt + 1, max_attempts,
+                    )
+                    continue
+                logger.error(
+                    "Sesi upload %s kedaluwarsa di server dan tidak bisa "
+                    "dipulihkan: %s", path.name, exc,
+                )
+                return None
             except MediaEmptyError:
                 # Media ditolak permanen (mis. story TikTok yang formatnya
                 # tidak didukung sebagai album) — mengulang tidak menolong.

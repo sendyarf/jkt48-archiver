@@ -1178,6 +1178,125 @@ class _OkUploadClient:
         return None
 
 
+class _ExpiredUploadSessionClient:
+    """Server sudah membuang sebagian part, tapi sidecar lokal masih 100%."""
+
+    def __init__(self, fail_parts: int = 1) -> None:
+        self.send_file_calls = 0
+        self.part_requests = 0
+        self._fail_parts = fail_parts
+        self._upload_lock = asyncio.Lock()
+        self._notify_lock = asyncio.Lock()
+        self._max_file_parts_cached = MAX_FILE_PARTS_FREE
+
+    async def get_me(self):
+        return None
+
+    def __call__(self, request):
+        self.part_requests += 1
+
+        async def _ok():
+            return True
+
+        return _ok()
+
+    async def send_file(self, *args, **kwargs):
+        self.send_file_calls += 1
+        if self.send_file_calls <= self._fail_parts:
+            raise _file_part_missing()
+        return _fake_message(self.send_file_calls)
+
+
+def _file_part_missing():
+    from telethon.errors import FilePartMissingError as _FPME
+    return _FPME(request=None, capture=0)
+
+
+class TestExpiredUploadSessionRecovery(unittest.TestCase):
+    """Sidecar basi harus dibuang, bukan diulang ke file_id yang sudah mati.
+
+    Terukur di VPS 1 Okt 2026: sidecar dari ~30 jam sebelumnya masih mencatat
+    1007 dari 1403 part "terkirim", lalu part sisanya ter-upload dan
+    SendMediaRequest ditolak `FILE_PART_MISSING: Part 532`. Error itu
+    dicoba 7 kali tanpa ada yang menghapus sidecar, jadi file itu mustahil
+    pernah berhasil: bot akan menyerah dan arsipnya hilang tanpa pernah
+    mencoba mengunggah ulang.
+    """
+
+    def _sender(self, client, part_size_bytes):
+        sender = TelegramSender.__new__(TelegramSender)
+        sender._client = client
+        sender._connected = True
+        sender._max_file_parts_cached = MAX_FILE_PARTS_FREE
+        return sender
+
+    def test_stale_sidecar_is_discarded_and_reuploaded(self):
+        client = _ExpiredUploadSessionClient()
+        sender = self._sender(client, 0)
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "big.mp4"
+            # >= 64 MB supaya jalur resume (sidecar) yang dipakai, bukan
+            # upload biasa milik Telethon.
+            size = 65 * 1024 * 1024
+            video.write_bytes(b"0" * size)
+            sidecar = Path(str(video) + ".tgup.json")
+
+            # Sesi server sudah kedaluwarsa: 100% di sidecar, tapi FILE_PART_MISSING.
+            sidecar.write_text(
+                f'{{"file_id": "stale", "total_parts": 130, "parts_sent": 130, '
+                f'"size": {size}, "mtime": 1.0}}',
+                encoding="utf-8",
+            )
+            client.send_file_calls = 0
+            client.part_requests = 0
+
+            with patch.object(
+                Config, "TELEGRAM_UPLOAD_PART_DELAY_MS", 0
+            ), patch.object(Config, "TELEGRAM_SEND_TIMEOUT_SECONDS", 5), patch(
+                "bot.telegram_sender.asyncio.sleep"
+            ):
+                result = asyncio.run(sender.send_video_file(video, caption="x"))
+
+            self.assertIsNotNone(result, "percobaan kedua harus berhasil")
+            self.assertEqual(
+                client.send_file_calls, 2,
+                "percobaan pertama gagal FILE_PART_MISSING, kedua harus jalan",
+            )
+            self.assertGreater(
+                client.part_requests, 0,
+                "setelah sidecar dibuang, part harus di-upload ulang dari awal",
+            )
+            self.assertFalse(
+                sidecar.exists(),
+                "sidecar harus dihapus setelah pesan berhasil terkirim",
+            )
+
+    def test_repeated_failure_gives_up_without_leaving_stale_sidecar(self):
+        client = _ExpiredUploadSessionClient(fail_parts=99)
+        sender = self._sender(client, 0)
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "big.mp4"
+            size = 65 * 1024 * 1024
+            video.write_bytes(b"0" * size)
+            sidecar = Path(str(video) + ".tgup.json")
+            sidecar.write_text(
+                f'{{"file_id": "stale", "total_parts": 130, "parts_sent": 130, '
+                f'"size": {size}, "mtime": 1.0}}',
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                Config, "TELEGRAM_UPLOAD_PART_DELAY_MS", 0
+            ), patch.object(Config, "TELEGRAM_SEND_TIMEOUT_SECONDS", 5):
+                result = asyncio.run(sender.send_video_file(video, caption="x"))
+
+            self.assertIsNone(result)
+            self.assertFalse(
+                sidecar.exists(),
+                "sidecar basi tidak boleh ditinggalkan untuk siklus berikutnya",
+            )
+
+
 class TestTelegramPartPacing(unittest.TestCase):
     """Upload besar harus dijeda antar part, bukan mendorong tanpa henti.
 
