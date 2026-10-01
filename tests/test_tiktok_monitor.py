@@ -12,10 +12,17 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Optional
+from unittest import mock
 
 from bot import database, tiktok_monitor
 from bot.config import Config
-from bot.tiktok_client import BaseProvider, ProviderBlocked, RateLimiter, TikTokItem
+from bot.tiktok_client import (
+    BaseProvider,
+    ProviderBlocked,
+    ProviderError,
+    RateLimiter,
+    TikTokItem,
+)
 from bot.tiktok_media import MediaError, MediaPermanentError
 from bot.tiktok_monitor import TikTokMonitor, item_from_db_row
 
@@ -452,6 +459,118 @@ class TestYoutubeBacklog(TikTokMonitorTestCase):
 
         rows = database.get_tiktok_youtube_backlog()
         self.assertEqual([r["id"] for r in rows], ["b2", "b1"])  # terbaru dulu
+
+
+class TestAllProvidersDownReporting(TikTokMonitorTestCase):
+    """Ketika semua penyedia tumbang, log harus menyebut kondisi SETIAP penyedia.
+
+    Insiden 1 Okt 2026: log hanya menyebut error penyedia TERAKHIR
+    ("Semua penyedia gagal ... (yt-dlp listing gagal: JSONDecodeError)"), lalu
+    diagnostik berjalan salah mengira yt-dlp penyebabnya. Padahal rantainya
+    tikwm 403 → embed 503 → ytdlp: dua penyedia pertama sudah lama mati.
+    """
+
+    class BlockedProvider(BaseProvider):
+        name = "tikwm-uji"
+
+        def __init__(self):
+            super().__init__(RateLimiter(0))
+
+        async def fetch_user_posts(self, account, limit):
+            raise ProviderBlocked("HTTP 403")
+
+    class OverloadProvider(BaseProvider):
+        name = "embed-uji"
+
+        def __init__(self):
+            super().__init__(RateLimiter(0))
+
+        async def fetch_user_posts(self, account, limit):
+            raise ProviderError("HTTP 503")
+
+    class BrokenJsonProvider(BaseProvider):
+        name = "ytdlp-uji"
+
+        def __init__(self):
+            super().__init__(RateLimiter(0))
+
+        async def fetch_user_posts(self, account, limit):
+            raise ProviderError("Failed to parse JSON")
+
+    def _monitor(self, providers):
+        monitor = TikTokMonitor(telegram=FakeTelegram())
+        monitor._providers = providers  # type: ignore[assignment]
+        return monitor
+
+    def test_summary_names_every_provider_state(self):
+        monitor = self._monitor([
+            self.BlockedProvider(), self.OverloadProvider(), self.BrokenJsonProvider()
+        ])
+        with self.assertLogs("bot.tiktok_monitor", level="WARNING") as captured:
+            items, provider = asyncio.run(
+                monitor._collect({"unique_id": "freyajkt48"}, "fetch_user_posts", "posts", limit=10)
+            )
+        self.assertEqual(items, [])
+        self.assertIsNone(provider)
+        blob = "\n".join(captured.output)
+        self.assertIn("tikwm-uji", blob)
+        self.assertIn("embed-uji", blob)
+        self.assertIn("ytdlp-uji", blob)
+        self.assertIn("403", blob)
+        self.assertIn("503", blob)
+        self.assertIn("Failed to parse JSON", blob)
+
+    def test_repeated_5xx_closes_health_gate(self):
+        """503 berulang harus menutup penyedia, bukan ditembak 51× per siklus."""
+        monitor = self._monitor([self.OverloadProvider()])
+        provider = monitor._providers[0]
+        account = {"unique_id": "freyajkt48"}
+
+        with mock.patch.object(
+            Config, "TIKTOK_PROVIDER_ERROR_STREAK_BEFORE_UNHEALTHY", 3
+        ):
+            for _ in range(2):
+                asyncio.run(monitor._collect(account, "fetch_user_posts", "posts", limit=10))
+                self.assertTrue(
+                    provider.is_healthy("posts"),
+                    "dua kegagalan belum cukup untuk menutup penyedia",
+                )
+            asyncio.run(monitor._collect(account, "fetch_user_posts", "posts", limit=10))
+
+        self.assertFalse(
+            provider.is_healthy("posts"),
+            "setelah ambang tercapai, health gate harus menutup",
+        )
+
+    def test_streak_resets_after_success(self):
+        monitor = self._monitor([self.OverloadProvider()])
+        provider = monitor._providers[0]
+        account = {"unique_id": "freyajkt48"}
+        with mock.patch.object(
+            Config, "TIKTOK_PROVIDER_ERROR_STREAK_BEFORE_UNHEALTHY", 3
+        ):
+            asyncio.run(monitor._collect(account, "fetch_user_posts", "posts", limit=10))
+            asyncio.run(monitor._collect(account, "fetch_user_posts", "posts", limit=10))
+            self.assertEqual(
+                monitor._provider_error_streak[("embed-uji", "posts")], 2
+            )
+
+            # Pulih: penyedia dengan nama sama berhasil → streak harus bersih.
+            class RecoveredProvider(BaseProvider):
+                name = "embed-uji"
+
+                def __init__(self):
+                    super().__init__(RateLimiter(0))
+
+                async def fetch_user_posts(self, account, limit):
+                    return [TikTokItem(id="p1", unique_id="freyajkt48", kind="video")]
+
+            monitor._providers = [RecoveredProvider()]  # type: ignore[assignment]
+            items, _ = asyncio.run(
+                monitor._collect(account, "fetch_user_posts", "posts", limit=10)
+            )
+        self.assertEqual([i.id for i in items], ["p1"])
+        self.assertNotIn(("embed-uji", "posts"), monitor._provider_error_streak)
 
 
 class TestSplitCapabilities(TikTokMonitorTestCase):

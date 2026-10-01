@@ -162,6 +162,11 @@ class TikTokMonitor:
         # unhealthy/provider log). Tanpa ini satu blokir IP yang sama di-log
         # untuk 51 akun setiap siklus.
         self._cap_fail_reported: dict[tuple[str, str], str] = {}
+        # (nama penyedia, kapabilitas) -> jumlah ProviderError berturut-turut.
+        # 5xx/429 tidak langsung menutup health gate (satu kegagalan mungkin
+        # kebetulan), tetapi setelah beberapa kali berturut-turut penyedia
+        # ditutup 15 menit supaya 51 akun tidak menembak endpoint yang sama.
+        self._provider_error_streak: dict[tuple[str, str], int] = {}
 
     # ── utilitas ────────────────────────────────────────────────────────────
     def _yt_pool(self) -> Optional[YouTubeChannelPool]:
@@ -305,8 +310,16 @@ class TikTokMonitor:
         last_error: Optional[Exception] = None
         fail_key = (capability, account.get("unique_id") or "")
         base_method = getattr(BaseProvider, method_name, None)
+        # Ringkasan kondisi SETIAP penyedia, bukan hanya yang terakhir. Log
+        # lama hanya menyebut error penyedia terakhir, sehingga operator
+        # menyimpulkan penyebabnya adalah penyedia itu — padahal biasanya
+        # rangkaian: tikwm 403 (dilewati) → embed 503 → ytdlp JSON error.
+        # Diagnostik 1 Okt 2026 berjalan salah karena log tidak menunjukkan
+        # dua penyedia sebelumnya sudah tumbang.
+        outcomes: list[tuple[str, str]] = []
         for provider in self._providers:
             if not provider.is_healthy(capability):
+                outcomes.append((provider.name, "dilewati (sedang tidak sehat)"))
                 continue
             bound = getattr(provider, method_name, None)
             if bound is None:
@@ -318,42 +331,66 @@ class TikTokMonitor:
             func = getattr(bound, "__func__", bound)
             if base_method is not None and func is base_method:
                 provider.mark_capability_missing(capability)
+                outcomes.append((provider.name, "tidak mendukung kapabilitas ini"))
                 continue
+            streak_key = (provider.name, capability)
             try:
                 items = await bound(account, **kwargs)
             except ProviderBlocked as exc:
                 provider.mark_unhealthy(str(exc), capability=capability)
+                self._provider_error_streak.pop(streak_key, None)
+                outcomes.append((provider.name, f"diblokir: {exc}"))
                 last_error = exc
                 continue
             except ProviderError as exc:
-                # HTTP 503/500 dari embed = overload sementara → jeda singkat,
-                # BUKAN tandai penyedia tidak sehat 15 menit (retry sudah ada di
-                # dalam penyedia; kegagalan di sini berarti upstream benar-benar
-                # sedang bermasalah).
-                logger.warning("Penyedia '%s' gagal (%s): %s", provider.name, capability, exc)
+                # HTTP 503/500/429 = upstream sedang bermasalah. Satu kegagalan
+                # belum berarti apa-apa, tapi siklus yang memproses 51 akun akan
+                # menembak penyedia sama berulang kali (51 permintaan sia-sia,
+                # dan tiap 429 memperpanjang jendela rate-limit untuk IP itu
+                # juga). Setelah beberapa kali berturut-turut, health gate ikut
+                # menutup supaya sisa akun pada siklus ini langsung melompatinya.
+                count = self._provider_error_streak.get(streak_key, 0) + 1
+                self._provider_error_streak[streak_key] = count
+                threshold = max(
+                    1, int(Config.TIKTOK_PROVIDER_ERROR_STREAK_BEFORE_UNHEALTHY)
+                )
+                if count >= threshold:
+                    provider.mark_unhealthy(
+                        f"{exc} (gagal {count}x berturut-turut)",
+                        capability=capability,
+                    )
+                    self._provider_error_streak.pop(streak_key, None)
+                logger.warning(
+                    "Penyedia '%s' gagal (%s): %s [ke-%d]",
+                    provider.name, capability, exc, count,
+                )
+                outcomes.append((provider.name, f"gagal: {exc}"))
                 last_error = exc
                 continue
             except Exception as exc:  # noqa: BLE001 - jangan matikan loop utama
                 logger.exception("Penyedia '%s' error tak terduga (%s): %s",
                                  provider.name, capability, exc)
+                outcomes.append((provider.name, f"error tak terduga: {exc}"))
                 last_error = exc
                 continue
+            self._provider_error_streak.pop(streak_key, None)
             if items:
                 self._cap_fail_reported.pop(fail_key, None)
                 return items, provider
             # Berhasil tapi kosong (mis. akun tidak punya story) → itu jawaban sah.
             self._cap_fail_reported.pop(fail_key, None)
             return [], provider
-        if last_error is not None:
-            # Dedup: pesan yang sama untuk akun yang sama tidak di-log ulang
-            # tiap siklus — blokir IP yang sama dulu sempat membanjiri log
-            # untuk 51 akun per 5 menit (28 Sep 2026).
-            msg = str(last_error)
-            if self._cap_fail_reported.get(fail_key) != msg:
-                self._cap_fail_reported[fail_key] = msg
+        if outcomes:
+            # Dedup per (kapabilitas, daftar kondisi) — bukan per akun — supaya
+            # outage TikTok-wide untuk 51 akun menghasilkan blok ringkas, bukan
+            # 51 salinan pesan yang identik.
+            summary = " | ".join(f"{name}: {state}" for name, state in outcomes)
+            if self._cap_fail_reported.get(capability) != summary:
+                self._cap_fail_reported[capability] = summary
                 logger.warning(
-                    "Semua penyedia gagal mengambil %s untuk %s (%s).",
-                    capability, account.get("unique_id"), last_error,
+                    "Semua penyedia gagal mengambil %s untuk %s. Kondisi "
+                    "penyedia: %s",
+                    capability, account.get("unique_id"), summary,
                 )
         return [], None
 

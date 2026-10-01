@@ -556,6 +556,17 @@ class Config:
         os.getenv("TIKTOK_STORIES_ENABLED", "true").lower() == "true"
     )
 
+    # Berapa kali sebuah penyedia gagal dengan ProviderError (HTTP 5xx/429)
+    # berturut-turut sebelum ditandai tidak sehat 15 menit. 403/Cloudflare
+    # langsung menutup health gate; 5xx/429 perlu beberapa kali karena
+    # satu kegagalannya bisa jadi kejadian sesaat. Tanpa ini, satu
+    # siklus 51 akun menembak endpoint yang sama 51 kali - dan tiap 429
+    # memperpanjang jendela rate-limit untuk IP itu juga, sehingga pemulihan
+    # justru melambat.
+    TIKTOK_PROVIDER_ERROR_STREAK_BEFORE_UNHEALTHY: int = int(
+        os.getenv("TIKTOK_PROVIDER_ERROR_STREAK_BEFORE_UNHEALTHY", "3")
+    )
+
     # Upload ke YouTube (slide show untuk postingan foto). Bila false, arsip
     # hanya masuk channel Telegram (YouTube dilewati).
     TIKTOK_YT_UPLOAD_ENABLED: bool = (
