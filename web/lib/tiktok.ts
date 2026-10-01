@@ -70,6 +70,7 @@ interface PostRow {
   duration_seconds: number | null;
   image_count: number | null;
   cover_url: string | null;
+  cover_path: string | null;
   source_url: string | null;
   youtube_video_id: string | null;
   telegram_message_ids: string | null;
@@ -129,10 +130,14 @@ function mapPost(row: PostRow): TikTokPost {
     duration_seconds: Number(row.duration_seconds || 0),
     duration_formatted: formatDuration(Number(row.duration_seconds || 0)),
     image_count: imageCount,
-    // Thumbnail YouTube lebih awet daripada cover CDN TikTok (URL CDN kedaluwarsa).
+    // Urutan thumbnail: YouTube (permanen) → salinan lokal (diteruskan bot) →
+    // cover CDN TikTok (yang terakhir, karena URL-nya bertanda tangan dan
+    // kedaluwarsa; ini penyebab kotak abu-abu pada kartu lama).
     thumbnail_url: ytId
       ? `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`
-      : row.cover_url || '',
+      : row.cover_path
+        ? `/api/tiktok/cover?id=${encodeURIComponent(row.id)}`
+        : row.cover_url || '',
     cover_url: row.cover_url || '',
     youtube_video_id: ytId,
     source_url: row.source_url || '',
@@ -161,7 +166,7 @@ const POST_SELECT = `
   SELECT
     p.id, p.unique_id, p.kind, p.is_story, p.title, p.created_at,
     p.duration_seconds, p.image_count, p.cover_url, p.source_url,
-    p.youtube_video_id, p.telegram_message_ids, p.images_json,
+    p.youtube_video_id, p.telegram_message_ids, p.images_json, p.cover_path,
     a.display_name as account_name,
     a.member_username as member_username,
     mh.display_name as member_display_name

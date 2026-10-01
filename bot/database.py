@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS tiktok_posts (
     duration_seconds    INTEGER DEFAULT 0,
     image_count         INTEGER DEFAULT 0,
     cover_url           TEXT,
+    cover_path          TEXT,
     source_url          TEXT,
     media_path          TEXT,
     media_size_bytes    INTEGER DEFAULT 0,
@@ -342,6 +343,12 @@ def init_db() -> None:
                 "ALTER TABLE tiktok_posts ADD COLUMN last_attempt_at TEXT DEFAULT ''"
             )
             logger.info("Schema migration: added last_attempt_at column to tiktok_posts")
+        # Salinan lokal sampul unggahan. Cover CDN TikTok bertanda tangan dan
+        # kedaluwarsa dalam hitungan jam, jadi tanpa salinan ini setiap kartu
+        # TikTok yang belum punya video YouTube berakhir jadi kotak abu-abu.
+        if "cover_path" not in tp_cols:
+            conn.execute("ALTER TABLE tiktok_posts ADD COLUMN cover_path TEXT")
+            logger.info("Schema migration: added cover_path column to tiktok_posts")
 
     logger.info("Database initialised at %s", Config.DB_PATH)
 
@@ -1679,7 +1686,8 @@ def mark_session_pending_upload(live_id: str, error_message: str = "") -> None:
 # Kolom yang boleh ditulis `update_tiktok_post` (whitelist → nama kolom aman).
 _TIKTOK_POST_WRITABLE = (
     "kind", "is_story", "title", "created_at", "duration_seconds",
-    "image_count", "cover_url", "source_url", "media_path", "media_size_bytes",
+    "image_count", "cover_url", "cover_path", "source_url", "media_path",
+    "media_size_bytes",
     "images_json", "local_images_json", "telegram_message_ids",
     "youtube_video_id", "visible", "status", "error_message",
     "download_attempts", "last_attempt_at",

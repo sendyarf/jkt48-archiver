@@ -98,6 +98,7 @@ export function getDb(): DatabaseSync {
         duration_seconds    INTEGER DEFAULT 0,
         image_count         INTEGER DEFAULT 0,
         cover_url           TEXT,
+        cover_path          TEXT,
         source_url          TEXT,
         media_path          TEXT,
         media_size_bytes    INTEGER DEFAULT 0,
@@ -160,6 +161,21 @@ export function getDb(): DatabaseSync {
     } catch {
       // Tabel live_sessions belum ada (mis. database baru) — biarkan query
       // pemanggil yang menangani.
+    }
+
+    // `cover_path` (salinan lokal sampul) ditanyakan POST_SELECT, jadi halaman
+    // /tiktok akan 500 di database lama yang belum memilikinya. Website boleh
+    // start sebelum bot, jadi kolom ditambahkan di sini juga.
+    try {
+      const columns = _db.prepare('PRAGMA table_info(tiktok_posts)').all() as unknown as { name: string }[];
+      if (columns.length > 0) {
+        const existing = new Set(columns.map(column => column.name));
+        if (!existing.has('cover_path')) {
+          _db.exec('ALTER TABLE tiktok_posts ADD COLUMN cover_path TEXT');
+        }
+      }
+    } catch {
+      // Tabel tiktok_posts belum ada — biarkan query pemanggil yang menangani.
     }
 
     // Kolom `avatar_url` (foto member dari roster resmi jkt48.com) dipakai

@@ -53,6 +53,7 @@ from bot.tiktok_media import (
     is_permanent_media_error,
     media_from_disk,
     prepare_post_media,
+    save_cover_image,
 )
 from bot.youtube_uploader import YouTubeChannelPool
 
@@ -476,6 +477,10 @@ class TikTokMonitor:
                 return
 
         media_path = str(media.video_path or (media.images[0] if media.images else ""))
+        # Cover disimpan permanen (bukan di folder kerja) karena website
+        # memakai thumbnail YouTube bila ada, atau gambar ini bila tidak —
+        # sedangkan cover CDN TikTok bertanda tangan dan cepat kedaluwarsa.
+        cover_path = await save_cover_image(item, item.cover_url or post.get("cover_url") or "")
         database.update_tiktok_post(
             post_id,
             status="uploading_telegram",
@@ -483,6 +488,7 @@ class TikTokMonitor:
             media_size_bytes=int(media.size_bytes),
             local_images_json=json.dumps([str(p) for p in media.images]),
             duration_seconds=int(media.duration_seconds),
+            cover_path=str(cover_path) if cover_path else "",
         )
 
         # Arsip Telegram opsional (Config.TIKTOK_ARCHIVE_UPLOAD_ENABLED, default
@@ -520,6 +526,15 @@ class TikTokMonitor:
         youtube_id = await self._upload_to_youtube(item, post, account, media)
         if youtube_id:
             database.update_tiktok_post(post_id, youtube_video_id=youtube_id)
+        elif Config.TIKTOK_YT_UPLOAD_ENABLED:
+            # Arsip Telegram sudah aman, jadi postingannya SAH dan website tetap
+            # menampilkannya (unduhan lewat bot). Hanya videonya belum ada —
+            # ini dicatat agar tidak dianggap "selesai sepenuhnya", dan
+            # `get_tiktok_youtube_backlog` akan mengejarnya.
+            logger.warning(
+                "TikTok %s: arsip Telegram aman, tapi video YouTube belum ada "
+                "(antrean backlog).", post_id,
+            )
 
         # Notifikasi publik (link YouTube) — hanya bila videonya benar-benar ada.
         if youtube_id:

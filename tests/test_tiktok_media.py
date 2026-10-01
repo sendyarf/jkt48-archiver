@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time as _time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -28,6 +29,8 @@ from bot.tiktok_media import (
     download_video,
     is_permanent_media_error,
     prepare_post_media,
+    prune_old_covers,
+    save_cover_image,
     split_image_paths,
 )
 
@@ -463,6 +466,125 @@ class TestCleanup(unittest.TestCase):
             finally:
                 Config.DOWNLOAD_DIR = original
 
+
+
+class TestCoverImage(unittest.TestCase):
+    """Cover disimpan permanen di luar folder kerja.
+
+    Cover CDN TikTok bertanda tangan dan kedaluwarsa dalam hitungan jam. Kalau
+    website memakai URL itu, setiap kartu TikTok yang belum punya video YouTube
+    akhirnya tampil sebagai kotak abu-abu — persis Symptom pada 1 Okt 2026.
+    """
+
+    _item_cover_bytes: bytes = b"\xff\xd8\xff\xd9" + b"0" * 64
+
+    @staticmethod
+    def _patch_httpx(payload: bytes = b"\xff\xd8\xff\xd9" + b"0" * 64):
+        """Stub httpx.AsyncClient untuk unduhan cover."""
+
+        class _Response:
+            content = payload
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class _Client:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url, *args, **kwargs):
+                return _Response()
+
+        return mock.patch("bot.tiktok_media.httpx.AsyncClient", _Client)
+
+    def _item(self, post_id: str = "7302013854274733061") -> TikTokItem:
+        return TikTokItem(id=post_id, unique_id="indahjkt48", kind="video", raw={})
+
+    def test_cover_saved_outside_work_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original = Config.DOWNLOAD_DIR
+            Config.DOWNLOAD_DIR = tmp
+            try:
+                with self._patch_httpx():
+                    saved = asyncio.run(save_cover_image(
+                        self._item(), "https://cdn.tiktok.test/cover.jpg"
+                    ))
+                self.assertIsNotNone(saved)
+                self.assertTrue(saved.exists())
+                self.assertTrue(
+                    str(saved).startswith(str(Path(tmp) / "tiktok" / "covers"))
+                )
+                self.assertEqual(saved.name, "7302013854274733061.jpg")
+                self.assertGreater(saved.stat().st_size, 0)
+            finally:
+                Config.DOWNLOAD_DIR = original
+
+    def test_cover_survives_cleanup_media(self):
+        """Media kerja dihapus setelah upload; cover tidak boleh ikut hilang."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            original = Config.DOWNLOAD_DIR
+            Config.DOWNLOAD_DIR = str(base)
+            try:
+                with self._patch_httpx():
+                    cover = asyncio.run(save_cover_image(
+                        self._item(), "https://cdn.tiktok.test/cover.jpg"
+                    ))
+                sample = _make_video(base / "sample.mp4", seconds=2)
+                item = TikTokItem(
+                    id="video-cover", unique_id="indahjkt48", kind="video",
+                    raw={"fixture_media": {"video": str(sample)}},
+                )
+                media = asyncio.run(
+                    prepare_post_media(item, build_slideshow_video=False)
+                )
+                cleanup_media(media)
+                self.assertTrue(
+                    cover.exists(),
+                    "cover harus tetap ada setelah media kerja dibersihkan",
+                )
+            finally:
+                Config.DOWNLOAD_DIR = original
+
+    def test_bad_url_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original = Config.DOWNLOAD_DIR
+            Config.DOWNLOAD_DIR = tmp
+            try:
+                self.assertIsNone(
+                    asyncio.run(save_cover_image(self._item(), "bukan-url"))
+                )
+                self.assertIsNone(asyncio.run(save_cover_image(self._item(), "")))
+            finally:
+                Config.DOWNLOAD_DIR = original
+
+    def test_old_covers_are_pruned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original = Config.DOWNLOAD_DIR
+            Config.DOWNLOAD_DIR = tmp
+            try:
+                with self._patch_httpx():
+                    fresh = asyncio.run(save_cover_image(
+                        self._item("111"), "https://cdn.tiktok.test/1.jpg"
+                    ))
+                    stale = asyncio.run(save_cover_image(
+                        self._item("222"), "https://cdn.tiktok.test/2.jpg"
+                    ))
+                old = _time.time() - 90 * 86400
+                os.utime(stale, (old, old))
+
+                removed = prune_old_covers(max_age_days=45)
+                self.assertEqual(removed, 1)
+                self.assertTrue(fresh.exists())
+                self.assertFalse(stale.exists())
+            finally:
+                Config.DOWNLOAD_DIR = original
 
 
 if __name__ == "__main__":

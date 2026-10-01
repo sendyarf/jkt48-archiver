@@ -10,6 +10,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
@@ -1295,6 +1296,100 @@ class TestExpiredUploadSessionRecovery(unittest.TestCase):
                 sidecar.exists(),
                 "sidecar basi tidak boleh ditinggalkan untuk siklus berikutnya",
             )
+
+
+class TestTikTokPartialArchiveRejected(unittest.TestCase):
+    """Arsip TikTok setengah jadi tidak boleh dicatat sebagai sukses.
+
+    Gejala di website: kartu posted TikTok muncul padahal isinya tidak ada.
+    Penyebabnya `send_tiktok_archive` melewati part yang gagal lalu
+    mengembalikan id parsial — `tiktok_posts.telegram_message_ids` terisi,
+    sehingga website menayangkannya, sementara `get_tiktok_youtube_backlog`
+    juga mengira arsipnya "sudah aman" dan menerbitkannya ke YouTube.
+    """
+
+    def _sender(self):
+        sender = TelegramSender.__new__(TelegramSender)
+        sender._client = AsyncMock()
+        sender._connected = True
+        sender._max_file_parts_cached = MAX_FILE_PARTS_FREE
+        return sender
+
+    def _media_video(self, path, split=False):
+        media = SimpleNamespace(
+            image_parts=[],
+            archive_video_path=path,
+            images=[],
+        )
+        return media
+
+    def _media_photos(self, parts):
+        return SimpleNamespace(image_parts=parts, archive_video_path=None, images=[])
+
+    def test_failed_video_part_raises_instead_of_partial_ids(self):
+        sender = self._sender()
+        sent: list[str] = []
+
+        async def fake_send_file(file_path, **kwargs):
+            sent.append(Path(file_path).name)
+            if len(sent) == 2:
+                return None  # part kedua gagal
+            return 555
+
+        sender.send_video_file = AsyncMock(side_effect=fake_send_file)
+
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "clip.mp4"
+            video.write_bytes(b"0" * 64)
+            part_a = Path(directory) / "clip.part1.mp4"
+            part_b = Path(directory) / "clip.part2.mp4"
+            for part in (part_a, part_b):
+                part.write_bytes(b"0" * 32)
+            parts = [
+                VideoPart(1, 2, part_a, 32, 1, 16, 9, True),
+                VideoPart(2, 2, part_b, 32, 1, 16, 9, True),
+            ]
+
+            async def run():
+                with patch(
+                    "bot.telegram_sender.split_video_if_needed",
+                    AsyncMock(return_value=parts),
+                ), patch("bot.telegram_sender.cleanup_video_parts"):
+                    return await sender.send_tiktok_archive(
+                        self._media_video(video),
+                        post={"id": "7302013854274733061", "kind": "video",
+                              "is_story": 0, "unique_id": "x", "title": ""},
+                        account={},
+                    )
+
+            with self.assertRaises(RuntimeError):
+                asyncio.run(run())
+
+        self.assertEqual(
+            len(sent), 2,
+            "tidak boleh mencoba part ketiga setelah satu part gagal",
+        )
+
+    def test_failed_photo_album_raises(self):
+        sender = self._sender()
+        sender._send_media_album = AsyncMock(return_value=[])
+
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "a.jpg"
+            second = Path(directory) / "b.jpg"
+            for path in (first, second):
+                path.write_bytes(b"jpg")
+
+            async def run():
+                return await sender.send_tiktok_archive(
+                    self._media_photos([[first], [second]]),
+                    post={"id": "7302013854274733061", "kind": "photo",
+                          "is_story": 0, "unique_id": "x", "title": ""},
+                    account={},
+                )
+
+            with self.assertRaises(RuntimeError):
+                asyncio.run(run())
 
 
 class TestTelegramPartPacing(unittest.TestCase):

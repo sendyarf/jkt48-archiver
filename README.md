@@ -174,6 +174,11 @@ Tiga aturan yang berubah:
 
 Yang **tidak** terpengaruh: notifikasi teks ke channel Telegram, arsip **TikTok** (dikendalikan terpisah oleh `TIKTOK_ARCHIVE_UPLOAD_ENABLED`), dan bot admin. YouTube tetap **unlisted** dan visibilitas website mengikuti aturan `AUTO_PUBLISH_AFTER_HOURS`/publikasi admin. Rekaman Showroom mengikuti pipeline yang sama.
 
+**Kartu TikTok di website tapi isinya tidak ada (1 Okt 2026).** Dua sebab yang berbeda, keduanya sudah diperbaiki:
+
+* **Arsip setengah jadi dicatat sebagai sukses.** `send_tiktok_archive` melewati part yang gagal lalu mengembalikan daftar `message_id` parsial. `tiktok_posts.telegram_message_ids` jadi terisi, website menayangkannya (karena predicate publiknya hanya butuh satu marker), sementara `get_tiktok_youtube_backlog` juga mengira arsipnya "sudah aman" lalu menerbitkannya ke YouTube. Sekarang kegagalan satu part membatalkan seluruh arsip: tidak ada marker yang ditulis, postingannya kembali `pending_upload` dan dicoba ulang utuh.
+* **Thumbnail kotak abu-abu.** Cover CDN TikTok bertanda tangan dan kedaluwarsa dalam hitungan jam. Website memang lebih dulu memakai thumbnail YouTube, tapi kiriman yang belum punya video YouTube jatuh ke URL CDN yang sudah mati. Bot sekarang menyimpan salinan sampul ke `<DOWNLOAD_DIR>/tiktok/covers/<post_id>.jpg` (di luar folder kerja, jadi tidak ikut terhapus bersama media) dan website menyajikannya lewat `/api/tiktok/cover?id=…`. Cover lama (> 45 hari) dibersihkan otomatis saat ada sampul baru.
+
 **Upload yang "hilang" tanpa penjelasan (30 Sep 2026).** Gejala: notifikasi `📤 UPLOAD TELEGRAM` masuk, lalu **tidak ada notifikasi apa pun** - tidak `✅`, tidak `⚠️` - bahkan setelah 28 jam, sementara video tidak pernah muncul di channel. Penyebabnya bukan flood, tapi satu request Telethon yang menggantung (koneksi yang tidak maju): coroutine upload tidak pernah selesai maupun melempar error, sehingga
 
 1. baris DB terkunci di `uploading_telegram`, dan status itu **tidak dibaca** `get_all_pending_videos` (hanya `pending_upload`/`download_complete`), jadi tidak pernah di-retry dan tidak pernah diberi tahu hasilnya; dan

@@ -1012,6 +1012,17 @@ class TelegramSender:
                     source_url=source_url,
                 )
                 ids = await self._send_media_album(files, caption, target)
+                if not ids:
+                    # Album sebagian = arsip tidak lengkap. Melewati part ini
+                    # seperti sebelumnya membuat `telegram_message_ids` terisi
+                    # parsial: website lalu menampilkan jako yang siap padahal
+                    # fotonya kurang, dan `get_tiktok_youtube_backlog`
+                    # mengira arsipnya "sudah aman". Lebih baik gagal total dan
+                    # dicoba ulang utuh.
+                    raise RuntimeError(
+                        f"Album foto part {index}/{total} gagal terkirim ke "
+                        f"Telegram untuk {unique_id}"
+                    )
                 sent_ids.extend(ids)
             return sent_ids
 
@@ -1054,10 +1065,21 @@ class TelegramSender:
                 if message_id:
                     sent_ids.append(message_id)
                 else:
+                    # JANGAN lanjut ke part berikutnya lalu mengembalikan id
+                    # parsial: marker parsial itu membuat website menampilkan
+                    # konten setengah jadi, dan `get_tiktok_youtube_backlog`
+                    # menganggap arsipnya sudah aman lalu menerbitkannya ke
+                    # YouTube. Kegagalan satu part berarti arsip ini tidak pernah
+                    # masuk catatan, dan akan dicoba ulang utuh.
                     logger.error(
-                        "Part %d/%d (%s) gagal terkirim ke Telegram; part ini "
-                        "di-skip, lanjut part berikutnya.",
+                        "Part %d/%d (%s) gagal terkirim; arsip %s dibatalkan "
+                        "agar tidak tercatat sebagai sukses (sudah terkirim: %s)",
                         part.part_number, total, part.file_path.name,
+                        unique_id, sent_ids or "tidak ada",
+                    )
+                    raise RuntimeError(
+                        f"Part {part.part_number}/{total} gagal terkirim ke "
+                        f"Telegram untuk {unique_id}"
                     )
         finally:
             # Bersih-bersih part WAJIB jalan juga saat flood exhaustion.

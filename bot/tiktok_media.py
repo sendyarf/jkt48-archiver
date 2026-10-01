@@ -25,6 +25,7 @@ import logging
 import mimetypes
 import shlex
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional, Union
@@ -276,6 +277,71 @@ def tiktok_work_dir(subdir: str = "") -> Path:
 def post_dir(item: TikTokItem) -> Path:
     """Folder khusus satu postingan: <DOWNLOAD_DIR>/tiktok/<akun>/<id>."""
     return tiktok_work_dir(str(item.unique_id or "unknown")) / str(item.id)
+
+
+def covers_dir() -> Path:
+    """Folder cover permanen: <DOWNLOAD_DIR>/tiktok/covers.
+
+    Berbeda dengan berkas kerja di `post_dir()`, berkas di sini TIDAK ikut
+    terhapus oleh `cleanup_media()`: thumbnail di website memakai gambar ini
+    setelah media dihapus. Cover CDN TikTok bertanda tangan dan kedaluwarsa
+    dalam hitungan jam, jadi tanpa salinan lokal semua kartu TikTok lama
+    eventualnya jadi kotak abu-abu.
+    """
+    return tiktok_work_dir("covers")
+
+
+async def save_cover_image(item: TikTokItem, image_url: str) -> Optional[Path]:
+    """Unduh satu cover/sampul ke folder permanen. Best-effort, tidak pernah fatal.
+
+    Gagal menyimpan cover TIDAK boleh menggagalkan arsip: tanpa thumbnail website
+    masih menampilkan kartu yang bisa diunduh — jauh lebih baik daripada
+    menggagalkan unggahan hanya demi gambar kecil.
+    """
+    url = (image_url or "").strip()
+    if not url or not url.lower().startswith(("http://", "https://")):
+        return None
+    target = covers_dir() / f"{str(item.id).strip() or 'unknown'}.jpg"
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    try:
+        async with httpx.AsyncClient(
+            timeout=30.0, headers=_MEDIA_HEADERS, follow_redirects=True
+        ) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.content
+    except Exception as exc:  # noqa: BLE001 - jaringan/CDN bisa apa saja
+        logger.debug("Cover TikTok %s gagal disimpan: %s", item.id, exc)
+        return None
+    if not data:
+        return None
+    try:
+        target.write_bytes(data)
+    except OSError as exc:  # pragma: no cover - jalur IO
+        logger.debug("Cover TikTok %s gagal ditulis: %s", item.id, exc)
+        return None
+    prune_old_covers()
+    return target
+
+
+def prune_old_covers(max_age_days: int = 45) -> int:
+    """Buang cover lama agar folder tidak tumbuh tanpa batas. Return jumlah dihapus."""
+    folder = covers_dir()
+    cutoff = time.time() - max(1, max_age_days) * 86400
+    removed = 0
+    try:
+        entries = list(folder.glob("*.jpg"))
+    except OSError:  # pragma: no cover - jalur IO
+        return 0
+    for path in entries:
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:  # pragma: no cover - jalur IO
+            continue
+    return removed
 
 
 def split_image_paths(
