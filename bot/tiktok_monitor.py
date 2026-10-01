@@ -409,7 +409,15 @@ class TikTokMonitor:
         """
         targets = [
             item for item in items
-            if not item.created_at or (item.kind == "photo" and not item.images)
+            if not item.created_at
+            or (item.kind == "photo" and not item.images)
+            # Posting dari `scrape` HANYA berisi id + waktu (createTime
+            # disimpulkan dari snowflake ID), jadi `created_at` selalu terisi
+            # padahal belum ada satu pun sumber media. Tanpa syarat ini
+            # posting seperti itu dilewati enrich dan langsung gagal saat
+            # unduhan karena `video_url`/foto kosong — persis gejala "data
+            # muncul di website, kontennya tidak ada" (1 Okt 2026).
+            or not (item.video_url or item.images)
         ]
         for item in targets:
             for provider in self._providers:
@@ -442,8 +450,13 @@ class TikTokMonitor:
                 item.video_url = item.video_url or detail.video_url
                 item.cover_url = item.cover_url or detail.cover_url
                 break
-            if item.created_at and (item.kind != "photo" or item.images):
+            if item.created_at and item.video_url and item.images:
                 logger.debug("Detail %s/%s lengkap.", item.unique_id, item.id)
+            elif item.created_at and (item.video_url or item.images):
+                logger.debug(
+                    "Detail %s/%s parsial (video=%s, foto=%d).",
+                    item.unique_id, item.id, bool(item.video_url), len(item.images),
+                )
 
     async def _remember_sec_uid(self, account: dict, items: list[TikTokItem], provider) -> None:
         """

@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from typing import Optional
 from unittest import mock
+from unittest.mock import patch
 
 from bot import database, tiktok_monitor
 from bot.config import Config
@@ -575,6 +576,79 @@ class TestAllProvidersDownReporting(TikTokMonitorTestCase):
             )
         self.assertEqual([i.id for i in items], ["p1"])
         self.assertNotIn(("embed-uji", "posts"), monitor._provider_error_streak)
+
+
+class TestScrapeItemsGetEnriched(TikTokMonitorTestCase):
+    """Posting dari `scrape` hanya berisi id+waktu, jadi WAJIB diperkaya.
+
+    `parse_scrape_profile` mengisi `created_at` dari snowflake ID (`id >> 32`),
+    jadi setiap item hasil scrape SELALU punya `created_at`. Syarat enrich yang
+    lama hanya mengecek `created_at`, sehingga posting seperti ini dilewati
+    dan langsung gagal saat unduhan karena `video_url` serta foto kosong. Gejalanya
+    persis yang dilaporkan: baris muncul di website, isinya tidak ada.
+    """
+
+    def test_item_dengan_created_at_tanpa_media_masih_di_enrich(self):
+        class DetailProvider(BaseProvider):
+            name = "tikwm-uji"
+
+            def __init__(self):
+                super().__init__(RateLimiter(0))
+                self.calls = 0
+
+            async def fetch_user_posts(self, account, limit):
+                return []
+
+            async def fetch_item_detail(self, page_url, unique_id):
+                self.calls += 1
+                return TikTokItem(
+                    id=page_url.rsplit("/", 1)[-1], unique_id=unique_id,
+                    kind="video", video_url="https://cdn.example/x.mp4",
+                    cover_url="https://cdn.example/x.jpg",
+                )
+
+        monitor = TikTokMonitor(telegram=FakeTelegram())
+        detail = DetailProvider()
+        monitor._providers = [detail]  # type: ignore[assignment]
+
+        item = TikTokItem(
+            id="7431206717478159366", unique_id="jkt48.fahira", kind="video",
+            created_at="2026-10-01T07:56:22+00:00",  # sudah terisi (dari snowflake)
+        )
+        asyncio.run(monitor._enrich_new_items([item], {"unique_id": "jkt48.fahira"}))
+
+        self.assertEqual(detail.calls, 1, "item tanpa sumber media harus di-enrich")
+        self.assertEqual(item.video_url, "https://cdn.example/x.mp4")
+        self.assertEqual(item.cover_url, "https://cdn.example/x.jpg")
+
+    def test_item_lengkap_tidak_di_enrich_berlebihan(self):
+        """Posting yang sudah punya media tidak boleh menghabiskan kuota detail."""
+        class DetailProvider(BaseProvider):
+            name = "tikwm-uji"
+
+            def __init__(self):
+                super().__init__(RateLimiter(0))
+                self.calls = 0
+
+            async def fetch_user_posts(self, account, limit):
+                return []
+
+            async def fetch_item_detail(self, page_url, unique_id):
+                self.calls += 1
+                return None
+
+        monitor = TikTokMonitor(telegram=FakeTelegram())
+        detail = DetailProvider()
+        monitor._providers = [detail]  # type: ignore[assignment]
+
+        item = TikTokItem(
+            id="7431206717478159367", unique_id="jkt48.fahira", kind="video",
+            created_at="2026-10-01T07:56:22+00:00",
+            video_url="https://cdn.example/y.mp4", cover_url="https://cdn.example/y.jpg",
+        )
+        asyncio.run(monitor._enrich_new_items([item], {"unique_id": "jkt48.fahira"}))
+
+        self.assertEqual(detail.calls, 0, "media sudah ada, jangan=request detail")
 
 
 class TestSplitCapabilities(TikTokMonitorTestCase):
