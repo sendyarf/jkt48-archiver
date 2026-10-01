@@ -72,6 +72,13 @@ _BROWSER_HEADERS = {
 # Berapa lama penyedia yang gagal tidak dipakai lagi (detik).
 _UNHEALTHY_SECONDS = 900
 
+# Lazily dibuat oleh web_rate_limiter(); nol sebelum dipakai.
+_WEB_LIMITER: Optional["RateLimiter"] = None
+
+# Host yang rate limitnya dihitung per IP, jadi semua request ke host ini wajib
+# lewat satu gerbang laju yang sama.
+_THROTTLED_HOSTS = ("tikwm.com", "tiktok.com")
+
 
 class ProviderError(RuntimeError):
     """Kegagalan umum penyedia data TikTok."""
@@ -244,8 +251,24 @@ async def http_request(
     data: Optional[dict] = None,
     headers: Optional[dict] = None,
     timeout: float = 30.0,
+    limiter: Optional["RateLimiter"] = None,
 ) -> tuple[int, str]:
-    """Versi async dari `_sync_request` (curl_cffi dijalankan di thread)."""
+    """Versi async dari `_sync_request` (curl_cffi dijalankan di thread).
+
+    Titik WAJIB untuk seluruh request HTTP keluar. Bila `limiter` tidak
+    diteruskan dan host-nya tikwm.com/tiktok.com, limiter bersama dipakai
+    otomatis (jaring pengaman: jalur baru tidak bisa diam-diam lolos dari
+    rate limit hanya karena lupa mengoper limiter).
+
+    Ini penting karena batas tikwm dihitung PER IP, bukan per akun atau per
+    endpoint: lima akun yang masing-masing satu request tetap dihitung sebagai
+    lima request dari satu IP. Karena itu harus ada tepat SATU gerbang laju
+    untuk semua request, bukan satu per akun.
+    """
+    if limiter is None and any(host in url for host in _THROTTLED_HOSTS):
+        limiter = web_rate_limiter()
+    if limiter is not None:
+        await limiter.wait()
     return await asyncio.to_thread(
         _sync_request, method, url,
         params=params, data=data, headers=headers, timeout=timeout,
@@ -270,7 +293,11 @@ async def http_get_json(
 async def http_get_text(
     url: str, *, headers: Optional[dict] = None, timeout: float = 30.0
 ) -> tuple[int, str]:
-    """GET halaman HTML (mis. halaman embed TikTok)."""
+    """GET halaman HTML (mis. halaman embed TikTok).
+
+    Rate limit tidak ditangani di sini: `http_request` sudah menjadi satu
+    gerbang laju, jadi tidak ada rantai parameter yang bisa terlewat.
+    """
     return await http_request(
         "GET", url, headers=headers or browser_headers(), timeout=timeout
     )
@@ -288,7 +315,18 @@ async def http_get_text_retry(
     attempts: int = 3,
     timeout: float = 30.0,
 ) -> tuple[int, str]:
-    """`http_get_text` dengan retry+backoff untuk status transient (503 dsb.)."""
+    """`http_get_text` dengan retry+backoff untuk status transient (503 dsb.).
+
+    Dulu fungsi ini sama sekali tidak memakai RateLimiter, sehingga halaman
+    embed/profil TikTok jadi request tanpa jeda: tiap retry memakai backoff
+    sendiri (1,5 x attempt) dan lima akun yang diperiksa bersamaan menembak
+    tiktok.com beberapa request per detik (terlihat 2 Okt 2026 pukul
+    07:05-07:06). Akibatnya TikTok membalas 503 lalu 429 - throttle bot sendiri
+    yang memicu health gate 15 menit, persis yang harus dihindari.
+
+    Sekarang tidak perlu parameter limiter: `http_request` adalah satu-satunya
+    gerbang laju dan otomatis menjaga host tikwm.com/tiktok.com.
+    """
     status, body = 0, ""
     for attempt in range(1, max(1, attempts) + 1):
         status, body = await http_get_text(url, timeout=timeout)
@@ -339,6 +377,20 @@ class RateLimiter:
             if delay > 0:
                 await asyncio.sleep(delay)
             self._last_at = time.monotonic()
+
+
+def web_rate_limiter() -> "RateLimiter":
+    """RateLimiter bersama untuk request HTTP ke tiktok.com (embed/profil).
+
+    Penyedia memakai limiter yang sama dengan tikwm, sehingga SELURUH request
+    keluar ke ekosistem TikTok dijaga satu laju global. Fungsi ini untuk
+    pemanggil di luar kelas penyedia (mis. `tiktok_media` saat ambil media
+    cadangan dari embed) yang tidak memegang instance limiter.
+    """
+    global _WEB_LIMITER
+    if _WEB_LIMITER is None:
+        _WEB_LIMITER = RateLimiter(Config.TIKTOK_REQUEST_INTERVAL_SECONDS)
+    return _WEB_LIMITER
 
 
 def ytdlp_command() -> list[str]:
@@ -585,17 +637,20 @@ class TikwmProvider(BaseProvider):
         """
         if self.is_blocked():
             raise ProviderError(f"tikwm {path}: sedang dijeda (rate/quota limit)")
-        await self._limiter.wait()
         url = f"{TIKWM_API_BASE}{path}"
+        # Limiter diteruskan ke http_request (bukan ditunggu di sini) supaya
+        # setiap request menunggu tepat satu kali, di satu tempat.
         if method == "POST":
             status, body = await http_request(
                 "POST", url, data={**params},
                 headers=browser_headers(api=True, form=True), timeout=30.0,
+                limiter=self._limiter,
             )
         else:
             status, body = await http_request(
                 "GET", url, params=params,
                 headers=browser_headers(api=True), timeout=30.0,
+                limiter=self._limiter,
             )
 
         if status in (403, 429):
@@ -1459,7 +1514,12 @@ def build_providers(mode: Optional[str] = None) -> list[BaseProvider]:
       4. `ytdlp`  — tanpa pihak ketiga; butuh secUid untuk listing profil.
     """
     choice = (mode or Config.TIKTOK_PROVIDER or "auto").lower().strip()
-    limiter = RateLimiter(Config.TIKTOK_REQUEST_INTERVAL_SECONDS)
+    # SATU instance untuk semua penyedia DAN untuk jaring pengaman di
+    # http_request. Kalau di sini dibuat instance baru, path yang jatuh ke
+    # jaring pengaman akan punya gerbang laju sendiri - dua gerbang berarti
+    # dua kali request per detik, persis yang dilarang tikwm (batas dihitung
+    # per IP, bukan per akun).
+    limiter = web_rate_limiter()
     if choice == "fixture":
         return [FixtureProvider(limiter)]
     if choice == "tikwm":

@@ -854,6 +854,225 @@ class TestRateLimiterNeverBelowMinimum(unittest.TestCase):
         asyncio.run(run())  # tidak boleh menggantung
 
 
+class TestWebRequestsAreThrottled(unittest.TestCase):
+    """Semua request ke tiktok.com harus lewat limiter yang sama.
+
+    `http_get_text_retry` punya backoff sendiri (1,5 x attempt) dan DULUNYA
+    tidak memakai RateLimiter sama sekali. Akibatnya jalur embed/profil
+    menjadi request tanpa jeda: pada 2 Okt 2026 pukul 07:05-07:06 lima akun
+    diproses bersamaan dan tiktok.com dibombardir sampai membalas 503 lalu
+    429 - throttle bot sendiri yang memicu health gate 15 menit.
+    """
+
+    def test_embed_meneruskan_limiter_kepada_http(self):
+        """Embed dijaga oleh gerbang laju di http_request (host tiktok.com)."""
+        from bot import tiktok_client
+
+        provider = tiktok_client.EmbedProvider(RateLimiter(0))
+        seen: list[str] = []
+
+        async def fake_request(method, url, **kwargs):
+            seen.append(url)
+            return 200, "<html>ok</html>"
+
+        with patch.object(tiktok_client, "http_request", side_effect=fake_request):
+            # HTML-bodied di sini tidak berisi videoList, jadi embed melempar
+            # ProviderBlocked setelah request pertama.
+            with self.assertRaises(ProviderBlocked):
+                asyncio.run(
+                    provider.fetch_user_posts({"unique_id": "jkt48.fahira"}, 5)
+                )
+
+        self.assertTrue(
+            any("tiktok.com" in url for url in seen),
+            "embed harus tetap lewat http_request (tempat gerbang laju)",
+        )
+
+    def test_scrape_menggunakan_gerbang_yang_sama(self):
+        from bot import tiktok_client
+
+        provider = tiktok_client.ScrapeProvider(RateLimiter(0))
+        seen: list[str] = []
+
+        async def fake_request(method, url, **kwargs):
+            seen.append(url)
+            return 403, ""
+
+        with patch.object(tiktok_client, "http_request", side_effect=fake_request):
+            with self.assertRaises(ProviderBlocked):
+                asyncio.run(provider.fetch_user_posts({"unique_id": "x"}, 5))
+
+        self.assertTrue(any("tiktok.com" in url for url in seen))
+
+    def test_retry_menunggu_limiter_setiap_attempt(self):
+        """Retry ke tiktok.com harus tetap dijaga jaraknya oleh gerbang laju."""
+        from bot import tiktok_client
+
+        waits = {"n": 0}
+
+        class CountingLimiter:
+            async def wait(self):
+                waits["n"] += 1
+
+        statuses = [503, 503, 200]
+        real_sleep = asyncio.sleep
+        seen_urls: list[str] = []
+
+        # Yang dipalsukan adalah TRANSPORT-nya, bukan http_request, supaya
+        # gerbang laju yang diuji benar-benar yang jalan.
+        async def fake_to_thread(fn, *args, **kwargs):
+            url = kwargs.get("url") or (args[1] if len(args) > 1 else "")
+            seen_urls.append(url)
+            status = statuses.pop(0)
+            return status, ("#EXTM3U" if status == 200 else "")
+
+        async def fake_sleep(seconds, *args, **kwargs):
+            return await real_sleep(0)
+
+        async def run():
+            original = tiktok_client._WEB_LIMITER
+            tiktok_client._WEB_LIMITER = CountingLimiter()
+            try:
+                with patch(
+                    "bot.tiktok_client.asyncio.to_thread", side_effect=fake_to_thread
+                ), patch("bot.tiktok_client.asyncio.sleep", side_effect=fake_sleep):
+                    await tiktok_client.http_get_text_retry(
+                        "https://www.tiktok.com/embed/@x"
+                    )
+            finally:
+                tiktok_client._WEB_LIMITER = original
+
+        asyncio.run(run())
+        self.assertEqual(
+            waits["n"], 3,
+            "tiga attempt ke tiktok.com harus tiga kali lewat gerbang laju",
+        )
+        self.assertEqual(len(seen_urls), 3)
+        self.assertFalse(statuses, "semua attempt harus terpakai")
+
+    def test_tanpa_limiter_tetap_boleh(self):
+        """Pemanggil lama tanpa limiter tidak boleh error."""
+        from bot import tiktok_client
+
+        async def fake_get(url, timeout=0.0):
+            return 200, "#EXTM3U"
+
+        async def run():
+            with patch.object(tiktok_client, "http_get_text", side_effect=fake_get):
+                return await tiktok_client.http_get_text_retry("https://x/embed")
+
+        status, body = asyncio.run(run())
+        self.assertEqual(status, 200)
+        self.assertIn("#EXTM3U", body)
+
+
+class TestSingleRateGate(unittest.TestCase):
+    """Harus ada tepat SATU gerbang laju untuk semua request ke TikTok.
+
+    Batas tikwm dihitung PER IP: lima akun yang masing-masing satu request
+    tetap dihitung lima request dari satu IP. Karena itu satu instance limiter
+    dipakai bersama oleh semua penyedia dan oleh jaring pengaman di
+    `http_request` — dua gerbang berarti dua kali request per detik.
+    """
+
+    def test_semua_penyedia_memakai_instance_yang_sama(self):
+        from bot import tiktok_client
+
+        providers = tiktok_client.build_providers()
+        ids = {id(getattr(p, "_limiter", None)) for p in providers}
+        self.assertEqual(
+            len(ids), 1,
+            "penyedia tidak boleh punya limiter sendiri-sendiri",
+        )
+        self.assertEqual(
+            ids.pop(), id(tiktok_client.web_rate_limiter()),
+            "penyedia harus memakai instance yang sama dengan jaring pengaman",
+        )
+
+    def test_jaring_pengaman_menutup_request_tanpa_limiter(self):
+        """Path yang lupa mengoper limiter tetap dijaga (host TikTok/tikwm)."""
+        from bot import tiktok_client
+
+        calls = {"n": 0}
+        real_wait = None
+
+        class CountingLimiter:
+            async def wait(self):
+                calls["n"] += 1
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            return 200, "ok"
+
+        async def run():
+            original = tiktok_client._WEB_LIMITER
+            tiktok_client._WEB_LIMITER = CountingLimiter()
+            try:
+                with patch("bot.tiktok_client.asyncio.to_thread", side_effect=fake_to_thread):
+                    await tiktok_client.http_request(
+                        "GET", "https://www.tikwm.com/api/user/posts"
+                    )
+            finally:
+                tiktok_client._WEB_LIMITER = original
+
+        asyncio.run(run())
+        self.assertEqual(
+            calls["n"], 1,
+            "request ke tikwm.com tanpa limiter harus dijaga jaring pengaman",
+        )
+
+    def test_host_di_luar_tikwm_tidak_dijeda(self):
+        """Host lain (mis. CDN) tidak ikut dijeda limiter API."""
+        from bot import tiktok_client
+
+        calls = {"n": 0}
+
+        class CountingLimiter:
+            async def wait(self):
+                calls["n"] += 1
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            return 200, "ok"
+
+        async def run():
+            original = tiktok_client._WEB_LIMITER
+            tiktok_client._WEB_LIMITER = CountingLimiter()
+            try:
+                with patch("bot.tiktok_client.asyncio.to_thread", side_effect=fake_to_thread):
+                    await tiktok_client.http_request("GET", "https://cdn.example/x.jpg")
+            finally:
+                tiktok_client._WEB_LIMITER = original
+
+        asyncio.run(run())
+        self.assertEqual(calls["n"], 0, "host CDN tidak boleh ikut dijeda")
+
+    def test_tikwm_menunggu_tepat_satu_kali_per_request(self):
+        """Dulu `_call` menunggu lalu http_request menunggu lagi = 2x jeda."""
+        from bot import tiktok_client
+
+        class CountingLimiter:
+            def __init__(self):
+                self.n = 0
+
+            async def wait(self):
+                self.n += 1
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            return 200, '{"code":0,"data":{"videos":[]}}'
+
+        limiter = CountingLimiter()
+
+        async def run():
+            provider = tiktok_client.TikwmProvider(limiter)
+            with patch("bot.tiktok_client.asyncio.to_thread", side_effect=fake_to_thread):
+                await provider._call("/user/posts", {"unique_id": "u", "count": 1})
+
+        asyncio.run(run())
+        self.assertEqual(
+            limiter.n, 1,
+            "satu request tikwm harus menunggu tepat satu kali, bukan dua",
+        )
+
+
 class TestSplitCapabilities(TikTokMonitorTestCase):
     """
     Kasus nyata 21 Sep 2026: Cloudflare memblokir `/user/posts` (403) sementara

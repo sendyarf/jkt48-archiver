@@ -881,7 +881,7 @@ class TestScrapeProvider(unittest.TestCase):
     def test_fetch_raises_blocked_on_stub_page(self):
         provider = ScrapeProvider(RateLimiter(0))
 
-        async def fake_get(url, *, attempts=3, timeout=30.0):
+        async def fake_get(url, *, attempts=3, timeout=30.0, limiter=None):
             return 200, "<html><body>Just a moment</body></html>"
 
         original = tiktok_client.http_get_text_retry

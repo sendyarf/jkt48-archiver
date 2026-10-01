@@ -559,6 +559,9 @@ async def download_video(
     # 3) URL segar dari halaman embed TikTok.
     #    URL CDN (tikwm/listing) bertanda tangan dan cepat kedaluwarsa → 403.
     #    Halaman /embed/v2/<id> selalu membalas URL yang masih berlaku.
+    #    Limiter diteruskan supaya request ini ikut throttling yang sama dengan
+    #    listing; tanpa itu, beberapa akun yang diproses bersamaan menembak
+    #    tiktok.com tanpa jeda dan memicu 503 lalu 429.
     try:
         fresh = await fetch_embed_post_media(item.unique_id, item.id)
     except Exception as exc:  # noqa: BLE001
