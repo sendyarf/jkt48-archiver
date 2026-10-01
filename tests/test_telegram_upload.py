@@ -6,6 +6,7 @@ test_telegram_upload.py - Unit tests for video splitter, telegram captions, and 
 import asyncio
 import json
 import os
+import time
 import re
 import subprocess
 import tempfile
@@ -1211,6 +1212,92 @@ class _ExpiredUploadSessionClient:
 def _file_part_missing():
     from telethon.errors import FilePartMissingError as _FPME
     return _FPME(request=None, capture=0)
+
+
+class TestStaleSidecarRejectedBeforeResuming(unittest.TestCase):
+    """Sidecar basi harus dibuang SEBELUM upload, bukan setelah ditolak server.
+
+    Terukur 1 Okt 2026 (Intan, 528 MB): sidecar berumur ~1 hari dilanjutkan ke
+    100%, lalu server menolak `FILE_PART_MISSING: Part 680` karena sesi upload
+    besarnya sudah dibuang. Seluruh 528 MB terbuang sia-sia, lalu file diupload
+    ulang dari nol. Sidecar basi sekarang dibuang lebih awal, jadi tidak ada
+    byte yang terkirim untuk sesuatu yang pasti ditolak.
+    """
+
+    def _two_runs(self, age_hours: float, max_age_hours: int):
+        """Jalankan upload sekali (sidecar ditulis kode sendiri), age, lalu ulangi.
+
+        Sidecar sengaja dibuat lewat `_upload_with_resume` bukannya ditulis
+        manual: jumlah part dan ukuran part dihitung Telethon (128 KiB untuk
+        file sekecil ini), jadi nilai yang dikarang tangan selalu salah dan
+        validasi state akan menolaknya.
+        """
+        client = _OkUploadClient()
+        sender = TelegramSender.__new__(TelegramSender)
+        sender._client = client
+        sender._connected = True
+        sender._max_file_parts_cached = MAX_FILE_PARTS_FREE
+
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "big.mp4"
+            video.write_bytes(b"0" * (65 * 1024 * 1024))
+            sidecar = Path(str(video) + ".tgup.json")
+            total_parts = video.stat().st_size // (128 * 1024)
+
+            async def run():
+                with patch.object(
+                    Config, "TELEGRAM_UPLOAD_PART_DELAY_MS", 0
+                ), patch.object(
+                    Config, "TELEGRAM_UPLOAD_RESUME_MAX_AGE_HOURS", 0
+                ), patch("bot.telegram_sender.asyncio.sleep"):
+                    await sender._upload_with_resume(
+                        video, video.stat().st_size, 1.0
+                    )
+
+            asyncio.run(run())
+            first_run = len(client.requests)
+            self.assertEqual(
+                first_run, total_parts, "upload pertama harus mengirim semua part"
+            )
+            self.assertTrue(sidecar.exists(), "sidecar harus tertulis")
+
+            old = time.time() - age_hours * 3600
+            os.utime(sidecar, (old, old))
+            client.requests.clear()
+
+            async def second():
+                with patch.object(
+                    Config, "TELEGRAM_UPLOAD_PART_DELAY_MS", 0
+                ), patch.object(
+                    Config, "TELEGRAM_UPLOAD_RESUME_MAX_AGE_HOURS", max_age_hours
+                ), patch("bot.telegram_sender.asyncio.sleep"):
+                    await sender._upload_with_resume(
+                        video, video.stat().st_size, 1.0
+                    )
+
+            asyncio.run(second())
+            return total_parts, len(client.requests)
+
+    def test_stale_sidecar_restarts_from_zero(self):
+        total_parts, sent = self._two_runs(age_hours=30, max_age_hours=12)
+        self.assertEqual(
+            sent, total_parts,
+            "sidecar basi harus diabaikan: seluruh part dikirim ulang dari nol",
+        )
+
+    def test_fresh_sidecar_still_resumes(self):
+        total_parts, sent = self._two_runs(age_hours=1, max_age_hours=12)
+        self.assertEqual(
+            sent, 0,
+            "sidecar segar harus dipakai: tidak ada part yang dikirim ulang",
+        )
+        self.assertGreater(total_parts, 0)
+
+    def test_zero_disables_the_age_check(self):
+        total_parts, sent = self._two_runs(age_hours=400, max_age_hours=0)
+        self.assertEqual(
+            sent, 0, "0 = tanpa batas umur, sidecar 400 jam tetap dipakai",
+        )
 
 
 class TestExpiredUploadSessionRecovery(unittest.TestCase):

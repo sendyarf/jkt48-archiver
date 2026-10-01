@@ -363,6 +363,29 @@ class TelegramSender:
                 state = json.loads(sidecar.read_text(encoding="utf-8"))
             except Exception:
                 state = {}
+        # Sesi upload besar di server TIDAK bertahan selamanya: Telegram
+        # membuang part yang belum dirakit setelah jendela tertentu. Melanjutkan
+        # sidecar yang sudah terlalu basi berarti mengupload seluruh sisa file
+        # hanya untuk ditolak `FILE_PART_MISSING` (terukur 1 Okt 2026: 528 MB
+        # naik ke 100%, ditolak "Part 680 missing", lalu diulang dari nol).
+        # lebih baik: buang sekalian, lalu mulai dari nol tanpa satu pun byte
+        # terbuang. Resume tetap berguna untuk jeda singkat (flood, restart bot)
+        # yang justru kasus resume yang sesungguhnya.
+        max_age_hours = int(Config.TELEGRAM_UPLOAD_RESUME_MAX_AGE_HOURS)
+        if state and max_age_hours > 0:
+            try:
+                age_hours = (time.time() - sidecar.stat().st_mtime) / 3600
+            except OSError:
+                age_hours = 0.0
+            if age_hours > max_age_hours:
+                logger.warning(
+                    "Sidecar upload %s berumur %.0f jam (batas %d jam); sesi "
+                    "server kemungkinan sudah dibuang, jadi progress %.1f%% "
+                    "dibuang dan upload diulang dari nol.",
+                    path.name, age_hours, max_age_hours,
+                    state.get("parts_sent", 0) * 100 / max(1, total_parts),
+                )
+                state = {}
         if not (
             state.get("path") == str(path)
             and state.get("size") == size

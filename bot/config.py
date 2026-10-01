@@ -181,6 +181,18 @@ class Config:
         os.getenv("YT_CHANNEL_AUTH_COOLDOWN_MINUTES", "360")
     )
 
+    # Usia maksimum sidecar yang masih boleh di-resume (jam; 0 = tanpa batas).
+    # Sesi upload besar di sisi server tidak bertahan selamanya - Telegram
+    # membuang part yang belum dirakit. Melanjutkan sidecar basi hanya
+    # membuang bandwidth: file naik ke 100% lalu ditolak FILE_PART_MISSING,
+    # lalu diupload ulang dari nol (terukur 1 Okt 2026). Resume tetap
+    # berguna untuk jeda singkat - flood atau restart bot - yang justru
+    # kasus resume yang sesungguhnya. 12 jam memberi margin jauh di bawah
+    # jendela retensi server tanpa membuang gamer pendek yang masih berguna.
+    TELEGRAM_UPLOAD_RESUME_MAX_AGE_HOURS: int = int(
+        os.getenv("TELEGRAM_UPLOAD_RESUME_MAX_AGE_HOURS", "12")
+    )
+
     # Batas waktu untuk request pembuatan pesan (uploadMedia / messages.sendMedia).
     # Semua byte SUDAH di-upload di titik ini, jadi ini hanya "server selesai
     # memproses metadata" - 10 menit sudah sangat longgar.
