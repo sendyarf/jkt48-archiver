@@ -491,6 +491,18 @@ class Config:
     # kecil (±2-4 request per akun, diatur TIKTOK_REQUEST_INTERVAL_SECONDS).
     TIKTOK_ACCOUNTS_PER_CHECK: int = int(os.getenv("TIKTOK_ACCOUNTS_PER_CHECK", "3"))
 
+    # Berapa akun yang boleh diperiksa BERSAMAAN dalam satu siklus (1 = lama,
+    # berurutan). Ini TIDAK menaikkan laju request ke TikTok: semua provider
+    # berbagi satu RateLimiter ber-lock, jadi request tetap berjarak
+    # TIKTOK_REQUEST_INTERVAL_SECONDS. Yang diperbaiki adalah waktu menganggur:
+    # tanpa concurrency, akun pertama memblokir akun berikutnya selama unduhan
+    # media + unggah ke Telegram/YouTube (detik hingga menit), padahal kuota
+    # request menganggur selama itu. Story berlaku 24 jam, jadi rotasi 51 akun
+    # yang lambat membuat story cepat hilang tanpa sempat diarsipkan.
+    TIKTOK_CONCURRENT_ACCOUNT_CHECKS: int = int(
+        os.getenv("TIKTOK_CONCURRENT_ACCOUNT_CHECKS", "2")
+    )
+
     # Jeda minimum antar request ke sumber data (detik).
     # tikwm.com gratis dibatasi ±1 request/detik; 1.1 detik = aman.
     TIKTOK_REQUEST_INTERVAL_SECONDS: float = float(

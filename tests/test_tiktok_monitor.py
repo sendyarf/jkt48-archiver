@@ -144,6 +144,9 @@ class TikTokMonitorTestCase(unittest.TestCase):
         # Mayoritas tes menjalankan run_once per akun satu per satu — sematkan 1
         # agar perilaku lama tidak berubah; tes batch menyetelnya sendiri.
         Config.TIKTOK_ACCOUNTS_PER_CHECK = 1
+        # Mayoritas tes memakai satu akun per siklus, jadi concurrency tidak
+        # relevan; tes khusus batch menyetelnya sendiri.
+        Config.TIKTOK_CONCURRENT_ACCOUNT_CHECKS = 1
         Config.TIKTOK_YT_BACKLOG_PER_CHECK = 2
         Config.TIKTOK_MAX_DOWNLOAD_ATTEMPTS = 6
         Config.TIKTOK_STORY_MAX_AGE_HOURS = 24
@@ -649,6 +652,144 @@ class TestScrapeItemsGetEnriched(TikTokMonitorTestCase):
         asyncio.run(monitor._enrich_new_items([item], {"unique_id": "jkt48.fahira"}))
 
         self.assertEqual(detail.calls, 0, "media sudah ada, jangan=request detail")
+
+
+class TestConcurrentAccountChecks(unittest.TestCase):
+    """Beberapa akun boleh diperiksa bersamaan tanpa menaikkan laju request.
+
+    Semua provider berbagi satu `RateLimiter` ber-lock, jadi request ke TikTok
+    tetap berjarak `TIKTOK_REQUEST_INTERVAL_SECONDS` meski checking paralel.
+    Yang selama ini terbuang adalah waktu menganggur: akun pertama memblokir
+    akun berikutnya selama unduhan media + unggah.
+    """
+
+    def setUp(self):
+        self._saved = {
+            key: getattr(Config, key)
+            for key in (
+                "TIKTOK_ACCOUNTS_PER_CHECK",
+                "TIKTOK_CONCURRENT_ACCOUNT_CHECKS",
+                "TIKTOK_REQUEST_INTERVAL_SECONDS",
+            )
+        }
+        Config.TIKTOK_ACCOUNTS_PER_CHECK = 3
+        Config.TIKTOK_REQUEST_INTERVAL_SECONDS = 0.0
+        # Disetel eksplisit: kelas lain mengesetnya ke 1, dan setUp-nya
+        # hanya menyimpannya, jadi nilai yang diwarisi bisa saja 1.
+        Config.TIKTOK_CONCURRENT_ACCOUNT_CHECKS = 2
+
+    def tearDown(self):
+        for key, value in self._saved.items():
+            setattr(Config, key, value)
+
+    def _monitor(self, accounts, worker):
+        monitor = TikTokMonitor(telegram=FakeTelegram())
+        monitor._providers = []  # type: ignore[assignment]
+
+        async def fake_check(account):
+            return await worker(account)
+
+        monitor._check_account = fake_check  # type: ignore[method-assign]
+
+        original = database.get_tiktok_accounts
+        database.get_tiktok_accounts = lambda: accounts  # type: ignore[assignment]
+        return monitor, original
+
+    def test_akun_diperiksa_bersamaan(self):
+        started = asyncio.Event()
+        active = {"now": 0, "peak": 0}
+        seen: list[str] = []
+
+        async def worker(account):
+            active["now"] += 1
+            active["peak"] = max(active["peak"], active["now"])
+            seen.append(account["unique_id"])
+            # Tahan sampai dua akun lain ikut mulai -> hanya mungkin kalau
+            # pemeriksaan tidak berurutan.
+            if active["now"] >= 3:
+                started.set()
+            try:
+                await asyncio.wait_for(started.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
+            active["now"] -= 1
+            return 1
+
+        accounts = [{"unique_id": f"akun{i}"} for i in range(3)]
+        monitor, original = self._monitor(accounts, worker)
+        try:
+            total = asyncio.run(monitor.run_once())
+        finally:
+            database.get_tiktok_accounts = original  # type: ignore[assignment]
+
+        self.assertEqual(active["peak"], 3, "tiga akun harus berjalan bersamaan")
+        self.assertEqual(sorted(seen), ["akun0", "akun1", "akun2"])
+        self.assertEqual(total, 3)
+
+    def test_satu_akun_gagal_tidak_mematikan_sisanya(self):
+        async def worker(account):
+            if account["unique_id"] == "akun1":
+                raise RuntimeError("provider meledak")
+            return 2
+
+        accounts = [{"unique_id": f"akun{i}"} for i in range(3)]
+        monitor, original = self._monitor(accounts, worker)
+        try:
+            total = asyncio.run(monitor.run_once())
+        finally:
+            database.get_tiktok_accounts = original  # type: ignore[assignment]
+
+        self.assertEqual(
+            total, 4,
+            "dua akun yang sehat tetap dihitung meski satu meledak",
+        )
+
+    def test_concurrency_satu_menampilkan_perilaku_lama(self):
+        """Nilai 1 harus kembali ke pemeriksaan berurutan."""
+        order: list[str] = []
+
+        async def worker(account):
+            order.append("start:" + account["unique_id"])
+            await asyncio.sleep(0)
+            order.append("end:" + account["unique_id"])
+            return 0
+
+        Config.TIKTOK_CONCURRENT_ACCOUNT_CHECKS = 1
+        accounts = [{"unique_id": f"akun{i}"} for i in range(3)]
+        monitor, original = self._monitor(accounts, worker)
+        try:
+            asyncio.run(monitor.run_once())
+        finally:
+            database.get_tiktok_accounts = original  # type: ignore[assignment]
+
+        self.assertEqual(
+            order,
+            ["start:akun0", "end:akun0", "start:akun1", "end:akun1",
+             "start:akun2", "end:akun2"],
+        )
+
+    def test_kursor_tetap_berputar_sesuai_rotasi(self):
+        seen: list[str] = []
+
+        async def worker(account):
+            seen.append(account["unique_id"])
+            return 0
+
+        Config.TIKTOK_CONCURRENT_ACCOUNT_CHECKS = 2
+        Config.TIKTOK_ACCOUNTS_PER_CHECK = 2
+        accounts = [{"unique_id": f"akun{i}"} for i in range(3)]
+        monitor, original = self._monitor(accounts, worker)
+        try:
+            asyncio.run(monitor.run_once())
+            asyncio.run(monitor.run_once())
+        finally:
+            database.get_tiktok_accounts = original  # type: ignore[assignment]
+
+        self.assertEqual(
+            seen, ["akun0", "akun1", "akun2", "akun0"],
+            "rotasi round-robin harus tetap berjalan meski pemrosesan paralel: "
+            "siklus 1 ambil akun0+akun1, siklus 2 lanjut akun2+akun0",
+        )
 
 
 class TestSplitCapabilities(TikTokMonitorTestCase):

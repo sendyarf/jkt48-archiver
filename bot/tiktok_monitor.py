@@ -207,17 +207,47 @@ class TikTokMonitor:
         if only_account:
             return await self._check_account(accounts[0])
 
-        total = 0
         batch = min(max(1, Config.TIKTOK_ACCOUNTS_PER_CHECK), len(accounts))
-        for index in range(batch):
-            account = accounts[self._cursor % len(accounts)]
+        # Akun dipotong lebih dulu lalu kursor dimajukan, supaya pemanggilan
+        # ``only_account`` tidak menggeser rotasi.
+        picked: list[dict] = []
+        for _ in range(batch):
+            picked.append(accounts[self._cursor % len(accounts)])
             self._cursor = (self._cursor + 1) % len(accounts)
-            total += await self._check_account(account)
-            # Jeda sopan antar akun dalam satu siklus (jeda per-request penyedia
-            # sudah diatur RateLimiter; ini jarak antar akun).
-            if index < batch - 1:
-                await asyncio.sleep(max(0.0, Config.TIKTOK_REQUEST_INTERVAL_SECONDS))
+
+        concurrency = max(1, int(Config.TIKTOK_CONCURRENT_ACCOUNT_CHECKS))
+        if concurrency == 1 or len(picked) == 1:
+            total = 0
+            for account in picked:
+                total += await self._check_account(account)
+                if account is not picked[-1]:
+                    await asyncio.sleep(
+                        max(0.0, Config.TIKTOK_REQUEST_INTERVAL_SECONDS)
+                    )
+            return total
+
+        # Memeriksa beberapa akun sekaligus TIDAK menaikkan laju request ke
+        # TikTok: semua provider berbagi satu RateLimiter ber-lock, jadi
+        # request tetap berjarak TIKTOK_REQUEST_INTERVAL_SECONDS. Yang berubah
+        # hanya satu: tanpa ini, akun pertama memblokir akun berikutnya selama
+        # unduhan media + unggah (detik hingga menit), dan kuota request ikut
+        # menganggur selama itu.
+        results = await asyncio.gather(
+            *(self._check_account(account) for account in picked),
+            return_exceptions=True,
+        )
+        total = 0
+        for account, result in zip(picked, results):
+            if isinstance(result, BaseException):
+                # Satu akun yang error tidak boleh membatalkan sisa batch.
+                logger.warning(
+                    "Pemeriksaan akun TikTok %s gagal: %s",
+                    account.get("unique_id"), result,
+                )
+                continue
+            total += int(result)
         return total
+
 
     async def _check_account(self, account: dict) -> int:
         """Periksa SATU akun dan proses postingan barunya (dipakai run_once)."""
