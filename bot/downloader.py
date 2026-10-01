@@ -65,6 +65,16 @@ class DownloadError(Exception):
     """Raised when ffmpeg exits without producing a usable recording."""
 
 
+class LiveEndedError(DownloadError):
+    """Rekaman dihentikan karena live-nya sudah selesai, bukan karena error.
+
+    Penting dibedakan dari `DownloadError` biasa: sesi yang tidak menghasilkan
+    data karena live-nya berakhir normal TIDAK boleh dilaporkan "REC GAGAL" ke
+    admin, dan barisnya tidak boleh tertinggal sebagai 'Gagal' di antrean —
+    sama seperti segmen kosong yang dihapus pada jalur resume.
+    """
+
+
 # Maps live_id -> asyncio.subprocess.Process for live cancel control
 _active_processes: dict[str, asyncio.subprocess.Process] = {}
 
@@ -294,6 +304,7 @@ async def download_stream(
     max_empty_retries: int = 5,
     empty_retry_delay: float = 10,
     url_refresher: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
+    should_continue: Optional[Callable[[], Awaitable[Optional[bool]]]] = None,
 ) -> Path:
     """
     Download a live HLS stream to a local MP4 file using ffmpeg.
@@ -309,6 +320,17 @@ async def download_stream(
                           memakai URL itu. Penting untuk Showroom: URL lama mati
                           total (CDN menggantung koneksi) begitu sesi broadcast
                           berganti, jadi retry pada URL yang sama sia-sia.
+        should_continue: Optional async callback "apakah live masih berjalan".
+                          Dipanggil sebelum SETIAP retry; mengembalikan False
+                          berarti live sudah selesai sehingga retry berikutnya
+                          pasti sia-sia. `None` (tidak diketahui) diperlakukan
+                          sebagai "lanjut" supaya gangguan API sesaat tidak
+                          mematikan rekaman yang sedang berjalan.
+
+                          Tanpa ini, live yang sudah berakhir tetap diulang
+                          `max_empty_retries` kali: 30 percobaan x (15 probe
+                          URL + satu ffmpeg) = +/- 1 jam URL mati (Nachia
+                          Showroom 1 Okt 2026).
 
     Returns:
         Path to the recorded video file (.mp4).
@@ -332,6 +354,25 @@ async def download_stream(
 
     last_error: Optional[str] = None
     for attempt in range(1, MAX_EMPTY_RETRIES + 1):
+        # Live sudah selesai? Jangan ulangi: tiap percobaan memakan ~2 menit
+        # ~2 menit (15 probe URL + satu ffmpeg), jadi 30 percobaan setelah
+        # live berakhir berarti satu jam bekerja untuk URL yang sudah mati.
+        # Dicek SEBELUM probe URL supaya tidak membuang 105 detik pertama.
+        if should_continue is not None:
+            try:
+                still_live = await should_continue()
+            except Exception as exc:  # noqa: BLE001 - API_room bisa apa saja
+                logger.debug("[%s] should_continue gagal: %r", live_id, exc)
+                still_live = None
+            if still_live is False:
+                logger.info(
+                    "[%s] Live sudah selesai - hentikan retry (percobaan %d/%d).",
+                    live_id, attempt, MAX_EMPTY_RETRIES,
+                )
+                raise LiveEndedError(
+                    f"Live {member_username} sudah selesai saat masih merekam "
+                    f"(percobaan {attempt}/{MAX_EMPTY_RETRIES})"
+                )
         # Minta URL segar sebelum retry: sesi broadcast yang berganti mematikan
         # URL lama, sehingga menunggu URL lama aktif kembali tidak akan pernah
         # berhasil (insiden 22 Sep 2026: ~1 jam terbuang pada URL mati).

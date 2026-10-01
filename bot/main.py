@@ -45,6 +45,7 @@ from bot.downloader import (
     _is_usable_recording,
     has_enough_disk_space,
     DownloadError,
+    LiveEndedError,
 )
 from bot.hls_discovery import HLSDiscovery
 from bot.hls_monitor import HLSMonitor
@@ -1519,6 +1520,17 @@ class JKT48LiveBot:
             return fresh
 
         resumes_done = 0
+
+        async def _should_keep_recording() -> Optional[bool]:
+            """Masih live? Hemati retry yang sia-sia.
+
+            `is_room_live` memakai debounce `SHOWROOM_OFFLINE_CONFIRMATIONS`,
+            jadi False berarti offline yang sudah terkonfirmasi beberapa kali
+            berturut-turut, bukan gangguan sesaat. None (tidak diketahui)
+            tetap diperlakukan sebagai "lanjut".
+            """
+            return await self._showroom_room_live(room_id)
+
         try:
             while True:
                 database.update_status(
@@ -1535,7 +1547,22 @@ class JKT48LiveBot:
                         live_id=part_id,
                         max_empty_retries=Config.SHOWROOM_EMPTY_RETRIES,
                         url_refresher=_url_refresher,
+                        should_continue=_should_keep_recording,
+)
+                except LiveEndedError as exc:
+                    # Live benar-benar selesai dan bagian ini tidak menghasilkan
+                    # data. Ini BUKAN kegagalan rekaman, jadi tidak ada notifikasi
+                    # "REC GAGAL" dan barisnya tidak ditinggalkan sebagai 'Gagal'
+                    # di antrean admin — perlakuannya sama dengan segmen kosong
+                    # yang dihapus pada jalur resume. Segmen NYATA dari live ini
+                    # sudah lebih dulu masuk merge manager dan tetap diproses.
+                    logger.info(
+                        "Showroom %s: live selesai sebelum bagian %s merekam "
+                        "apa pun — sesi kosong dihapus (%s)",
+                        username, part_id, exc,
                     )
+                    database.delete_session(part_id)
+                    return
                 except DownloadError as exc:
                     if await self._showroom_broadcast_replaced(room_id, broadcast_id):
                         database.update_status(part_id, "failed", error_message=str(exc))
