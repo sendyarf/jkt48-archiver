@@ -321,11 +321,22 @@ class RateLimiter:
     async def wait(self) -> None:
         async with self._lock:
             now = time.monotonic()
-            delay = self._min_interval - (now - self._last_at)
+            elapsed = now - self._last_at
+            # Jitter HANYA menambah di atas minimum, tidak pernah mengurangi.
+            #
+            # Versi lama mengalikan `delay` dengan uniform(0,75, 1,25). Untuk
+            # dua request beruntun, delay = min_interval = 1,1 s lalu dikali
+            # 0,75 menjadi 0,825 s - DI BAWAH batas 1 request/detik tikwm.
+            # Akibatnya tikwm membalas "Free Api Limit: 1 request/second."
+            # lalu botreachable eskalasi jeda 5 detik (terlihat 1 Okt 2026 pukul
+            # 17:07), persis sesuatu yang limiter ini cegah.
+            #
+            # Target = minimum x uniform(1,0, 1,5): interval selalu >= minimum
+            # (jadi selalu di atas 1 detik) tetapi tetap tidak metronomik,
+            # sehingga 51 akun tidak terlihat seperti request dengan jeda tetap.
+            target = self._min_interval * random.uniform(1.0, 1.5)
+            delay = target - elapsed
             if delay > 0:
-                # Jitter ±25%: 51 akun dengan jeda identik terlihat seperti
-                # pola metronom (1.1s, 1.1s, …) dan mudah ditandai anti-bot.
-                delay *= random.uniform(0.75, 1.25)
                 await asyncio.sleep(delay)
             self._last_at = time.monotonic()
 

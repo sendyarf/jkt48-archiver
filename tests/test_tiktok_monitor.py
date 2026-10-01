@@ -6,6 +6,7 @@ Telegram/YouTube: deteksi postingan & story, pembagian album foto per part,
 status akhir `done`, round-robin antar akun, dry-run, dan retry upload.
 """
 import asyncio
+import time
 import json
 import subprocess
 import tempfile
@@ -790,6 +791,67 @@ class TestConcurrentAccountChecks(unittest.TestCase):
             "rotasi round-robin harus tetap berjalan meski pemrosesan paralel: "
             "siklus 1 ambil akun0+akun1, siklus 2 lanjut akun2+akun0",
         )
+
+
+class TestRateLimiterNeverBelowMinimum(unittest.TestCase):
+    """Jitter tidak boleh membuat interval turun di bawah batas tikwm.
+
+    Batas gratis tikwm = 1 request/detik. Versi lama mengalikan `delay` dengan
+    uniform(0,75, 1,25), sehingga dua request beruntun bisa berjarak
+    1,1 x 0,75 = 0,825 detik - DI BAWAH batas. tikwm lalu membalas
+    "Free Api Limit: 1 request/second." dan bot mengeskalasi jeda 5 detik,
+    persis yang terlihat di log 1 Okt 2026 pukul 17:07.
+    """
+
+    def test_interval_tidak_pernah_di_bawah_minimum(self):
+        limiter = RateLimiter(1.1)
+        gaps: list[float] = []
+
+        async def run():
+            # Panggilan pertama dilewati: limiter belum pernah dipakai, jadi
+            # `_last_at` masih 0 dan tidak ada jeda yang perlu dijaga.
+            await limiter.wait()
+            for _ in range(12):
+                before = time.monotonic()
+                await limiter.wait()
+                gaps.append(time.monotonic() - before)
+
+        asyncio.run(run())
+        worst = min(gaps)
+        self.assertGreaterEqual(
+            worst, 1.1,
+            f"interval terpendek {worst:.3f} dtk di bawah minimum 1,1 dtk",
+        )
+
+    def test_jitter_masih_bervariasi(self):
+        """Jitter harus tetap ada: 51 akun dengan jeda identik terlihat metronomik."""
+        limiter = RateLimiter(0.05)
+        gaps: list[float] = []
+
+        async def run():
+            await limiter.wait()
+            for _ in range(25):
+                before = time.monotonic()
+                await limiter.wait()
+                gaps.append(time.monotonic() - before)
+
+        asyncio.run(run())
+        self.assertGreaterEqual(
+            min(gaps), 0.05, "jitter tidak boleh mengurangi minimum"
+        )
+        self.assertGreater(
+            max(gaps), min(gaps) * 1.1,
+            "jeda harus bervariasi, tidak selalu sama (pola metronom)",
+        )
+
+    def test_nol_interval_tetap_boleh(self):
+        limiter = RateLimiter(0)
+
+        async def run():
+            await limiter.wait()
+            await limiter.wait()
+
+        asyncio.run(run())  # tidak boleh menggantung
 
 
 class TestSplitCapabilities(TikTokMonitorTestCase):
