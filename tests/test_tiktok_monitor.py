@@ -37,11 +37,15 @@ def _make_image(path: Path, color: str = "red") -> Path:
 
 
 def _make_video(path: Path, seconds: int = 2) -> Path:
+    # `testsrc2` menghasilkan berkas ratusan KB seperti rekaman TikTok asli.
+    # `testsrc` 320x240 lama hanya ~32 KB dan sengaja ditolak
+    # `looks_like_media_error_page()` — ambang itu justru menangkap berkas
+    # halaman tantangan TikTok yang dulu lolos terarsip (1 Okt 2026, 1,5 KB).
     subprocess.run(
         ["ffmpeg", "-y",
-         "-f", "lavfi", "-i", f"testsrc=duration={seconds}:size=320x240:rate=30",
+         "-f", "lavfi", "-i", f"testsrc2=duration={seconds}:size=720x1280:rate=30",
          "-f", "lavfi", "-i", f"sine=frequency=800:duration={seconds}",
-         "-c:v", "libx264", "-c:a", "aac", str(path)],
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(path)],
         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     return path

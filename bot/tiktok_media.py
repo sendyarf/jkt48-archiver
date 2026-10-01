@@ -214,6 +214,36 @@ class MediaError(RuntimeError):
     permanent: bool = False
 
 
+# Batas bawah ukuran media yang masuk akal. Saat IP diblokir, TikTok membalas
+# HTML/JSON (halaman tantangan) alih-alih video, dan respons itu tersimpan
+# sebagai .mp4 berukuran beberapa ribu byte. Tanpa ambang ini file sampah
+# terarsip ke Telegram, terbit ke YouTube, lalu muncul di website sebagai video
+# yang tidak bisa diputar (terukur 1 Okt 2026: 7691614629851614472 = 1,5 KB).
+# Video TikTok asli mulai ratusan KB; foto asli juga jauh di atas ambang ini.
+MIN_VIDEO_BYTES = 64 * 1024
+MIN_IMAGE_BYTES = 8 * 1024
+
+
+def looks_like_media_error_page(path: Path, kind: str) -> Optional[str]:
+    """Balikkan alasan bila berkas terlalu kecil untuk jadi media sungguhan.
+
+    Yang diperiksa hanya UKURAN, bukan isi: membaca sample bisa menebak salah,
+    sedangkan berkas 1,5 KB tidak mungkin menjadi video mana pun yang sudah
+    terunggah ke TikTok.
+    """
+    try:
+        size = Path(path).stat().st_size
+    except OSError:
+        return None
+    floor = MIN_IMAGE_BYTES if kind == "photo" else MIN_VIDEO_BYTES
+    if size >= floor:
+        return None
+    return (
+        f"berkas {size} byte, di bawah ambang {floor} byte - TikTok kemungkinan "
+        "membalas halaman tantangan, bukan media"
+    )
+
+
 class MediaPermanentError(MediaError):
     """Kegagalan PERMANEN: IP diblokir TikTok / postingan tidak tersedia."""
 
@@ -765,6 +795,22 @@ async def prepare_post_media(
         else await download_video(item, work)
     )
     meta = await get_video_metadata(video)
+    # Guard ukuran: IP yang diblokir membuat TikTok membalas halaman tantangan
+    # alih-alih video, dan respons itu tersimpan sebagai .mp4 beberapa ribu
+    # byte. Diarsipkan begitu saja, file sampah itu berakhir di channel arsip,
+    # terbit di YouTube, dan tampil di website sebagai video rusak
+    # (7691614629851614472 = 1,5 KB, 1 Okt 2026). `permanent=True` karena
+    # mencoba ulang dari IP yang sama akan menghasilkan halaman tantangan
+    # yang sama.
+    too_small = looks_like_media_error_page(video, "video")
+    if too_small:
+        try:
+            Path(video).unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - jalur IO
+            pass
+        raise MediaPermanentError(
+            f"Media TikTok {item.id} bukan video: {too_small}"
+        )
     return PreparedMedia(
         kind="video",
         video_path=video,

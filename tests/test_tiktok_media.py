@@ -28,6 +28,7 @@ from bot.tiktok_media import (
     download_images,
     download_video,
     is_permanent_media_error,
+    looks_like_media_error_page,
     prepare_post_media,
     prune_old_covers,
     save_cover_image,
@@ -49,12 +50,18 @@ def _make_image(path: Path, color: str = "red") -> Path:
 
 
 def _make_video(path: Path, seconds: int = 3) -> Path:
+    # `testsrc2` (bukan `testsrc`/warna solid): video dengan gerakan + detail
+    # yang benar-benar berukuran ratusan KB, seperti rekaman TikTok sungguhan.
+    # Fixture lama memakai `testsrc` 320x240 yang hanya menghasilkan ~3 KB,
+    # dan itu kini sengaja ditolak `looks_like_media_error_page()` karena
+    # sekecil itulah berkas halaman tantangan yang pernah lolos jadi video.
     subprocess.run(
         [
             "ffmpeg", "-y",
-            "-f", "lavfi", "-i", f"testsrc=duration={seconds}:size=320x240:rate=30",
+            "-f", "lavfi", "-i",
+            f"testsrc2=duration={seconds}:size=720x1280:rate=30",
             "-f", "lavfi", "-i", f"sine=frequency=800:duration={seconds}",
-            "-c:v", "libx264", "-c:a", "aac", str(path),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(path),
         ],
         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
@@ -585,6 +592,79 @@ class TestCoverImage(unittest.TestCase):
                 self.assertFalse(stale.exists())
             finally:
                 Config.DOWNLOAD_DIR = original
+
+
+class TestTooSmallMediaRejected(unittest.TestCase):
+    """Halaman tantangan TikTok tidak boleh lolos sebagai video.
+
+    Terukur 1 Okt 2026: 7691614629851614472 "terunduh" 1,5 KB, lalu terarsip ke
+    channel Telegram (msg 997), terbit di YouTube (BXYa0f7FU08), dan tampil di
+    website sebagai video yang tidak bisa dipulat. Akarnya: TikTok membalas
+    halaman tantangan Cloudflare, dan kode menyimpannya sebagai .mp4.
+    """
+
+    def test_junk_video_is_rejected_as_permanent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            original = Config.DOWNLOAD_DIR
+            Config.DOWNLOAD_DIR = str(base)
+            try:
+                junk = base / "challenge.mp4"
+                junk.write_bytes(b"<html>blocked</html>")  # 1,5 KB
+                item = TikTokItem(
+                    id="7691614629851614472", unique_id="jkt48.virgi",
+                    kind="video",
+                    raw={"fixture_media": {"video": str(junk)}},
+                )
+                with self.assertRaises(MediaPermanentError) as caught:
+                    asyncio.run(
+                        prepare_post_media(item, build_slideshow_video=False)
+                    )
+                self.assertIn("di bawah ambang", str(caught.exception))
+                leftovers = list((Path(tmp) / "tiktok").rglob("*.mp4"))
+                self.assertEqual(
+                    leftovers, [],
+                    "tidak boleh ada berkas media tersisa di folder kerja: "
+                    "sampah seukuran ini akan naik ke Telegram/YouTube",
+                )
+            finally:
+                Config.DOWNLOAD_DIR = original
+
+    def test_normal_video_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            original = Config.DOWNLOAD_DIR
+            Config.DOWNLOAD_DIR = str(base)
+            try:
+                sample = _make_video(base / "real.mp4", seconds=2)
+                item = TikTokItem(
+                    id="7431206717478159366", unique_id="jkt48.fahira",
+                    kind="video",
+                    raw={"fixture_media": {"video": str(sample)}},
+                )
+                media = asyncio.run(
+                    prepare_post_media(item, build_slideshow_video=False)
+                )
+                self.assertTrue(media.archive_video_path.exists())
+                self.assertGreaterEqual(media.size_bytes, 64 * 1024)
+            finally:
+                Config.DOWNLOAD_DIR = original
+
+    def test_size_helper_boundaries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tiny = Path(tmp) / "tiny.mp4"
+            tiny.write_bytes(b"0" * 1024)
+            mid = Path(tmp) / "mid.mp4"
+            mid.write_bytes(b"0" * (16 * 1024))
+            big = Path(tmp) / "big.mp4"
+            big.write_bytes(b"0" * (64 * 1024))
+            # Video: 1 KB dan 16 KB ditolak, tepat di ambang 64 KB diterima.
+            self.assertIsNotNone(looks_like_media_error_page(tiny, "video"))
+            self.assertIsNotNone(looks_like_media_error_page(mid, "video"))
+            self.assertIsNone(looks_like_media_error_page(big, "video"))
+            # Foto: ambangnya lebih rendah (8 KB), jadi 16 KB sudah cukup.
+            self.assertIsNotNone(looks_like_media_error_page(tiny, "photo"))
+            self.assertIsNone(looks_like_media_error_page(mid, "photo"))
 
 
 if __name__ == "__main__":

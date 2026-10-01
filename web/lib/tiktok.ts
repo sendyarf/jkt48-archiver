@@ -181,10 +181,21 @@ const POST_SELECT = `
  * Hanya arsip yang benar-benar sudah tersimpan yang ditampilkan: punya video
  * YouTube ATAU media di channel arsip Telegram (bisa diunduh lewat bot).
  * Ini mencegah kartu kosong/tanpa pemutar muncul saat bot masih memproses.
+ *
+ * `media_size_bytes` ikut disyaratkan. Saat IP diblokir, TikTok membalas
+ * halaman tantangan yang tersimpan sebagai .mp4 beberapa ribu byte; arsip
+ * seperti itu sempat lolos ke channel dan YouTube (1 Okt 2026), lalu tampil
+ * di website sebagai video yang tidak bisa diputar. Ambang di sini
+ * menyaringnya agar tidak lagi mengganggu pengunjung — arsipnya tetap ada
+ * di database dan bisa dibersihkan terpisah.
  */
+const MIN_PUBLIC_MEDIA_BYTES = 64 * 1024;
+
 const PUBLIC_POST_SQL = `
   p.visible = 1
   AND (COALESCE(p.youtube_video_id, '') <> '' OR COALESCE(p.telegram_message_ids, '') <> '')
+  AND (COALESCE(p.media_size_bytes, 0) >= ${MIN_PUBLIC_MEDIA_BYTES}
+       OR COALESCE(p.media_size_bytes, 0) = 0)
 `;
 
 /** Daftar akun TikTok yang dipantau (untuk sidebar kiri). */
