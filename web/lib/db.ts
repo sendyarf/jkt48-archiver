@@ -157,6 +157,15 @@ export function getDb(): DatabaseSync {
         if (!existing.has('content_uid')) {
           _db.exec('ALTER TABLE live_sessions ADD COLUMN content_uid TEXT');
         }
+        // UUID publik dipakai di query /watch dan katalog, jadi website yang
+        // start lebih dulu tidak boleh 500 di database lama. Bot mengisinya
+        // (termasuk backfill satu UUID per content_uid).
+        if (!existing.has('public_id')) {
+          _db.exec('ALTER TABLE live_sessions ADD COLUMN public_id TEXT');
+        }
+        _db.exec(
+          'CREATE INDEX IF NOT EXISTS idx_live_sessions_public_id ON live_sessions(public_id)'
+        );
       }
     } catch {
       // Tabel live_sessions belum ada (mis. database baru) — biarkan query
@@ -357,6 +366,8 @@ export interface VideoItem {
    * replay bot & /watch bila YouTube belum ter-upload (arsip TG first).
    */
   content_uid?: string;
+  /** UUID publik rekaman (isi URL /watch/<uuid>). */
+  public_id?: string;
   /** ID tersamar (Base64URL) untuk URL /watch publik. */
   watch_id?: string;
   thumbnail_url: string;
@@ -376,7 +387,28 @@ export interface VideoItem {
  * hanya untuk data lama yang belum memiliki UID.  YouTube ID tidak lagi
  * menentukan URL setelah upload selesai.
  */
-function canonicalWatchId(contentUid: string, youtubeId: string, fallback: string): string {
+/**
+ * Identitas URL publik yang dipakai di `/watch/{id}` dan deep-link Telegram.
+ *
+ * Urutan prioritas:
+ *   1. `public_id` (UUID) — bentuk yang muncul di link baru. Tidak
+ *      membocorkan `merged_177` (grup merge) maupun `sr_…_1790838576`
+ *      (ID sesi internal).
+ *   2. `content_uid` — data lama yang belum punya UUID.
+ *   3. YouTube ID disamar Base64URL — supaya ID YouTube tidak bocor mentah.
+ *   4. id numerik sebagai jaring pengaman terakhir.
+ *
+ * Semua fallback tetap dipertahankan: tautan lama yang sudah dibagikan
+ * harus tetap membuka halaman yang benar.
+ */
+function canonicalWatchId(
+  publicId: string,
+  contentUid: string,
+  youtubeId: string,
+  fallback: string,
+): string {
+  const pub = (publicId || '').trim();
+  if (pub) return pub;
   const content = (contentUid || '').trim();
   const youtube = (youtubeId || '').trim();
   // Catatan: query memakai COALESCE(content_uid → youtube_video_id → live_id)
@@ -384,8 +416,6 @@ function canonicalWatchId(contentUid: string, youtubeId: string, fallback: strin
   // Jangan pakai nilai itu apa adanya di URL publik — samarkan lewat
   // encodeWatchId agar ID YouTube tidak bocor (lihat lib/codec.ts).
   if (content && content !== youtube) return content;
-  // Data lama belum punya content_uid: pertahankan URL YouTube tersamar agar
-  // deep-link yang sudah dibagikan tidak berubah/404.
   if (youtube) return encodeWatchId(youtube);
   return fallback;
 }
@@ -453,6 +483,7 @@ interface VideoRow {
   created_at: string | null;
   youtube_video_id: string;
   content_uid: string | null;
+  public_id: string | null;
   telegram_message_ids: string | null;
   has_tg?: number;
   dur_start: string | null;
@@ -471,6 +502,8 @@ const CONTENT_UID_SQL = `COALESCE(
   MAX(NULLIF(ls.content_uid, '')),
   COALESCE(MAX(NULLIF(ls.youtube_video_id, '')), MAX(ls.live_id))
 )`;
+/** UUID publik grup: semua segmen satu rekaman hasil merge berbagi satu UUID. */
+const PUBLIC_ID_SQL = `COALESCE(MAX(NULLIF(ls.public_id, '')), '')`;
 
 /** Syarat satu baris sudah menjadi arsip yang bisa ditemukan pengguna.
  *  Telegram adalah sumber arsip/download; YouTube hanya sumber playback.
@@ -506,6 +539,7 @@ export function getAllVideos(options: {
       MAX(ls.created_at) as created_at,
       ${CONTENT_YT_SQL} AS youtube_video_id,
       ${CONTENT_UID_SQL} AS content_uid,
+    ${PUBLIC_ID_SQL} AS public_id,
       MAX(CASE WHEN ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != '' THEN 1 ELSE 0 END) as has_tg,
       MAX(COALESCE(NULLIF(ls.telegram_message_ids, ''), '')) AS telegram_message_ids,
       MIN(ls.download_started_at) as dur_start,
@@ -582,8 +616,9 @@ export function getAllVideos(options: {
     const title = buildDisplayTitle(platform, dispName, startedAt);
     const ytId = (r.youtube_video_id || '').trim();
     const contentUid = (r.content_uid || '').trim();
+  const publicId = (r.public_id || '').trim();
     const durSec = durationFromRange(r.dur_start, r.dur_end);
-    const watchKey = canonicalWatchId(contentUid, ytId, String(r.id));
+    const watchKey = canonicalWatchId(publicId, contentUid, ytId, String(r.id));
     return {
       id: watchKey,
       platform: platform,
@@ -701,6 +736,7 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
       MAX(ls.created_at) as created_at,
       ${CONTENT_YT_SQL} AS youtube_video_id,
       ${CONTENT_UID_SQL} AS content_uid,
+    ${PUBLIC_ID_SQL} AS public_id,
       MAX(CASE WHEN ls.telegram_message_ids IS NOT NULL AND ls.telegram_message_ids != '' THEN 1 ELSE 0 END) as has_tg,
       MAX(COALESCE(ls.download_ended_at, ls.created_at)) as last_end,
       CASE
@@ -726,7 +762,8 @@ export function getUpcomingVideos(options: UpcomingOptions = {}): VideoItem[] {
     const title = buildDisplayTitle(platform, dispName, startedAt);
     const ytId = (r.youtube_video_id || '').trim();
     const contentUid = (r.content_uid || '').trim();
-    const watchKey = canonicalWatchId(contentUid, ytId, String(r.id));
+  const publicId = (r.public_id || '').trim();
+    const watchKey = canonicalWatchId(publicId, contentUid, ytId, String(r.id));
     return {
       id: watchKey,
       platform,
@@ -763,6 +800,7 @@ interface VideoDetailRow {
   download_ended_at: string | null;
   youtube_video_id: string | null;
   content_uid: string | null;
+  public_id: string | null;
   telegram_message_ids: string | null;
   is_visible: number;
   publish_at: string | null;
@@ -795,6 +833,7 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
       ls.download_ended_at,
       ls.youtube_video_id,
       ls.content_uid,
+      ls.public_id,
       ls.telegram_message_ids,
       (${publicVisibilitySql('ls')}) as is_visible,
       CASE
@@ -808,7 +847,8 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     -- Hanya baris yang sudah memiliki arsip Telegram atau YouTube yang boleh
     -- dibuka lewat /watch. UID dari session yang belum diarsipkan akan
     -- menghasilkan halaman kosong/player tak terduga.
-    WHERE (ls.youtube_video_id = ? OR ls.live_id = ? OR ls.id = ? OR ls.content_uid = ?)
+    WHERE (ls.youtube_video_id = ? OR ls.live_id = ? OR ls.id = ? OR ls.content_uid = ?
+          OR ls.public_id = ?)
       AND (
         (ls.youtube_video_id IS NOT NULL AND ls.youtube_video_id != '')
         OR EXISTS (
@@ -842,7 +882,9 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
     LIMIT 1
   `;
   const stmt = db.prepare(sql);
-  const r = stmt.get(lookupId, videoIdOrLiveId, videoIdOrLiveId, lookupId) as unknown as VideoDetailRow | undefined;
+  const r = stmt.get(
+    lookupId, videoIdOrLiveId, videoIdOrLiveId, lookupId, lookupId
+  ) as unknown as VideoDetailRow | undefined;
   if (!r) return null;
   const dispName = cleanDisplayName(r.member_username, r.streamer_name || undefined);
   const startedAt = r.started_at || r.created_at || '';
@@ -850,13 +892,14 @@ export function getVideoById(videoIdOrLiveId: string): VideoItem | null {
   const title = buildDisplayTitle(platform, dispName, startedAt);
   const ytId = (r.youtube_video_id || '').trim();
   const contentUid = (r.content_uid || '').trim();
+  const publicId = (r.public_id || '').trim();
   const durSec = durationFromRange(r.download_started_at, r.download_ended_at);
 
   // publish_at dari datetime() berbentuk "YYYY-MM-DD HH:MM:SS" (UTC) — tambahkan 'Z'
   // agar diparse sebagai UTC, bukan waktu lokal browser.
   const publishAt = r.publish_at ? r.publish_at.replace(' ', 'T') + 'Z' : '';
 
-  const watchKey = canonicalWatchId(contentUid, ytId, String(r.id));
+  const watchKey = canonicalWatchId(publicId, contentUid, ytId, String(r.id));
   return {
     id: watchKey,
     platform: platform,

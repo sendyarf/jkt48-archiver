@@ -6,6 +6,7 @@ import sqlite3
 import json
 import logging
 import os
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Generator
@@ -256,6 +257,45 @@ def init_db() -> None:
                 """
             )
 
+        # public_id: UUID untuk URL publik `/watch/<uuid>` dan deep-link
+        # `t.me/<bot>?start=<uuid>`. Konten hasil merge harus punya SATU
+        # public_id yang dibagi semua segmennya — kalau tiap baris dapat UUID
+        # sendiri, satu rekaman multi-segmen akan muncul sebagai beberapa URL
+        # berbeda.
+        if "public_id" not in cols:
+            conn.execute("ALTER TABLE live_sessions ADD COLUMN public_id TEXT")
+            logger.info("Schema migration: added public_id column to live_sessions")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_live_sessions_public_id "
+            "ON live_sessions(public_id)"
+        )
+        # Backfill: SATU UUID per content_uid. Kalau tiap baris mendapat UUID
+        # sendiri, satu rekaman multi-segmen akan muncul sebagai beberapa URL
+        # berbeda - padahal kontennya cuma satu. Baris tanpa content_uid
+        # (seharusnya tidak ada setelah migrasi di atas) mendapat UUID sendiri.
+        missing = conn.execute(
+            """SELECT live_id, COALESCE(NULLIF(content_uid, ''), '') AS uid
+                 FROM live_sessions
+                WHERE public_id IS NULL OR public_id = ''"""
+        ).fetchall()
+        if missing:
+            by_uid: dict[str, str] = {}
+            for row in missing:
+                uid = str(row["uid"] or "").strip()
+                key = uid or f"live:{row['live_id']}"
+                public = by_uid.get(key)
+                if public is None:
+                    public = new_public_id()
+                    by_uid[key] = public
+                conn.execute(
+                    "UPDATE live_sessions SET public_id = ? WHERE live_id = ?",
+                    (public, row["live_id"]),
+                )
+            logger.info(
+                "Schema migration: backfilled public_id for %d row(s) (%d konten)",
+                len(missing), len(by_uid),
+            )
+
         # Migrate merge_groups columns if missing
         mg_cols = [r[1] for r in conn.execute("PRAGMA table_info(merge_groups)")]
         if "live_title" not in mg_cols:
@@ -443,15 +483,32 @@ def insert_live(
 
     `platform` menandai asal sesi ('idn' atau 'showroom'); default 'idn' agar
     pemanggil lama tidak perlu berubah.
+
+    `public_id` (UUID) otomatis dibuat bila belum ada. Ini yang dipakai URL
+    publik `/watch/<uuid>` dan deep-link `t.me/<bot>?start=<uuid>`, supaya
+    tautan tidak lagi membocorkan identitas internal seperti `merged_177` atau
+    `sr_..._1790838576`. Baris yang sudah punya public_id tidak ditimpa,
+    sehingga resume/reconnect tidak mengubah tautan yang sudah dibagikan.
     """
     with _get_conn() as conn:
         conn.execute(
             """
             INSERT OR IGNORE INTO live_sessions
-                (live_id, member_username, member_name, started_at, hls_url, platform, content_uid, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'detected')
+                (live_id, member_username, member_name, started_at, hls_url,
+                 platform, content_uid, public_id, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'detected')
             """,
-            (live_id, member_username, member_name, started_at, hls_url, platform, live_id),
+            (
+                live_id, member_username, member_name, started_at, hls_url,
+                platform, live_id, new_public_id(),
+            ),
+        )
+        # Sesi yang sudah ada tapi belum punya public_id (mis. baris lama yang
+        # di-backfill migrasi) diberi satu sekarang.
+        conn.execute(
+            "UPDATE live_sessions SET public_id = ? "
+            "WHERE live_id = ? AND (public_id IS NULL OR public_id = '')",
+            (new_public_id(), live_id),
         )
 
 
@@ -464,6 +521,7 @@ _SESSION_FIELD_COLS = {
     "telegram_gave_up",
     "youtube_video_id",
     "content_uid",
+    "public_id",
     "download_started_at",
     "download_ended_at",
     "error_message",
@@ -584,6 +642,59 @@ def get_archived_session_by_youtube_id(youtube_video_id: str) -> Optional[dict]:
             (yt,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def new_public_id() -> str:
+    """UUID v4 untuk `public_id` — identitas publik satu rekaman.
+
+    Dipakai di URL `/watch/<uuid>` dan deep-link `t.me/<bot>?start=<uuid>`.
+    UUID dipilih karena:
+    • Tidak membocorkan `merged_177` (grup merge) maupun `sr_..._1790838576`
+      (ID sesi internal).
+    • Cukup pendek untuk deep-link Telegram (batas 64 byte).
+    • Cocok dipakai sebagai primary key di web tanpa encoding tambahan.
+    """
+    return str(uuid.uuid4())
+
+
+def get_archived_session_by_public_id(public_id: str) -> Optional[dict]:
+    """Sesi arsip dicari lewat `public_id` (UUID). Dikembalikan sebagai dict.
+
+    Satu rekaman hasil merge punya beberapa baris (satu per segmen) yang
+    berbagi `public_id`; yang dipilih baris pertama yang sudah punya arsip
+    Telegram.
+    """
+    pid = (public_id or "").strip()
+    if not pid:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            """SELECT live_id, member_username, member_name, started_at,
+                      telegram_message_ids, file_size_bytes
+               FROM live_sessions
+               WHERE public_id = ?
+                 AND telegram_message_ids IS NOT NULL
+                 AND telegram_message_ids != ''
+               ORDER BY id ASC LIMIT 1""",
+            (pid,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_public_id(live_id_or_content_uid: str) -> Optional[str]:
+    """Ambil public_id dari live_id atau content_uid (untuk link builder)."""
+    key = (live_id_or_content_uid or "").strip()
+    if not key:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            """SELECT public_id FROM live_sessions
+               WHERE public_id IS NOT NULL AND public_id != ''
+                 AND (live_id = ? OR content_uid = ?)
+               ORDER BY id ASC LIMIT 1""",
+            (key, key),
+        ).fetchone()
+    return str(row["public_id"]) if row else None
 
 
 def get_archived_session_by_content_uid(content_uid: str) -> Optional[dict]:

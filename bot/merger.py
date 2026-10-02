@@ -50,6 +50,7 @@ from bot.database import (
     update_merge_group_last_segment,
     update_merge_group_slug,
     mark_session_failed,
+    new_public_id,
 )
 from bot.downloader import delete_file, has_enough_disk_space
 from bot.idn_lookup import live_key_from
@@ -651,6 +652,12 @@ class MergeManager:
 
         close_merge_group(group_id, merged_path, merged_live_id)
         set_session_fields(group_id=group_id, content_uid=merged_live_id)
+        # Satu UUID untuk SELURUH segmen grup: konten hasil merge cuma satu,
+        # jadi harus punya satu URL publik juga. Kalau tiap segmen memakai
+        # public_id masing-masing, satu rekaman multi-segmen akan muncul
+        # sebagai beberapa URL berbeda.
+        public_id = new_public_id()
+        set_session_fields(group_id=group_id, public_id=public_id)
         try:
             merged_size = Path(merged_path).stat().st_size
         except OSError:

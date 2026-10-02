@@ -32,7 +32,7 @@ export default async function PublicCatalog({ searchParams }: { searchParams: Pr
   // Judul hero sekaligus jadi h1 halaman; saat hero tidak ada, h1 diambil alih
   // judul section katalog.
   const hero = !filtered && result.page === 1 ? result.videos[0] : undefined;
-  const heroWatchUrl = hero ? `/watch/${hero.watch_id || hero.content_uid || hero.youtube_video_id || hero.id}` : '/#catalog';
+  const heroWatchUrl = hero ? `/watch/${hero.public_id || hero.watch_id || hero.content_uid || hero.youtube_video_id || hero.id}` : '/#catalog';
   const catalogHeading = filtered ? 'Hasil pencarian' : 'Replay terbaru';
   return <div className="public-catalog">
     {hero ? <section className="container catalog-hero-block"><HeroSpotlight video={hero} watchUrl={heroWatchUrl} /></section> : null}

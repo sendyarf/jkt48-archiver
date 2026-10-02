@@ -24,9 +24,9 @@ export async function generateMetadata({ params }: WatchPageProps): Promise<Meta
   if (!video) {
     return { title: 'Replay tidak ditemukan' };
   }
-  // URL kanonis: bentuk watch_id (Base64URL YT / content_uid) — varian ID mentah
+  // URL kanonis: UUID publik (public_id), lalu watch_id/ID lama sebagai fallback.
   // atau kunci lain di-consolidate ke satu URL.
-  const watchPath = `/watch/${video.watch_id || video.content_uid || video.youtube_video_id || String(video.id)}`;
+  const watchPath = `/watch/${video.public_id || video.watch_id || video.content_uid || video.youtube_video_id || String(video.id)}`;
   const ogImage = video.thumbnail_url || undefined;
   return {
     title: `${video.title} - ${video.streamer_name}`,
@@ -65,15 +65,17 @@ export default async function WatchPage({ params }: WatchPageProps) {
     notFound();
   }
 
-  const canonicalId = video.watch_id || video.content_uid || video.youtube_video_id || String(video.id);
-  // URL lama (YouTube mentah/tersamar) dan ID numerik tetap kompatibel, tetapi
-  // setelah ditemukan diarahkan ke identitas content_uid yang stabil.
+  const canonicalId = video.public_id || video.watch_id || video.content_uid || video.youtube_video_id || String(video.id);
+  // URL lama (content_uid, YouTube mentah/tersamar, ID numerik) tetap kompatibel,
+  // tetapi setelah ditemukan diarahkan ke UUID publik yang stabil.
   if (id !== canonicalId) {
     permanentRedirect(`/watch/${encodeURIComponent(canonicalId)}`);
   }
 
-  // Telegram deep-link memakai content UID agar tidak berubah saat YouTube selesai.
-  const contentKey = video.content_uid || video.youtube_video_id || canonicalId;
+  // Telegram deep-link memakai UUID publik bila ada, supaya payload-nya tidak
+  // lagi membocorkan `merged_177` / `sr_..._1790838576`. Fallback ke
+  // content_uid dan YouTube ID untuk rekaman lama; bot menerima ketiganya.
+  const contentKey = video.public_id || video.content_uid || video.youtube_video_id || canonicalId;
 
   // Related: same member first, pad with recent other-member videos if <6.
   const { videos: memberVideos } = getAllVideos({
@@ -176,7 +178,7 @@ export default async function WatchPage({ params }: WatchPageProps) {
           </div>
           {!isPrerelease && video.youtube_video_id && (
             <WatchTracker
-              watchId={`/watch/${video.watch_id || contentKey}`}
+              watchId={`/watch/${video.public_id || video.watch_id || contentKey}`}
               title={video.title}
               thumbnailUrl={video.thumbnail_url}
               streamerName={video.streamer_name}
@@ -238,7 +240,7 @@ export default async function WatchPage({ params }: WatchPageProps) {
               {filteredRelated.map((rel) => (
                 <Link
                   key={rel.content_uid || rel.youtube_video_id || rel.id}
-                  href={`/watch/${rel.watch_id || rel.content_uid || rel.youtube_video_id || rel.id}`}
+                  href={`/watch/${rel.public_id || rel.watch_id || rel.content_uid || rel.youtube_video_id || rel.id}`}
                   className="related-card"
                 >
                   <div className="related-thumb-box">

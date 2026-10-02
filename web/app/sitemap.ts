@@ -38,7 +38,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     const batch = getAllVideos({ page, limit: 100 });
     totalPages = batch.totalPages;
     for (const video of batch.videos) {
-      const id = video.watch_id || video.content_uid || video.youtube_video_id || String(video.id);
+      const id = video.public_id || video.watch_id || video.content_uid || video.youtube_video_id || String(video.id);
       entries.push({
         url: url(`/watch/${id}`),
         lastModified: video.created_at || undefined,

@@ -37,6 +37,11 @@ POLL_TIMEOUT = 25
 # Validasi payload deep-link sebelum query DB / copyMessage.
 # YouTube video ID: 11 karakter [A-Za-z0-9_-].
 _YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+# Payload deep-link: UUID publik (URL /watch/<uuid> dan ?start=<uuid>),
+# `notify_<yt_id>`, `tt_<post_id>`, content_uid lama (merged_<gid> / live_id),
+# atau YouTube video ID mentah. UUID adalah jalur UTAMA; pola lama tetap
+# diterima supaya tautan yang sudah dibagikan tidak 404.
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _NOTIFY_RE = re.compile(r"^notify_[A-Za-z0-9_-]{11}$")
 _TIKTOK_RE = re.compile(r"^tt_[A-Za-z0-9_-]{1,64}$")
 # content_uid: merged_<gid> atau live_id (IDN: user_<epoch>, Showroom: sr_..._<epoch>)
@@ -64,7 +69,9 @@ def _rate_limited(chat_id: int, now: Optional[float] = None) -> bool:
 
 
 def _valid_payload(payload: str) -> bool:
-    """True bila payload deep-link berformat sah (yt / notify_ / tt_ / content_uid)."""
+    """True bila payload deep-link berformat sah (uuid / yt / notify_ / tt_ / content_uid)."""
+    if _UUID_RE.match(payload):
+        return True
     if _NOTIFY_RE.match(payload):
         return True
     if _TIKTOK_RE.match(payload):
@@ -348,9 +355,13 @@ class ReplayBot:
             await self._send_tiktok(chat_id, payload[3:])
             return
 
-        # Lookup: content_uid dulu (merged_ / live_id), fallback YouTube ID.
+        # Lookup: public_id (UUID) dulu — itu jalur utama sekarang. Setelah itu
+        # content_uid (merged_ / live_id) dan YouTube ID tetap dicoba supaya
+        # tautan lama yang sudah dibagikan orang tetap berfungsi.
         session = None
-        if _MERGED_RE.match(payload) or _LIVE_ID_RE.match(payload):
+        if _UUID_RE.match(payload):
+            session = database.get_archived_session_by_public_id(payload)
+        if not session and (_MERGED_RE.match(payload) or _LIVE_ID_RE.match(payload)):
             session = database.get_archived_session_by_content_uid(payload)
         if not session:
             session = database.get_archived_session_by_youtube_id(payload)
