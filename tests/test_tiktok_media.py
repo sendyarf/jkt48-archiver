@@ -21,6 +21,7 @@ from bot.tiktok_media import (
     MediaError,
     MediaPermanentError,
     _ffconcat_escape,
+    YTDLP_CLEAN_FORMAT,
     _ytdlp_config_args,
     build_slideshow,
     cleanup_media,
@@ -665,6 +666,132 @@ class TestTooSmallMediaRejected(unittest.TestCase):
             # Foto: ambangnya lebih rendah (8 KB), jadi 16 KB sudah cukup.
             self.assertIsNotNone(looks_like_media_error_page(tiny, "photo"))
             self.assertIsNone(looks_like_media_error_page(mid, "photo"))
+
+
+class TestWatermarkFreeFormatSelector(unittest.TestCase):
+    """
+    Regresi: selector yt-dlp wajib benar-benar MEMILIH format, bukan membuang
+    semuanya.
+
+    Insiden 3 Okt 2026: filter `format_note!~=watermark` (tanpa penanda `?`)
+    membuat selector gagal total untuk SETIAP video TikTok. Format TikTok
+    tidak punya `format_note` sama sekali (nilainya `None`), dan yt-dlp
+    menandai field yang `None` sebagai TIDAK LAYAK bila filter tidak memakai
+    penanda `?`. Akibatnya yt-dlp selalu keluar dengan "Requested format is
+    not available", lalu seluruh unduhan jatuh ke rung CDN yang gambarnya
+    memuat watermark TikTok terebak.
+    """
+
+    # Daftar format yang SESUNGGUHNYA dihasilkan extractor TikTok
+    # (terverifikasi 3 Okt 2026, yt-dlp 2026.08.19): tidak satu pun format
+    # punya `format_note`, dan video+audio sudah berada dalam satu berkas.
+    REAL_TIKTOK_FORMATS = [
+        {"format_id": "audio", "url": "u", "ext": "mp3", "format_note": None,
+         "vcodec": "none", "acodec": "mp3", "height": 0},
+        {"format_id": "h264_540p_503916-0", "url": "u", "ext": "mp4",
+         "format_note": None, "vcodec": "h264", "acodec": "aac", "height": 1024},
+        {"format_id": "h264_540p_1483984-0", "url": "u", "ext": "mp4",
+         "format_note": None, "vcodec": "h264", "acodec": "aac", "height": 1024},
+        {"format_id": "bytevc1_720p_1163453-0", "url": "u", "ext": "mp4",
+         "format_note": None, "vcodec": "h265", "acodec": "aac", "height": 1280},
+    ]
+
+    # Varian berwatermark seperti yang|border extractor lain: `download`
+    # (format_note='watermarked') dan `download_addr` (id memuat 'download').
+    WATERMARKED_FORMATS = [
+        {"format_id": "download", "url": "u", "ext": "mp4",
+         "format_note": "watermarked", "vcodec": "h264", "acodec": "aac",
+         "height": 1080, "preference": -2},
+        {"format_id": "download_addr", "url": "u", "ext": "mp4",
+         "format_note": None, "vcodec": "h264", "acodec": "aac",
+         "height": 1080, "preference": -1},
+        {"format_id": "h264_1080p", "url": "u", "ext": "mp4",
+         "format_note": None, "vcodec": "h264", "acodec": "aac", "height": 1080},
+    ]
+
+    @staticmethod
+    def _select(formats: list) -> list:
+        """Jalankan selector produksi terhadap daftar format buatan."""
+        from yt_dlp import YoutubeDL
+
+        selector = YoutubeDL({"quiet": True}).build_format_selector(
+            YTDLP_CLEAN_FORMAT
+        )
+        return list(selector({"formats": list(formats), "incomplete_formats": {}}))
+
+    def test_selector_is_valid_syntax(self):
+        """Selector harus bisa di-build yt-dlp (tanpa SyntaxError)."""
+        from yt_dlp import YoutubeDL
+
+        YoutubeDL({"quiet": True}).build_format_selector(YTDLP_CLEAN_FORMAT)
+
+    def test_real_tiktok_formats_are_not_all_rejected(self):
+        """
+        REGRESI UTAMA: dengan daftar format TikTok nyata, selector lama memilih
+        NOL format sehingga yt-dlp gagal. Selector baru harus memilih salah
+        satunya, bukan membuang semuanya.
+        """
+        picked = self._select(self.REAL_TIKTOK_FORMATS)
+        self.assertTrue(
+            picked,
+            "selector tidak memilih format apa pun untuk format TikTok nyata",
+        )
+        self.assertEqual(picked[0]["format_id"], "bytevc1_720p_1163453-0")
+
+    def test_watermarked_formats_are_excluded(self):
+        """Varian `download` dan `download_addr` tidak boleh terpilih."""
+        picked = self._select(self.WATERMARKED_FORMATS)
+        self.assertTrue(picked, "selector harus memilih format bersih yang tersedia")
+        for fmt in picked:
+            self.assertNotIn("download", fmt["format_id"])
+
+    def test_format_note_filter_is_none_inclusive(self):
+        """
+        Filter `format_note` WAJIB memakai penanda `?` (none-inclusive).
+
+        Tanpa `?`, yt-dlp membuang format yang field-nya `None` -- itulah
+        penyebab selector lama gagal total.
+        """
+        for part in YTDLP_CLEAN_FORMAT.split("/"):
+            if "format_note" in part:
+                self.assertIn(
+                    "format_note!~=?watermark", part,
+                    "filter format_note harus none-inclusive (`?`)",
+                )
+
+    def test_audio_only_format_never_chosen(self):
+        """`best` tidak boleh jatuh ke format audio-only `audio`."""
+        picked = self._select(self.REAL_TIKTOK_FORMATS)
+        self.assertNotIn("audio", [f["format_id"] for f in picked])
+
+    def test_download_video_passes_clean_format_to_ytdlp(self):
+        """`download_video` benar-benar memakai selector bersih itu."""
+        captured: dict = {}
+
+        async def fake_exec(*cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            return _FakeProcess(returncode=1, stdout=b"gagal")
+
+        async def fake_embed(*args, **kwargs):
+            return {}
+
+        item = TikTokItem(
+            id="video-x", unique_id="indahjkt48", kind="video",
+            source_url="https://www.tiktok.com/@indahjkt48/video/123",
+            video_url="",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(asyncio, "create_subprocess_exec", fake_exec), \
+                 mock.patch("bot.tiktok_media.fetch_embed_post_media", fake_embed):
+                with self.assertRaises(MediaError):
+                    asyncio.run(
+                        download_video(item, dest_dir=tmp, timeout_seconds=5)
+                    )
+
+        cmd = captured["cmd"]
+        self.assertIn("--format", cmd)
+        self.assertEqual(cmd[cmd.index("--format") + 1], YTDLP_CLEAN_FORMAT)
+
 
 
 if __name__ == "__main__":

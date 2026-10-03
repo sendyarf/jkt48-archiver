@@ -451,6 +451,48 @@ async def download_images(
                 logger.warning("Unduhan foto #%d gagal (%s): %s", index, source[:80], exc)
     return local_files
 
+# ── Format yt-dlp yang bebas watermark ────────────────────────────────────
+#
+# TikTok (dan banyak extractor lain) menyediakan varian video dari `playAddr`
+# (bersih) DAN `downloadAddr` (berwatermark, `format_id='download'`,
+# `format_note='watermarked'`). Selector wajib memilih yang bersih.
+#
+# Filter `format_note!~=watermark` (tanpa `?`) membuat selector GAGAL TOTAL
+# pada semua video TikTok nyata:
+#
+#   Format TikTok praktis TIDAK PERNAH punya `format_note` — video dari
+#   `bitrateInfo[].PlayAddr` diberi id `h264_540p_503916`/`bytevc1_720p_...`
+#   dengan `format_note=None` (terverifikasi 3 Okt 2026: yt-dlp 2026.08.19,
+#   video 7603256150196358408). yt-dlp memakai `_check_formats_filter`
+#   (YoutubeDL.py ~2264): kalau field `None` dan filter TANPA penanda `?`,
+#   format-nya DILEWATI, bukan lolos. Hasilnya nol format terpilih →
+#   "Requested format is not available" → yt-dlp selalu gagal.
+#
+# Akibatnya rung 1 mati total dan SELURUH unduhan jatuh ke rung 2/3 yang
+# mengambil `playAddr` mentah dari CDN — dan varian `playAddr` yang
+# disajikan listing publik justru memuat logo TikTok terebak ke gambar
+# (terverifikasi 3 Okt 2026: file 576x1024 hasil unduhan rung 2 memuat
+# watermark, sedangkan unduhan yt-dlp yang sama 720x1280 bersih).
+#
+# Perbaikan:
+#   * `format_note!~=?watermark` — tanda `?` (none-inclusive) bikin format
+#     tanpa `format_note` tetap LAYAK; hanya yang memang bertanda
+#     watermark yang dibuang.
+#   * `format_id!~=download` tetap dipertahankan karena `format_id` selalu
+#     diisi yt-dlp (diberi indeks bila kosong), jadi tidak terkena jebakan
+#     `None` yang sama — dan sekali ini juga menutup `download_addr`.
+#   * `best` (bukan `bestvideo`) jadi pilihan utama: seluruh format TikTok
+#     web sudah video+audio dalam satu berkas (acodec=aac), jadi
+#     `bestvideo` tidak pernah cocok dan `+bestaudio` hanya memaksa
+#     penggabungan stream yang tidak diperlukan.
+YTDLP_CLEAN_FORMAT = (
+    "best[format_id!~=download][format_note!~=?watermark]"
+    # Fallback untuk situs yang memang memisahkan video & audio.
+    "/bestvideo[format_id!~=download][format_note!~=?watermark]+bestaudio"
+    "/best[format_id!~=download][format_note!~=?watermark]"
+)
+
+
 async def download_video(
     item: TikTokItem,
     dest_dir: Optional[Union[str, Path]] = None,
@@ -473,24 +515,17 @@ async def download_video(
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / f"{item.id}.mp4"
 
-    # 1) yt-dlp (juga menangani story).
-    #    Format dipaksa MENGECUALIKAN varian berwatermark (format_id
-    #    download/download_addr, format_note ~watermark) — pilihan `best`
-    #    bisa jatuh ke downloadAddr bila playAddr gagal diuji/404, dan itu
-    #    membakar watermark TikTok ke file → beda dengan arsip Telegram.
-    #    Bila tidak ada format bersih, yt-dlp gagal → lanjut rung embed.
+    # 1) yt-dlp (juga menangani story) — jalur UTAMA dan satu-satunya yang
+    #    terverifikasi bebas watermark. Rung 2/3 di bawah memakai `playAddr`
+    #    mentah dari listing publik, yang varian gambarnya bisa memuat logo
+    #    TikTok terebak, jadi jalur ini TIDAK boleh gagal diam-diam.
     if "://" in item.page_url:
-        clean_fmt = (
-            "bestvideo[format_id!~=download][format_note!~=watermark]"
-            "+bestaudio"
-            "/best[format_id!~=download][format_note!~=watermark]"
-        )
         cmd = [
             *ytdlp_command(),
             "--no-playlist",
             "--no-warnings",
             "--newline",
-            "--format", clean_fmt,
+            "--format", YTDLP_CLEAN_FORMAT,
             "--merge-output-format", "mp4",
             "--retries", "5",
             "--retry-sleep", "5",
@@ -536,11 +571,21 @@ async def download_video(
         except FileNotFoundError as exc:
             logger.warning("yt-dlp tidak tersedia: %s", exc)
 
-    # 2) Unduh langsung dari CDN tanpa watermark.
+    # 2) Unduh langsung dari CDN — jalur cadangan, BUKAN jaminan bebas watermark.
     #    JANGAN pakai `wmplay` (varian berwatermark) — bila `video_url` kosong
     #    (tikwm hanya punya wmplay), lanjut ke rung embed di bawah.
+    #
+    #    Catatan jujur: `video_url` ini `playAddr` dari listing publik, dan
+    #    varian gambarnya bisa memuat logo TikTok terebak (terbukti 3 Okt
+    #    2026 pada 7603256150196358408). Karena itu jalur ini hanya dipakai
+    #    setelah yt-dlp gagal, dan keputusannya dilaporkan lewat warning supaya
+    #    berkas berwatermark tidak diam-diam terarsip seolah-olah "aman".
     cdn_url = item.video_url or ""
     if cdn_url:
+        logger.warning(
+            "yt-dlp tidak berhasil untuk %s — fallback CDN dipakai; "
+            "varian ini BISA berwatermark.", item.id,
+        )
         try:
             async with httpx.AsyncClient(
                 timeout=timeout_seconds, headers=_MEDIA_HEADERS, follow_redirects=True
