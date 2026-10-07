@@ -163,8 +163,20 @@ def print_status() -> None:
     yt_channels = database.get_youtube_channels()
     print(f"\n📺 YouTube Channels ({len(yt_channels)})\n")
     if yt_channels:
-        QUOTA_LIMIT = 10000
-        UPLOAD_COST = 1600  # units per upload
+        # Kuota YouTube Data API punya bucket TERPISAH per metode. `videos.insert`
+        # memakai bucket sendiri: 100 panggilan/hari dengan biaya 1 per panggilan,
+        # sehingga TIDAK diambil dari kuota 10.000 unit/hari untuk endpoint lain.
+        # Model lama (10.000 unit × 1.600 unit/upload = "6 upload") membuat bar
+        # sisa kuota salah: channel dengan 20 upload hari ini dilaporkan melebihi
+        # batas walau YouTube masih menerimanya.
+        # Sumber: developers.google.com/youtube/v3/determine_quota_cost
+        # ("Projects ... a default quota allocation of 100 search.list calls,
+        #  100 videos.insert calls, and 10,000 units per day ... for all other
+        #  endpoints"; reset: "midnight Pacific Time (PT)").
+        # Catatan: bucket ini per PROJECT GCP — channel yang memakai client_secret
+        # berbagi satu project ikut berbagi kuota yang sama.
+        QUOTA_LIMIT = 100  # videos.insert per hari (per project)
+        UPLOAD_COST = 1  # 1 kuota per upload
         for ch in yt_channels:
             label = ch["channel_label"]
             token = ch["token_file"]
@@ -173,14 +185,14 @@ def print_status() -> None:
             quota_used = uploads * UPLOAD_COST
             quota_left = max(0, QUOTA_LIMIT - quota_used)
             token_status = check_token(token)
-            bar_filled = int(quota_used / QUOTA_LIMIT * 20)
+            bar_filled = min(20, int(quota_used / QUOTA_LIMIT * 20))
             bar = "█" * bar_filled + "░" * (20 - bar_filled)
             print(f"  📺 {label}")
             print(f"     Token  : {token_status}")
             print(f"     File   : {token}")
-            print(f"     Upload : {uploads}x hari ini  (quota ~{quota_used:,}/{QUOTA_LIMIT:,} units)")
-            print(f"     Sisa   : [{bar}] ~{quota_left:,} units ({max(0, quota_left // UPLOAD_COST)} upload lagi)")
-            print(f"     Reset  : {last_reset}")
+            print(f"     Upload : {uploads}x hari ini  (bucket {quota_used:,}/{QUOTA_LIMIT:,} videos.insert)")
+            print(f"     Sisa   : [{bar}] {quota_left:,} upload lagi")
+            print(f"     Reset  : {last_reset} (counter; kuota reset tengah malam PT)")
             print()
     else:
         print("  ⚠️  Tidak ada channel YouTube yang terkonfigurasi.")

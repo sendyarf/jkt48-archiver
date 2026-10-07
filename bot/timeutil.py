@@ -101,3 +101,69 @@ def format_display(
     if converted is None:
         return ""
     return converted.strftime(fmt)
+
+
+# ─── Waktu Pasifik (jendela reset kuota Google/YouTube) ──────────────────────
+#
+# Kuota harian Google Cloud / YouTube Data API di-reset pada tengah malam waktu
+# Pasifik — "Daily quotas reset at midnight Pacific Time (PT)" (YouTube Data API,
+# Quota Calculator). Waktu Pasifik sendiri berpindah antara PST (UTC-8) dan PDT
+# (UTC-7, Maret–November), sehingga offset-nya HARUS dihitung dari tanggalnya;
+# offset tetap akan meleset satu jam selama setengah tahun.
+_QUOTA_RESET_TZ_NAME = "America/Los_Angeles"
+
+try:  # pragma: no cover - hasilnya bergantung pada tz database mesin
+    from zoneinfo import ZoneInfo
+
+    _PACIFIC = ZoneInfo(_QUOTA_RESET_TZ_NAME)
+except Exception:  # tz database tidak tersedia (container minim / Windows tanpa tzdata)
+    _PACIFIC = None
+
+
+def _nth_weekday(year: int, month: int, weekday: int, nth: int) -> datetime:
+    """Tanggal ke-`nth` yang jatuh pada `weekday` (Senin=0 … Minggu=6) di bulan itu."""
+    first = datetime(year, month, 1)
+    shift = (weekday - first.weekday()) % 7
+    return first + timedelta(days=shift + 7 * (nth - 1))
+
+
+def _pacific_offset_by_dst_rule(moment_utc: datetime) -> int:
+    """
+    Fallback saat tz database tidak ada: aturan DST Amerika Serikat sejak 2007.
+
+      * mulai   : Minggu kedua Maret      pukul 02.00 PST = 10.00 UTC → UTC-7
+      * selesai : Minggu pertama November pukul 02.00 PDT = 09.00 UTC → UTC-8
+
+    `moment_utc` harus sadar zona waktu (UTC).
+    """
+    year = moment_utc.year
+    dst_start = _nth_weekday(year, 3, 6, 2).replace(hour=10, tzinfo=timezone.utc)
+    dst_end = _nth_weekday(year, 11, 6, 1).replace(hour=9, tzinfo=timezone.utc)
+    return -7 if dst_start <= moment_utc < dst_end else -8
+
+
+def pacific_offset_hours(now: Optional[datetime] = None) -> int:
+    """
+    Offset jam UTC→waktu Pasifik yang berlaku pada `now` (−7 saat PDT, −8 saat PST).
+
+    `now` boleh naif (dianggap UTC) atau sadar zona waktu: yang dibandingkan adalah
+    INSTAN-nya, jadi hasilnya sama berapa pun zona waktu server — sesuai aturan
+    proyek bahwa seluruh waktu disimpan dalam UTC.
+
+    Dipakai `bot.database.reset_channel_counters_if_new_day()` agar pergantian
+    "hari kuota" YouTube (tengah malam PT) tidak dimajukan 7–8 jam ke tengah
+    malam UTC.
+    """
+    moment = utc_now() if now is None else now
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    moment_utc = moment.astimezone(timezone.utc)
+
+    if _PACIFIC is not None:
+        try:
+            offset = moment_utc.astimezone(_PACIFIC).utcoffset()
+        except Exception:
+            offset = None
+        if offset is not None:
+            return int(offset.total_seconds() // 3600)
+    return _pacific_offset_by_dst_rule(moment_utc)

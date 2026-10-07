@@ -155,3 +155,75 @@ def test_timezone_utc_bukan_waktu_lokal():
     assert timeutil.utc_now().utcoffset() == timedelta(0)
     assert timeutil.parse_stored("2026-01-01T00:00:00").utcoffset() == timedelta(0)  # type: ignore[union-attr]
     assert datetime.now(timezone.utc).utcoffset() == timedelta(0)
+
+
+# ─── Waktu Pasifik: jendela reset kuota Google/YouTube ─────────────────────────
+#
+# Kuota harian YouTube Data API reset pada tengah malam WAKTU PASIFIK, bukan
+# tengah malam UTC — jadi offset-nya berubah mengikuti DST (PDT -7 / PST -8).
+
+
+def test_pacific_offset_musim_panas_dan_dingin():
+    assert timeutil.pacific_offset_hours(datetime(2026, 7, 1, 12, tzinfo=timezone.utc)) == -7
+    assert timeutil.pacific_offset_hours(datetime(2026, 1, 15, 12, tzinfo=timezone.utc)) == -8
+
+
+def test_pacific_offset_hanya_menggunakan_instan_bukan_zona_server():
+    """Instan yang sama dalam zona berbeda harus menghasilkan offset yang sama."""
+    instant = datetime(2026, 7, 1, 12, tzinfo=timezone.utc)
+    di_wib = instant.astimezone(timezone(timedelta(hours=7)))
+    di_pt = instant.astimezone(timezone(timedelta(hours=-7)))
+    hasil = {
+        timeutil.pacific_offset_hours(instant),
+        timeutil.pacific_offset_hours(di_wib),
+        timeutil.pacific_offset_hours(di_pt),
+    }
+    assert hasil == {-7}
+
+
+def test_pacific_offset_nilai_naif_dianggap_utc():
+    """Sesuai aturan proyek: nilai tanpa penanda zona = UTC, bukan waktu lokal."""
+    assert timeutil.pacific_offset_hours(datetime(2026, 1, 15, 12)) == -8
+
+
+@pytest.mark.parametrize(
+    "moment,expected",
+    [
+        # Batas DST 2026: mulai Minggu kedua Maret (8 Mar) 10.00 UTC,
+        # selesai Minggu pertama November (1 Nov) 09.00 UTC.
+        ("2026-03-08T09:59:59+00:00", -8),
+        ("2026-03-08T10:00:00+00:00", -7),
+        ("2026-11-01T08:59:59+00:00", -7),
+        ("2026-11-01T09:00:00+00:00", -8),
+        # Batas DST 2007 (tahun pertama aturan berlaku) untuk memastikan aturan
+        # dihitung per tahun, bukan tanggal tetap.
+        ("2007-03-11T09:59:59+00:00", -8),
+        ("2007-03-11T10:00:00+00:00", -7),
+        ("2007-11-04T08:59:59+00:00", -7),
+        ("2007-11-04T09:00:00+00:00", -8),
+    ],
+)
+def test_pacific_offset_batas_dst(moment, expected):
+    assert timeutil.pacific_offset_hours(datetime.fromisoformat(moment)) == expected
+
+
+def test_fallback_aturan_dst_setara_dengan_tz_database(monkeypatch):
+    """
+    Mesin tanpa tz database (container minim / Windows tanpa tzdata) jatuh ke
+    `_pacific_offset_by_dst_rule`. Fallback tidak boleh mengubah hasil apa pun.
+    """
+    if timeutil._PACIFIC is None:
+        pytest.skip("tz database tidak tersedia — fallback memang sedang dipakai")
+    kasus = [
+        "2026-01-15T12:00:00+00:00",
+        "2026-03-08T09:59:59+00:00",
+        "2026-03-08T10:00:00+00:00",
+        "2026-07-01T12:00:00+00:00",
+        "2026-11-01T08:59:59+00:00",
+        "2026-11-01T09:00:00+00:00",
+        "2026-12-31T23:00:00+00:00",
+    ]
+    with_tz = {teks: timeutil.pacific_offset_hours(datetime.fromisoformat(teks)) for teks in kasus}
+    monkeypatch.setattr(timeutil, "_PACIFIC", None)
+    tanpa_tz = {teks: timeutil.pacific_offset_hours(datetime.fromisoformat(teks)) for teks in kasus}
+    assert tanpa_tz == with_tz

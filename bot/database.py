@@ -8,8 +8,10 @@ import logging
 import os
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Generator
+from bot import timeutil
 from bot.config import Config
 
 logger = logging.getLogger(__name__)
@@ -1664,17 +1666,38 @@ def sync_youtube_channels(channels: list[dict]) -> None:
             )
 
 
-def reset_channel_counters_if_new_day() -> None:
+def reset_channel_counters_if_new_day(now: Optional[datetime] = None) -> None:
     """
-    Reset uploads_today to 0 if the last reset date is before today (UTC).
+    Reset `uploads_today` bila hari kuota YouTube sudah berganti.
+
+    Kuota harian Google/YouTube di-reset pada **tengah malam waktu Pasifik**
+    ("Daily quotas reset at midnight Pacific Time (PT)" — YouTube Data API,
+    Quota Calculator). Versi lama memakai `date('now')` (UTC), sehingga counter
+    berganti 7–8 jam lebih awal daripada kuota aslinya: pada pukul 00.00–07.00 UTC
+    semua channel terlihat "segar" padahal kuota kemarin belum pulih, dan
+    `/admin/status` menampilkan angka yang tidak cocok dengan sisa kuota.
+
+    Kedua sisi perbandingan digeser dengan offset Pasifik yang berlaku saat `now`
+    (−7 saat PDT, −8 saat PST). `last_reset_at` TETAP disimpan dalam UTC sesuai
+    aturan proyek, jadi tampilan admin tidak berubah.
+
+    `now` opsional (dipakai tes); nilai naif dianggap UTC.
     """
+    moment = timeutil.utc_now() if now is None else now
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    moment = moment.astimezone(timezone.utc)
+
+    modifier = f"{timeutil.pacific_offset_hours(moment)} hours"
+    now_text = moment.strftime("%Y-%m-%d %H:%M:%S")
     with _get_conn() as conn:
         conn.execute(
             """
             UPDATE youtube_channels
             SET uploads_today = 0, last_reset_at = datetime('now')
-            WHERE date(last_reset_at) < date('now')
-            """
+            WHERE date(last_reset_at, ?) < date(?, ?)
+            """,
+            (modifier, now_text, modifier),
         )
 
 

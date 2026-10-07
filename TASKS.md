@@ -451,6 +451,35 @@ Status live proyek. Perbarui bagian ini setiap ada perubahan penting.
          `uploadLimitExceeded`/`userRateLimitExceeded`) yang merotasi channel —
          403 polos (`insufficientPermissions`) tidak lagi membakar kuota rotasi.
 
+- [x] **Diagnostika kuota YouTube (8 Okt 2026)** — dari inspeksi log VPS
+      (`403 accessNotConfigured` project greezeal + `Quota exceeded ...
+      quota_or_limit_in_response=True`):
+      1. **Log rotasi mencetak `reason` asli** (`youtube_uploader.py`). Versi lama
+         menulis `True` **hardcoded**, sehingga kuota proyek, batas upload harian
+         channel, dan rate limit sesaat tidak bisa dibedakan dari `pm2 logs` —
+         padahal tindakannya berbeda (tunggu reset / ganti channel / jeda beberapa
+         detik). Kini `reasons=uploadLimitExceeded (batas upload harian CHANNEL —
+         ganti channel)`, dengan hint tiap reason di `_QUOTA_REASON_HINTS`.
+         Error non-kuota (mis. `accessNotConfigured`) tetap TIDAK memutar rotasi.
+      2. **Counter `uploads_today` reset di tengah malam PASIFIK, bukan UTC**
+         (`database.reset_channel_counters_if_new_day` +
+         `timeutil.pacific_offset_hours`). Kuota YouTube memang reset *"at midnight
+         Pacific Time (PT)"*; reset UTC membuat counter berganti 7–8 jam lebih
+         awal, sehingga 00.00–07.00 UTC semua channel terlihat segar padahal kuota
+         kemarin belum pulih. Offset diambil dari `zoneinfo` bila tz database ada,
+         fallback aturan DST AS 2007 (Minggu kedua Maret 02.00 PST → Minggu
+         pertama November 02.00 PDT). `last_reset_at` tetap disimpan UTC.
+      3. **Bar sisa kuota memakai model yang benar** (`bot/status.py`,
+         `web/lib/db.ts`): `videos.insert` punya bucket **terpisah 100/hari**
+         (biaya 1 per panggilan), bukan 1.600 dari kuota 10.000 unit/hari untuk
+         endpoint lain. Model lama (`6` / `10.000÷1.600`) membuat channel dengan
+         20 upload hari ini dilaporkan "0 upload lagi" padahal YouTube masih
+         menerimanya — inilah yang membuat log terlihat tidak masuk akal.
+      Verifikasi: **692 test unittest OK** + **726 test pytest** hijau (tes baru
+      `tests/test_youtube_channel_quota.py` + tambahan di `tests/test_timeutil.py`),
+      `py_compile` OK, pyflakes bersih (peringatan f-string lama tidak bertambah),
+      `tsc --noEmit` 0.
+
 ## Kandidat Pekerjaan Berikutnya (belum dikerjakan)
 
 - [ ] **Arsip TikTok — verifikasi di VPS**: metode sudah terbukti di mesin

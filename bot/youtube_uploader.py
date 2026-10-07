@@ -42,6 +42,28 @@ _QUOTA_REASONS = {
     "userRateLimitExceeded",
 }
 
+# Keterangan singkat tiap reason. Tanpa ini, "kuota habis" terdengar sama padahal
+# tindakannya jauh berbeda: menunggu reset harian, mengganti channel, atau cukup
+# jeda beberapa detik. (Catatan: kuota harian Google/YouTube reset tengah malam PT
+# — lihat bot.timeutil.pacific_offset_hours.)
+_QUOTA_REASON_HINTS = {
+    "quotaExceeded": "kuota unit harian PROYEK habis (reset tengah malam PT)",
+    "dailyLimitExceeded": "kuota harian PROYEK habis (reset tengah malam PT)",
+    "uploadLimitExceeded": "batas upload harian CHANNEL habis — ganti channel",
+    "userRateLimitExceeded": "rate limit sesaat — jeda beberapa detik lalu ulangi",
+}
+
+
+def _describe_quota_reasons(reasons: set) -> str:
+    """`{uploadLimitExceeded}` → `uploadLimitExceeded (batas upload harian CHANNEL ...)`."""
+    if not reasons:
+        return "tanpa reason (baca teks error asli)"
+    parts = []
+    for reason in sorted(reasons):
+        hint = _QUOTA_REASON_HINTS.get(reason)
+        parts.append(f"{reason} ({hint})" if hint else str(reason))
+    return ", ".join(parts)
+
 # Backoff untuk error transient (429/5xx/network) pada resumable upload.
 _UPLOAD_RETRY_DELAYS = [5, 10, 20, 40]  # total ≤ 5 percobaan
 
@@ -317,12 +339,16 @@ class YouTubeChannelPool:
                 # (mis. insufficientPermissions) BUKAN kuota: channel dianggap
                 # gagal biasa supaya tidak ikut membakar rotasi kuota.
                 if reasons & _QUOTA_REASONS or "quotaExceeded" in reason or "uploadLimitExceeded" in reason:
+                    # `reasons` dicetak apa adanya. Versi lama menulis `True`
+                    # hardcoded, sehingga kuota proyek, batas upload channel, dan
+                    # rate limit sesaat tidak bisa dibedakan dari log pm2 — padahal
+                    # cara menanganinya berbeda (tunggu reset / ganti channel / jeda).
                     logger.warning(
                         "Quota exceeded for channel '%s' (uploads_today=%d, "
-                        "quota_or_limit_in_response=%s). Trying next channel...",
+                        "reasons=%s). Trying next channel...",
                         label,
                         ch.get("uploads_today", 0),
-                        True,
+                        _describe_quota_reasons(reasons),
                     )
                     continue
                 else:

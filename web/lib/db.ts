@@ -1253,7 +1253,7 @@ export function getSystemStats(): SystemStats {
       id: c.id,
       label: c.channel_label,
       uploads_today: c.uploads_today || 0,
-      quota_limit: 6, // approximate safe daily video upload limit
+      quota_limit: 100, // bucket videos.insert YouTube: 100/hari (per project GCP)
       last_reset: c.last_reset_at,
     })),
     tiktok: getTikTokAdminStats(),
